@@ -1,3 +1,4 @@
+import { colorForImagePrompt } from "@/lib/color-for-prompt";
 import type { DesignTokens } from "@/types";
 
 export function parseDesignMd(content: string): DesignTokens {
@@ -69,10 +70,13 @@ export function augmentPrompt(
   if (tokens.typography.primary) {
     parts.push(`Typography: ${tokens.typography.primary}`);
   }
-  if (tokens.colors.accent || tokens.colors.primary) {
-    parts.push(
-      `Palette: ${tokens.colors.primary ?? ""} ${tokens.colors.accent ?? ""}`.trim()
-    );
+  const palette = [
+    colorForImagePrompt(tokens.colors.primary),
+    colorForImagePrompt(tokens.colors.accent),
+    colorForImagePrompt(tokens.colors.secondary),
+  ].filter(Boolean);
+  if (palette.length) {
+    parts.push(`Color mood: ${palette.join(", ")}`);
   }
   if (tokens.composition.negativeSpace) {
     parts.push(`Composition: ${tokens.composition.negativeSpace}`);

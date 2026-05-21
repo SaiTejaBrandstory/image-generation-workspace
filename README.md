@@ -26,9 +26,28 @@ A conversational creative operating system for generating and comparing **20 pro
 ```bash
 npm install
 cp .env.example .env
-# Paste your OpenRouter API key into .env
+# Paste your OpenRouter API key and Supabase keys into .env
 npm run dev
 ```
+
+Open [http://localhost:3000](http://localhost:3000) — you’ll be redirected to **Sign in with Google**.
+
+### Database & image storage (required for history)
+
+1. Open [Supabase SQL Editor](https://supabase.com/dashboard/project/yeavejohvunhjwxqxxtb/sql/new) for your project.
+2. Run `supabase/migrations/001_conversations_and_storage.sql` then `002_generation_rounds.sql` (tables, RLS, storage, multi-batch history).
+3. Ensure `.env` includes `SUPABASE_SERVICE_ROLE_KEY` (server uploads images).
+
+History and images are scoped per signed-in user (`user_id` + storage path `{userId}/{conversationId}/{variantId}.png`).
+
+### Google sign-in (Supabase)
+
+1. In [Supabase Dashboard](https://supabase.com/dashboard) → **Authentication → Providers** → enable **Google** (Client ID + Secret from Google Cloud Console).
+2. **Authentication → URL configuration**:
+   - **Site URL:** `http://localhost:3000`
+   - **Redirect URLs:** `http://localhost:3000/auth/callback`
+3. In Google Cloud Console → **OAuth client** → **Authorized redirect URIs**, use the callback URL shown in Supabase (typically `https://<project-ref>.supabase.co/auth/v1/callback`).
+4. Add to `.env`: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` (Settings → API).
 
 Open [http://localhost:3000](http://localhost:3000).
 

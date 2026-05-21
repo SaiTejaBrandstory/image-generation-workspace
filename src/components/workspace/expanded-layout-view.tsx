@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
-import { X, Shuffle, Loader2, Download } from "lucide-react";
+import { X, RefreshCw, Loader2, Download } from "lucide-react";
 import { LAYOUT_MAP } from "@/lib/layout-systems";
 import { buildImageFilename, downloadImage } from "@/lib/download-utils";
 import { useWorkspaceStore } from "@/store/workspace-store";
@@ -183,7 +183,7 @@ export function ExpandedLayoutView() {
                 {isRegenerating ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
-                  <Shuffle className="h-4 w-4" />
+                  <RefreshCw className="h-4 w-4" />
                 )}
                 Regenerate this layout
               </button>
@@ -212,9 +212,9 @@ export function ExpandedLayoutView() {
                 {isRegenerating ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
-                  <Shuffle className="h-4 w-4" />
+                  <RefreshCw className="h-4 w-4" />
                 )}
-                Remix (same composer prompt)
+                Regenerate (same composer prompt)
               </button>
 
               <button

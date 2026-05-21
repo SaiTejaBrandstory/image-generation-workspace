@@ -15,7 +15,13 @@ function isRealImage(url?: string) {
   );
 }
 
-export function DownloadAllButton({ variants }: { variants: LayoutVariant[] }) {
+export function DownloadAllButton({
+  variants,
+  variant = "default",
+}: {
+  variants: LayoutVariant[];
+  variant?: "default" | "icon";
+}) {
   const [downloading, setDownloading] = useState(false);
 
   const complete = variants.filter(
@@ -43,6 +49,25 @@ export function DownloadAllButton({ variants }: { variants: LayoutVariant[] }) {
       setDownloading(false);
     }
   };
+
+  if (variant === "icon") {
+    return (
+      <button
+        type="button"
+        onClick={() => void handleDownloadAll()}
+        disabled={downloading}
+        aria-label={`Download all ${complete.length} images`}
+        title={`Download all ${complete.length} images as ZIP`}
+        className="flex h-10 w-10 items-center justify-center rounded-xl text-foreground-muted transition-colors hover:bg-surface-elevated hover:text-foreground disabled:opacity-50"
+      >
+        {downloading ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : (
+          <Download className="h-4 w-4" />
+        )}
+      </button>
+    );
+  }
 
   return (
     <button

@@ -14,6 +14,13 @@ export const metadata: Metadata = {
     "Conversational AI creative operating system for 20 professional layout systems",
 };
 
+export const viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  viewportFit: "cover",
+};
+
 export default function RootLayout({
   children,
 }: Readonly<{

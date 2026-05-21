@@ -1,118 +1,154 @@
 "use client";
 
-import { motion } from "framer-motion";
-import { X } from "lucide-react";
+import { useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { ChevronDown } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { useWorkspaceStore } from "@/store/workspace-store";
+import type { DesignTokens } from "@/types";
 
 export function DesignDnaPanel() {
-  const { designTokens, activeBrand, setShowDesignDna } = useWorkspaceStore();
+  const { designTokens, activeBrand } = useWorkspaceStore();
   const tokens = designTokens;
+  const [mobileExpanded, setMobileExpanded] = useState(false);
 
   return (
-    <motion.aside
-      initial={{ width: 0, opacity: 0 }}
-      animate={{ width: 320, opacity: 1 }}
-      exit={{ width: 0, opacity: 0 }}
-      className="shrink-0 border-l border-border bg-surface overflow-y-auto"
-    >
-      <div className="sticky top-0 flex items-center justify-between border-b border-border bg-surface px-4 py-3 z-10">
-        <div>
+    <>
+      {/* Mobile: inline strip — does not block the layout grid */}
+      <motion.div
+        initial={{ height: 0, opacity: 0 }}
+        animate={{ height: "auto", opacity: 1 }}
+        exit={{ height: 0, opacity: 0 }}
+        className="shrink-0 overflow-hidden border-b border-border bg-surface lg:hidden"
+      >
+        <button
+          type="button"
+          onClick={() => setMobileExpanded((v) => !v)}
+          className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left"
+        >
+          <div className="min-w-0">
+            <p className="text-[10px] font-medium uppercase tracking-widest text-foreground-muted">
+              Design DNA
+            </p>
+            <p className="truncate text-sm font-semibold">
+              {activeBrand?.name ?? "Brand"}
+            </p>
+          </div>
+          <ChevronDown
+            className={cn(
+              "h-4 w-4 shrink-0 text-foreground-muted transition-transform",
+              mobileExpanded && "rotate-180"
+            )}
+          />
+        </button>
+        <AnimatePresence initial={false}>
+          {mobileExpanded && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="max-h-[40dvh] overflow-y-auto border-t border-border"
+            >
+              <DnaContent tokens={tokens} compact />
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </motion.div>
+
+      {/* Desktop: side panel */}
+      <motion.aside
+        initial={{ width: 0, opacity: 0 }}
+        animate={{ width: 320, opacity: 1 }}
+        exit={{ width: 0, opacity: 0 }}
+        className="hidden shrink-0 overflow-y-auto border-l border-border bg-surface lg:flex lg:flex-col"
+      >
+        <div className="sticky top-0 border-b border-border bg-surface px-4 py-3 z-10">
           <p className="text-xs font-medium uppercase tracking-widest text-foreground-muted">
             Design DNA
           </p>
           <p className="text-sm font-semibold">{activeBrand?.name}</p>
         </div>
-        <button
-          onClick={() => setShowDesignDna(false)}
-          className="rounded-lg p-1.5 hover:bg-surface-elevated"
-        >
-          <X className="h-4 w-4" />
-        </button>
-      </div>
+        <DnaContent tokens={tokens} />
+      </motion.aside>
+    </>
+  );
+}
 
-      <div className="space-y-6 p-4">
-        <Section title="Typography DNA">
-          <div className="space-y-2 text-sm">
-            <Row label="Primary" value={tokens?.typography.primary ?? "—"} />
-            <Row label="Secondary" value={tokens?.typography.secondary ?? "—"} />
-          </div>
-          <div className="mt-3 space-y-1">
-            <p
-              className="text-2xl font-bold"
-              style={{ fontFamily: "inherit" }}
+function DnaContent({
+  tokens,
+  compact,
+}: {
+  tokens: DesignTokens | null;
+  compact?: boolean;
+}) {
+  return (
+    <div
+      className={cn(
+        "min-h-0 flex-1 overflow-y-auto p-4",
+        compact ? "space-y-4" : "space-y-6"
+      )}
+    >
+      <Section title="Typography DNA">
+        <div className="space-y-2 text-sm">
+          <Row label="Primary" value={tokens?.typography.primary ?? "—"} />
+          <Row label="Secondary" value={tokens?.typography.secondary ?? "—"} />
+        </div>
+        <div className="mt-3 space-y-1">
+          <p
+            className="text-2xl font-light tracking-tight"
+            style={{ fontFamily: "Georgia, serif" }}
+          >
+            Aa Bb Cc
+          </p>
+        </div>
+      </Section>
+
+      <Section title="Color DNA">
+        <div className="flex flex-wrap gap-2">
+          {[
+            tokens?.colors.primary,
+            tokens?.colors.secondary,
+            tokens?.colors.accent,
+            tokens?.colors.background,
+          ]
+            .filter(Boolean)
+            .map((c) => (
+              <div
+                key={c}
+                className="h-10 w-10 rounded-xl border border-border shadow-sm"
+                style={{ backgroundColor: c }}
+                title={c}
+              />
+            ))}
+        </div>
+      </Section>
+
+      <Section title="Composition">
+        <div className="space-y-2 text-sm text-foreground-muted">
+          <Row
+            label="Layouts"
+            value={tokens?.composition.preferredLayouts?.join(", ") ?? "—"}
+          />
+          <Row
+            label="Negative space"
+            value={tokens?.composition.negativeSpace ?? "—"}
+          />
+        </div>
+      </Section>
+
+      <Section title="Personality">
+        <div className="flex flex-wrap gap-1.5">
+          {(tokens?.personality ?? []).map((p) => (
+            <span
+              key={p}
+              className="rounded-full bg-surface-elevated px-2.5 py-1 text-xs text-foreground-muted"
             >
-              Aa
-            </p>
-            <p className="text-xs text-foreground-muted">Heading scale preview</p>
-          </div>
-        </Section>
-
-        <Section title="Color DNA">
-          <div className="flex gap-2 flex-wrap">
-            {[
-              tokens?.colors.primary ?? "#0B0B0B",
-              tokens?.colors.accent ?? "#7C3AED",
-              "#3B82F6",
-              "#F5F5F5",
-            ].map((color, i) => (
-              <div key={i} className="space-y-1">
-                <div
-                  className="h-12 w-12 rounded-xl border border-border shadow-cinematic"
-                  style={{ backgroundColor: color }}
-                />
-                <p className="text-[10px] text-foreground-muted font-mono">
-                  {color}
-                </p>
-              </div>
-            ))}
-          </div>
-          <p className="mt-2 text-xs text-accent-cyan">Accessibility: AA pass</p>
-        </Section>
-
-        <Section title="Composition DNA">
-          <p className="text-xs text-foreground-muted leading-relaxed">
-            {tokens?.composition.negativeSpace ??
-              "Strong negative space with asymmetrical balance"}
-          </p>
-          <div className="mt-2 flex flex-wrap gap-1">
-            {(tokens?.composition.preferredLayouts ?? [
-              "Editorial",
-              "Single Hero",
-              "Central Focus",
-            ]).map((l) => (
-              <span
-                key={l}
-                className="rounded-full bg-surface-elevated px-2 py-0.5 text-[10px]"
-              >
-                {l}
-              </span>
-            ))}
-          </div>
-        </Section>
-
-        <Section title="Motion DNA">
-          <p className="text-xs text-foreground-muted">
-            {tokens?.motion.style ?? "Soft spring animations"}
-          </p>
-          <div className="mt-3 h-8 rounded-lg bg-gradient-to-r from-accent-violet/20 via-accent-blue/20 to-accent-cyan/20 animate-pulse" />
-        </Section>
-
-        <Section title="Brand Personality">
-          <div className="flex flex-wrap gap-1.5">
-            {(tokens?.personality ?? ["Luxury", "Futuristic", "Minimal"]).map(
-              (p) => (
-                <span
-                  key={p}
-                  className="rounded-full border border-accent-violet/30 bg-accent-violet/10 px-2.5 py-1 text-[10px] text-accent-violet"
-                >
-                  {p}
-                </span>
-              )
-            )}
-          </div>
-        </Section>
-      </div>
-    </motion.aside>
+              {p}
+            </span>
+          ))}
+        </div>
+      </Section>
+    </div>
   );
 }
 
@@ -125,9 +161,9 @@ function Section({
 }) {
   return (
     <div>
-      <h4 className="mb-3 text-[10px] font-medium uppercase tracking-widest text-foreground-muted">
+      <h3 className="text-[10px] font-medium uppercase tracking-widest text-foreground-muted mb-2">
         {title}
-      </h4>
+      </h3>
       {children}
     </div>
   );
@@ -137,7 +173,9 @@ function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex justify-between gap-2">
       <span className="text-foreground-muted">{label}</span>
-      <span className="font-medium truncate">{value}</span>
+      <span className="text-foreground text-right truncate max-w-[60%]">
+        {value}
+      </span>
     </div>
   );
 }

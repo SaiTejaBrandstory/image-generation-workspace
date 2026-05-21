@@ -1,0 +1,138 @@
+import { NextRequest, NextResponse } from "next/server";
+import { createClient } from "@/lib/supabase/server";
+import { formatSupabaseSetupError } from "@/lib/supabase/setup-errors";
+import type {
+  AspectRatio,
+  GenerationParams,
+  LayoutId,
+  LayoutVariant,
+  PlatformPreset,
+  StyleEngine,
+} from "@/types";
+
+interface RouteParams {
+  params: Promise<{ id: string }>;
+}
+
+interface PrepareBody {
+  prompt: string;
+  style: StyleEngine;
+  platform: PlatformPreset;
+  aspectRatio: AspectRatio;
+  imageModel: string;
+  params: GenerationParams;
+  selectedLayouts: LayoutId[];
+  variants: Array<{
+    id: string;
+    layoutId: LayoutId;
+    userPrompt?: string;
+    prompt: string;
+    rationale: string;
+    visualPsychology: string;
+    bestUse: string;
+    suggestedPlatform: string;
+    principles: string[];
+    influenceBreakdown?: Record<string, number>;
+    status: LayoutVariant["status"];
+    sortIndex: number;
+  }>;
+}
+
+export async function POST(request: NextRequest, { params }: RouteParams) {
+  try {
+    const { id: conversationId } = await params;
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json({ error: "Please sign in." }, { status: 401 });
+    }
+
+    const body = (await request.json()) as PrepareBody;
+
+    if (!body.prompt?.trim()) {
+      return NextResponse.json({ error: "prompt is required" }, { status: 400 });
+    }
+
+    const { data: existing, error: fetchError } = await supabase
+      .from("conversations")
+      .select("id")
+      .eq("id", conversationId)
+      .eq("user_id", user.id)
+      .single();
+
+    if (fetchError || !existing) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
+
+    const { error: updateError } = await supabase
+      .from("conversations")
+      .update({
+        prompt: body.prompt,
+        style: body.style,
+        platform: body.platform,
+        aspect_ratio: body.aspectRatio,
+        image_model: body.imageModel,
+        params: body.params,
+        selected_layouts: body.selectedLayouts,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", conversationId)
+      .eq("user_id", user.id);
+
+    if (updateError) throw new Error(updateError.message);
+
+    const { data: maxRoundRow } = await supabase
+      .from("layout_variants")
+      .select("generation_round")
+      .eq("conversation_id", conversationId)
+      .eq("user_id", user.id)
+      .order("generation_round", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const generationRound = (maxRoundRow?.generation_round ?? -1) + 1;
+    const roundCreatedAt = new Date().toISOString();
+
+    if (body.variants?.length) {
+      const rows = body.variants.map((v) => ({
+        id: v.id,
+        conversation_id: conversationId,
+        user_id: user.id,
+        layout_id: v.layoutId,
+        user_prompt: v.userPrompt ?? body.prompt,
+        prompt: v.prompt,
+        rationale: v.rationale,
+        visual_psychology: v.visualPsychology,
+        best_use: v.bestUse,
+        suggested_platform: v.suggestedPlatform,
+        principles: v.principles,
+        influence_breakdown: v.influenceBreakdown ?? null,
+        status: v.status,
+        sort_index: v.sortIndex,
+        generation_round: generationRound,
+        created_at: roundCreatedAt,
+      }));
+
+      const { error: variantsError } = await supabase
+        .from("layout_variants")
+        .insert(rows);
+
+      if (variantsError) throw new Error(variantsError.message);
+    }
+
+    return NextResponse.json({
+      conversationId,
+      generationRound,
+      roundCreatedAt,
+    });
+  } catch (err) {
+    const raw =
+      err instanceof Error ? err.message : "Failed to prepare conversation";
+    const message = formatSupabaseSetupError(raw);
+    console.error("[conversations/[id]/prepare POST]", raw);
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}

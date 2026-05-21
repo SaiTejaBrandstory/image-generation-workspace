@@ -31,7 +31,7 @@ function getApiKey(): string {
   const key = process.env.OPENROUTER_API_KEY;
   if (!key?.trim()) {
     throw new Error(
-      "OPENROUTER_API_KEY is missing. Add it to your .env file."
+      "Image generation is not configured on the server."
     );
   }
   return key.trim();
@@ -170,12 +170,12 @@ export async function generateImageWithOpenRouter(options: {
     const err =
       (data as { error?: { message?: string } })?.error?.message ??
       JSON.stringify(data);
-    throw new Error(`OpenRouter error (${response.status}): ${err}`);
+    throw new Error(`Image generation failed (${response.status}): ${err}`);
   }
 
   const imageUrl = extractImageUrl(data);
   if (!imageUrl) {
-    throw new Error("OpenRouter returned no image in the response.");
+    throw new Error("No image was returned. Please try again.");
   }
 
   return { imageUrl, model };

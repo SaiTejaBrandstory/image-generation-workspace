@@ -29,7 +29,7 @@ export function GeneratedImage({
         <img
           src={src}
           alt={alt}
-          className="max-h-[calc(100vh-6rem)] max-w-[min(100%,calc(100vw-28rem))] w-auto h-auto object-contain rounded-[24px] shadow-cinematic"
+          className="max-h-[calc(100dvh-8rem)] max-w-[min(100%,calc(100vw-2rem))] w-auto h-auto object-contain rounded-[24px] shadow-cinematic lg:max-h-[calc(100vh-6rem)] lg:max-w-[min(100%,calc(100vw-28rem))]"
         />
       </div>
     );
@@ -38,7 +38,7 @@ export function GeneratedImage({
   return (
     <div
       className={cn(
-        "flex h-[min(320px,38vh)] w-full min-h-[200px] items-center justify-center bg-black/30",
+        "flex h-full w-full min-h-0 items-center justify-center bg-black/30",
         className
       )}
     >

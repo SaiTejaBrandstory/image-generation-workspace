@@ -13,13 +13,13 @@ export function ChatThread() {
 
   if (messages.length === 0) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
+      <div className="flex flex-1 flex-col items-center justify-center px-4 py-6 text-center sm:px-8">
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           className="max-w-md space-y-4"
         >
-          <h2 className="text-2xl font-semibold tracking-tight">
+          <h2 className="text-xl font-semibold tracking-tight sm:text-2xl">
             What are we creating today?
           </h2>
           <p className="text-sm text-foreground-muted leading-relaxed">
@@ -47,7 +47,7 @@ export function ChatThread() {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto px-4 py-6">
+    <div className="flex-1 overflow-y-auto overscroll-contain px-3 py-4 sm:px-4 sm:py-6">
       <div className="mx-auto max-w-3xl space-y-8">
         {messages.map((msg, i) => (
           <motion.div

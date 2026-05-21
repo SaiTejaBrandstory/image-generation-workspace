@@ -2,7 +2,14 @@
 
 import { motion } from "framer-motion";
 import { useState } from "react";
-import { Expand, Pencil, Shuffle, AlertCircle, Loader2, Download } from "lucide-react";
+import {
+  Expand,
+  Pencil,
+  RefreshCw,
+  AlertCircle,
+  Loader2,
+  Download,
+} from "lucide-react";
 import { LAYOUT_MAP } from "@/lib/layout-systems";
 import { buildImageFilename, downloadImage } from "@/lib/download-utils";
 import { useWorkspaceStore } from "@/store/workspace-store";
@@ -70,7 +77,7 @@ export function LayoutCard({ variant, index }: LayoutCardProps) {
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: Math.min(index * 0.02, 0.4), duration: 0.25 }}
       className={cn(
-        "group relative flex w-full min-w-0 max-w-full flex-col overflow-hidden rounded-[20px] border bg-surface shadow-cinematic transition-[border-color,box-shadow]",
+        "group relative flex w-full min-w-0 max-w-full flex-col overflow-hidden rounded-2xl border bg-surface shadow-cinematic transition-[border-color,box-shadow] lg:rounded-[20px]",
         isError
           ? "border-accent-orange/40"
           : "border-border hover:border-accent-violet/25 hover:shadow-[0_8px_40px_rgba(124,58,237,0.1)]"
@@ -78,15 +85,16 @@ export function LayoutCard({ variant, index }: LayoutCardProps) {
     >
       <div className="relative w-full shrink-0 overflow-hidden">
         {isLoading ? (
-          <div className="flex h-[min(360px,45vh)] min-h-[240px] items-center justify-center bg-surface-elevated">
+          <div className="layout-card-preview flex items-center justify-center">
             <Loader2 className="h-8 w-8 animate-spin text-accent-violet" />
           </div>
         ) : hasImage && variant.imageUrl ? (
-          <div className="relative">
+          <div className="relative layout-card-preview">
             <GeneratedImage
               src={variant.imageUrl}
               alt={`${layout?.name} layout`}
               variant="card"
+              className="h-full min-h-0"
             />
             <button
               type="button"
@@ -105,7 +113,7 @@ export function LayoutCard({ variant, index }: LayoutCardProps) {
         ) : (
           <div
             className={cn(
-              "flex h-[min(360px,45vh)] min-h-[240px] items-center justify-center bg-gradient-to-br",
+              "layout-card-preview flex items-center justify-center bg-gradient-to-br",
               gradient
             )}
           >
@@ -145,8 +153,8 @@ export function LayoutCard({ variant, index }: LayoutCardProps) {
               title="Regenerate this layout using the current composer prompt"
               className="flex flex-1 items-center justify-center gap-1 rounded-lg bg-white/10 px-2 py-2 text-[11px] font-medium text-white hover:bg-white/20 disabled:opacity-50"
             >
-              <Shuffle className="h-3 w-3 shrink-0" />
-              Remix
+              <RefreshCw className="h-3 w-3 shrink-0" />
+              Regenerate
             </button>
             <button
               type="button"
@@ -161,26 +169,28 @@ export function LayoutCard({ variant, index }: LayoutCardProps) {
         )}
       </div>
 
-      <div className="flex min-h-0 flex-col gap-2 px-4 pb-4 pt-3.5">
-        <div className="space-y-1">
-          <h3 className="truncate text-[13px] font-semibold leading-tight tracking-tight">
+      <div className="flex min-h-0 flex-col gap-3 border-t border-border/80 bg-surface px-4 py-3.5">
+        <div className="space-y-1.5">
+          <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
             {layout?.name ?? variant.layoutId}
           </h3>
-          <p className="line-clamp-2 text-[11px] leading-[1.45] text-foreground-muted">
+          <p className="line-clamp-2 text-xs leading-relaxed text-foreground-muted">
             {layout?.description}
           </p>
         </div>
         {!isLoading && (
-          <span
-            className={cn(
-              "inline-flex w-fit rounded-md px-2 py-0.5 text-[10px] font-medium",
-              isError
-                ? "bg-accent-orange/10 text-accent-orange"
-                : "bg-accent-violet/10 text-accent-violet"
-            )}
-          >
-            {isError ? "Generation failed" : variant.suggestedPlatform}
-          </span>
+          <div className="flex items-center justify-between gap-2">
+            <span
+              className={cn(
+                "inline-flex max-w-full truncate rounded-lg px-2.5 py-1 text-[10px] font-medium",
+                isError
+                  ? "bg-accent-orange/10 text-accent-orange"
+                  : "bg-surface-elevated text-foreground-muted ring-1 ring-inset ring-border"
+              )}
+            >
+              {isError ? "Failed" : variant.suggestedPlatform}
+            </span>
+          </div>
         )}
       </div>
     </motion.article>

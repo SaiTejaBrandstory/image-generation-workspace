@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { generateImageWithOpenRouter } from "@/lib/openrouter-image";
+import { createClient } from "@/lib/supabase/server";
 import type {
   AspectRatio,
   DesignTokens,
@@ -22,21 +23,46 @@ interface GenerateImageBody {
   designTokens?: DesignTokens;
   references?: ReferenceImagePayload[];
   model?: string;
+  conversationId?: string;
+  variantId?: string;
+  variantMeta?: {
+    rationale?: string;
+    visualPsychology?: string;
+    bestUse?: string;
+    suggestedPlatform?: string;
+    principles?: string[];
+    influenceBreakdown?: Record<string, number>;
+    prompt?: string;
+  };
 }
 
 export async function POST(request: NextRequest) {
+  let body: GenerateImageBody | null = null;
+
   try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json(
+        { error: "Please sign in to generate images." },
+        { status: 401 }
+      );
+    }
+
     if (!process.env.OPENROUTER_API_KEY?.trim()) {
       return NextResponse.json(
         {
           error:
-            "OPENROUTER_API_KEY is not configured. Add it to your .env file and restart the dev server.",
+            "Image generation is temporarily unavailable. Please try again later.",
         },
         { status: 503 }
       );
     }
 
-    const body = (await request.json()) as GenerateImageBody;
+    body = (await request.json()) as GenerateImageBody;
 
     if (!body.userPrompt?.trim()) {
       return NextResponse.json(
@@ -64,11 +90,78 @@ export async function POST(request: NextRequest) {
       model: body.model,
     });
 
-    return NextResponse.json(result);
+    let imageUrl = result.imageUrl;
+
+    if (body.conversationId && body.variantId) {
+      const { persistVariantImage } = await import(
+        "@/lib/supabase/conversations-db"
+      );
+
+      await supabase
+        .from("layout_variants")
+        .update({ status: "generating", updated_at: new Date().toISOString() })
+        .eq("id", body.variantId)
+        .eq("conversation_id", body.conversationId)
+        .eq("user_id", user.id);
+
+      const persisted = await persistVariantImage(
+        supabase,
+        user.id,
+        body.conversationId,
+        body.variantId,
+        result.imageUrl,
+        {
+          status: "complete",
+          userPrompt: body.userPrompt,
+          prompt: body.variantMeta?.prompt,
+          rationale: body.variantMeta?.rationale,
+          visualPsychology: body.variantMeta?.visualPsychology,
+          bestUse: body.variantMeta?.bestUse,
+          suggestedPlatform: body.variantMeta?.suggestedPlatform,
+          principles: body.variantMeta?.principles,
+          influenceBreakdown: body.variantMeta?.influenceBreakdown,
+          errorMessage: null,
+        }
+      );
+
+      imageUrl = persisted.signedUrl;
+
+      await supabase
+        .from("conversations")
+        .update({ updated_at: new Date().toISOString() })
+        .eq("id", body.conversationId)
+        .eq("user_id", user.id);
+    }
+
+    return NextResponse.json({ ...result, imageUrl });
   } catch (err) {
     const message =
       err instanceof Error ? err.message : "Image generation failed";
     console.error("[generate/image]", message);
+
+    if (body?.conversationId && body?.variantId) {
+      try {
+        const supabase = await createClient();
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
+        if (user) {
+          await supabase
+            .from("layout_variants")
+            .update({
+              status: "error",
+              error_message: message,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", body.variantId)
+            .eq("conversation_id", body.conversationId)
+            .eq("user_id", user.id);
+        }
+      } catch {
+        /* ignore secondary failure */
+      }
+    }
+
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

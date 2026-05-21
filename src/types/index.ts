@@ -112,6 +112,11 @@ export interface LayoutVariant {
   influenceBreakdown?: Record<string, number>;
   status: "pending" | "generating" | "complete" | "error";
   errorMessage?: string;
+  /** Batch index within a conversation (0 = first generate) */
+  generationRound?: number;
+  /** When this batch was started (ms epoch) */
+  createdAt?: number;
+  sortIndex?: number;
 }
 
 export interface ChatMessage {
@@ -126,6 +131,8 @@ export interface ChatMessage {
 export interface Conversation {
   id: string;
   title: string;
+  /** Original user prompt (for history search) */
+  prompt?: string;
   messages: ChatMessage[];
   variants: LayoutVariant[];
   createdAt: number;

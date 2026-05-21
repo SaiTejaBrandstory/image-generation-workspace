@@ -95,6 +95,8 @@ async function generateOneImage(options: {
   imageModel: string;
   designTokens?: DesignTokens;
   references: ReferenceImage[];
+  conversationId?: string;
+  variant?: LayoutVariant;
 }): Promise<string> {
   const serializedRefs = await serializeReferences(options.references);
 
@@ -111,6 +113,19 @@ async function generateOneImage(options: {
       designTokens: options.designTokens,
       references: serializedRefs,
       model: options.imageModel,
+      conversationId: options.conversationId,
+      variantId: options.variant?.id,
+      variantMeta: options.variant
+        ? {
+            prompt: options.variant.prompt,
+            rationale: options.variant.rationale,
+            visualPsychology: options.variant.visualPsychology,
+            bestUse: options.variant.bestUse,
+            suggestedPlatform: options.variant.suggestedPlatform,
+            principles: options.variant.principles,
+            influenceBreakdown: options.variant.influenceBreakdown,
+          }
+        : undefined,
     }),
   });
 
@@ -123,6 +138,39 @@ async function generateOneImage(options: {
   return data.imageUrl as string;
 }
 
+function newVariantId(): string {
+  return crypto.randomUUID();
+}
+
+export function buildPendingVariants(options: {
+  prompt: string;
+  layoutIds: LayoutId[];
+  style: StyleEngine;
+  references: ReferenceImage[];
+  designTokens?: DesignTokens;
+}): LayoutVariant[] {
+  const { prompt, layoutIds, style, references, designTokens } = options;
+  const augmented = augmentPrompt(prompt, designTokens);
+  const layouts =
+    layoutIds.length > 0
+      ? LAYOUT_SYSTEMS.filter((l) => layoutIds.includes(l.id))
+      : LAYOUT_SYSTEMS;
+
+  return layouts.map((layout) => ({
+    id: newVariantId(),
+    layoutId: layout.id,
+    userPrompt: prompt,
+    prompt: augmented,
+    rationale: buildRationale(layout.name, prompt, style),
+    visualPsychology: buildPsychology(layout.name),
+    bestUse: layout.bestUse,
+    suggestedPlatform: suggestPlatform(prompt),
+    principles: layout.principles,
+    influenceBreakdown: buildInfluenceBreakdown(references),
+    status: "pending" as const,
+  }));
+}
+
 export async function generateLayoutVariants(options: {
   prompt: string;
   layoutIds: LayoutId[];
@@ -133,6 +181,8 @@ export async function generateLayoutVariants(options: {
   references: ReferenceImage[];
   imageModel: string;
   designTokens?: DesignTokens;
+  conversationId?: string;
+  pendingVariants?: LayoutVariant[];
   onProgress?: (progress: number, variants: LayoutVariant[]) => void;
 }): Promise<LayoutVariant[]> {
   const {
@@ -145,28 +195,19 @@ export async function generateLayoutVariants(options: {
     references,
     imageModel,
     designTokens,
+    conversationId,
     onProgress,
   } = options;
 
-  const augmented = augmentPrompt(prompt, designTokens);
-  const layouts =
-    layoutIds.length > 0
-      ? LAYOUT_SYSTEMS.filter((l) => layoutIds.includes(l.id))
-      : LAYOUT_SYSTEMS;
-
-  const variants: LayoutVariant[] = layouts.map((layout, i) => ({
-    id: `variant-${layout.id}-${Date.now()}-${i}`,
-    layoutId: layout.id,
-    userPrompt: prompt,
-    prompt: augmented,
-    rationale: buildRationale(layout.name, prompt, style),
-    visualPsychology: buildPsychology(layout.name),
-    bestUse: layout.bestUse,
-    suggestedPlatform: suggestPlatform(prompt),
-    principles: layout.principles,
-    influenceBreakdown: buildInfluenceBreakdown(references),
-    status: "pending" as const,
-  }));
+  const variants: LayoutVariant[] =
+    options.pendingVariants ??
+    buildPendingVariants({
+      prompt,
+      layoutIds,
+      style,
+      references,
+      designTokens,
+    });
 
   onProgress?.(0, [...variants]);
 
@@ -196,6 +237,8 @@ export async function generateLayoutVariants(options: {
           imageModel,
           designTokens,
           references,
+          conversationId,
+          variant: variants[index],
         });
 
         variants[index] = {
@@ -239,6 +282,7 @@ export async function generateSingleVariant(options: {
   imageModel: string;
   designTokens?: DesignTokens;
   existing: LayoutVariant;
+  conversationId?: string;
 }): Promise<LayoutVariant> {
   const imageUrl = await generateOneImageWithRetry({
     userPrompt: options.prompt,
@@ -250,6 +294,8 @@ export async function generateSingleVariant(options: {
     imageModel: options.imageModel,
     designTokens: options.designTokens,
     references: options.references,
+    conversationId: options.conversationId,
+    variant: options.existing,
   });
 
   const augmented = augmentPrompt(

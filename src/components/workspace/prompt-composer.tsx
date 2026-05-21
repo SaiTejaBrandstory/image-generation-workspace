@@ -2,7 +2,7 @@
 
 import { useCallback, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { Plus, Sparkles, SlidersHorizontal } from "lucide-react";
+import { Loader2, Plus, Sparkles, SlidersHorizontal } from "lucide-react";
 import {
   ASPECT_RATIOS,
   PLATFORM_PRESETS,
@@ -10,6 +10,7 @@ import {
 } from "@/lib/constants";
 import { useWorkspaceStore } from "@/store/workspace-store";
 import { Button } from "@/components/ui/button";
+import { Tooltip } from "@/components/ui/tooltip";
 import { Slider } from "@/components/ui/slider";
 import { ReferenceChips } from "./reference-chips";
 import { LayoutSelector } from "./layout-selector";
@@ -27,8 +28,71 @@ const PARAM_LABELS: { key: keyof import("@/types").GenerationParams; label: stri
   { key: "uiPresence", label: "UI Presence" },
 ];
 
+function AspectPlatformStyleSelects({ mobile }: { mobile?: boolean }) {
+  const {
+    aspectRatio,
+    setAspectRatio,
+    platform,
+    setPlatform,
+    style,
+    setStyle,
+  } = useWorkspaceStore();
+
+  const selectClass = mobile
+    ? "w-full rounded-xl bg-surface-elevated px-3 py-2.5 text-sm text-foreground border-0 outline-none cursor-pointer"
+    : "shrink-0 rounded-xl bg-surface-elevated px-2.5 py-1.5 text-xs text-foreground-muted border-0 outline-none cursor-pointer";
+
+  const selects = (
+    <>
+      <select
+        value={aspectRatio}
+        onChange={(e) => setAspectRatio(e.target.value as typeof aspectRatio)}
+        className={selectClass}
+        aria-label="Aspect ratio"
+      >
+        {ASPECT_RATIOS.map((a) => (
+          <option key={a.value} value={a.value}>
+            {a.label}
+          </option>
+        ))}
+      </select>
+      <select
+        value={platform}
+        onChange={(e) => setPlatform(e.target.value as typeof platform)}
+        className={cn(selectClass, !mobile && "max-w-[120px]")}
+        aria-label="Platform"
+      >
+        {PLATFORM_PRESETS.map((p) => (
+          <option key={p.value} value={p.value}>
+            {p.label}
+          </option>
+        ))}
+      </select>
+      <select
+        value={style}
+        onChange={(e) => setStyle(e.target.value as typeof style)}
+        className={selectClass}
+        aria-label="Style engine"
+      >
+        {STYLE_ENGINES.map((s) => (
+          <option key={s.value} value={s.value}>
+            {s.label}
+          </option>
+        ))}
+      </select>
+    </>
+  );
+
+  if (mobile) {
+    return <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">{selects}</div>;
+  }
+
+  return <>{selects}</>;
+}
+
 export function PromptComposer() {
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showOptions, setShowOptions] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const dropRef = useRef<HTMLDivElement>(null);
 
@@ -52,6 +116,13 @@ export function PromptComposer() {
 
   const modelConfig = getModelConfig(imageModel);
   const usesVisionRefs = modelConfig.supportsVisionInput;
+
+  const canGenerate = prompt.trim().length > 0 && !isGenerating;
+  const generateTooltip = isGenerating
+    ? "Generation in progress…"
+    : !prompt.trim()
+      ? "Enter a prompt to generate layouts"
+      : "Generate all selected layouts";
 
   const handleFiles = useCallback(
     (files: FileList | null) => {
@@ -89,9 +160,9 @@ export function PromptComposer() {
       ref={dropRef}
       onDrop={onDrop}
       onDragOver={(e) => e.preventDefault()}
-      className="border-t border-border bg-background/80 backdrop-blur-xl px-4 pb-4 pt-3"
+      className="shrink-0 border-t border-border bg-background/95 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur-xl sm:px-4 sm:pt-3 lg:pb-4"
     >
-      <div className="mx-auto max-w-3xl">
+      <div className="mx-auto w-full max-w-3xl lg:pb-0">
         <ReferenceChips />
 
         <motion.div
@@ -152,52 +223,16 @@ export function PromptComposer() {
             }}
           />
 
-          <div className="flex flex-wrap items-center gap-2 border-t border-border px-3 py-2.5">
+          {/* Desktop: full toolbar (Layouts, Model, Aspect, Platform, Style, Params) */}
+          <div className="composer-toolbar hidden flex-wrap items-center gap-2 border-t border-border px-3 py-2.5 lg:flex">
             <LayoutSelector />
-
             <ModelSelector />
-
-            <select
-              value={aspectRatio}
-              onChange={(e) => setAspectRatio(e.target.value as typeof aspectRatio)}
-              className="rounded-xl bg-surface-elevated px-2.5 py-1.5 text-xs text-foreground-muted border-0 outline-none cursor-pointer"
-            >
-              {ASPECT_RATIOS.map((a) => (
-                <option key={a.value} value={a.value}>
-                  {a.label}
-                </option>
-              ))}
-            </select>
-
-            <select
-              value={platform}
-              onChange={(e) => setPlatform(e.target.value as typeof platform)}
-              className="rounded-xl bg-surface-elevated px-2.5 py-1.5 text-xs text-foreground-muted border-0 outline-none cursor-pointer max-w-[120px]"
-            >
-              {PLATFORM_PRESETS.map((p) => (
-                <option key={p.value} value={p.value}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
-
-            <select
-              value={style}
-              onChange={(e) => setStyle(e.target.value as typeof style)}
-              className="rounded-xl bg-surface-elevated px-2.5 py-1.5 text-xs text-foreground-muted border-0 outline-none cursor-pointer"
-            >
-              {STYLE_ENGINES.map((s) => (
-                <option key={s.value} value={s.value}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-
+            <AspectPlatformStyleSelects />
             <button
               type="button"
               onClick={() => setShowAdvanced(!showAdvanced)}
               className={cn(
-                "flex items-center gap-1 rounded-xl px-2.5 py-1.5 text-xs transition-colors ml-auto",
+                "ml-auto flex shrink-0 items-center gap-1 rounded-xl px-2.5 py-1.5 text-xs transition-colors",
                 showAdvanced
                   ? "bg-accent-violet/20 text-accent-violet"
                   : "text-foreground-muted hover:bg-surface-elevated"
@@ -207,6 +242,44 @@ export function PromptComposer() {
               Params
             </button>
           </div>
+
+          {/* Mobile: collapsible options */}
+          <button
+            type="button"
+            onClick={() => setShowOptions(!showOptions)}
+            className="flex w-full items-center justify-between border-t border-border px-3 py-2.5 text-xs text-foreground-muted lg:hidden"
+          >
+            <span className="font-medium">Generation options</span>
+            <SlidersHorizontal
+              className={cn(
+                "h-4 w-4 transition-transform",
+                showOptions && "rotate-90 text-accent-violet"
+              )}
+            />
+          </button>
+
+          {showOptions && (
+            <div className="space-y-3 border-t border-border px-3 py-3 lg:hidden">
+              <div className="grid grid-cols-2 gap-2">
+                <LayoutSelector />
+                <ModelSelector />
+              </div>
+              <AspectPlatformStyleSelects mobile />
+              <button
+                type="button"
+                onClick={() => setShowAdvanced(!showAdvanced)}
+                className={cn(
+                  "flex w-full items-center justify-center gap-1 rounded-xl py-2 text-xs",
+                  showAdvanced
+                    ? "bg-accent-violet/20 text-accent-violet"
+                    : "bg-surface-elevated text-foreground-muted"
+                )}
+              >
+                <SlidersHorizontal className="h-3.5 w-3.5" />
+                Advanced params
+              </button>
+            </div>
+          )}
 
           {showAdvanced && (
             <motion.div
@@ -229,17 +302,31 @@ export function PromptComposer() {
             </motion.div>
           )}
 
-          <div className="flex justify-end border-t border-border px-3 py-3">
-            <Button
-              variant="primary"
-              size="lg"
-              onClick={() => generate()}
-              disabled={isGenerating || !prompt.trim()}
-              className="gap-2 rounded-2xl glow-subtle min-w-[200px]"
-            >
-              <Sparkles className="h-4 w-4" />
-              {isGenerating ? "Generating…" : "Generate Layout System"}
-            </Button>
+          <div className="flex justify-end border-t border-border px-3 py-2">
+            <Tooltip content={generateTooltip}>
+              <span className="inline-flex">
+                <Button
+                  type="button"
+                  variant="primary"
+                  size="sm"
+                  onClick={() => void generate()}
+                  disabled={!canGenerate}
+                  aria-busy={isGenerating}
+                  aria-disabled={!canGenerate}
+                  className={cn(
+                    "h-9 min-w-[140px] gap-1.5 rounded-xl px-4 text-xs font-medium",
+                    canGenerate && "hover:brightness-110 active:scale-[0.98]"
+                  )}
+                >
+                  {isGenerating ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-3.5 w-3.5" />
+                  )}
+                  {isGenerating ? "Generating…" : "Generate layouts"}
+                </Button>
+              </span>
+            </Tooltip>
           </div>
         </motion.div>
 

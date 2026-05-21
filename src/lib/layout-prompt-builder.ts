@@ -1,3 +1,4 @@
+import { colorForImagePrompt, NO_SPEC_TEXT_IN_IMAGE } from "@/lib/color-for-prompt";
 import { LAYOUT_MAP } from "@/lib/layout-systems";
 import type {
   AspectRatio,
@@ -67,12 +68,15 @@ export function buildLayoutImagePrompt(options: {
       ? `IMPORTANT — Use the ${Math.min(references.length, 4)} reference image(s) attached to this request for visual direction (mood, composition, subject, colors). Match them closely in the output.`
       : "";
 
+  const accentDesc = colorForImagePrompt(designTokens?.colors.accent);
+  const primaryDesc = colorForImagePrompt(designTokens?.colors.primary);
+
   const brandNote = designTokens
     ? [
         designTokens.typography.primary &&
-          `Typography feel: ${designTokens.typography.primary}`,
-        designTokens.colors.accent &&
-          `Accent color: ${designTokens.colors.accent}`,
+          `Typography feel (style only, do not write font names as visible text): ${designTokens.typography.primary}`,
+        accentDesc && `Accent lighting and highlights: ${accentDesc}`,
+        primaryDesc && `Dominant palette tone: ${primaryDesc}`,
         designTokens.composition.negativeSpace &&
           `Composition: ${designTokens.composition.negativeSpace}`,
         designTokens.personality.length &&
@@ -92,6 +96,7 @@ export function buildLayoutImagePrompt(options: {
     brandNote,
     refNote,
     "Output a single polished, production-ready marketing image. No text watermarks. No collage of multiple separate images.",
+    NO_SPEC_TEXT_IN_IMAGE,
   ]
     .filter(Boolean)
     .join(" ");

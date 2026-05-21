@@ -1,9 +1,17 @@
 "use client";
 
 import { create } from "zustand";
-import { DEFAULT_PARAMS, SAMPLE_DESIGN_MD } from "@/lib/constants";
+import { DEFAULT_PARAMS } from "@/lib/constants";
 import { parseDesignMd } from "@/lib/design-md-parser";
 import {
+  createConversationRecord,
+  fetchConversationById,
+  fetchConversationHistory,
+  finalizeConversation,
+  prepareConversationForGeneration,
+} from "@/lib/conversations-api";
+import {
+  buildPendingVariants,
   generateLayoutVariants,
   generateSingleVariant,
 } from "@/lib/generation-engine";
@@ -46,8 +54,15 @@ interface WorkspaceState {
   activeBrand: Brand | null;
   designTokens: DesignTokens | null;
   imageModel: string;
+  historyLoaded: boolean;
+  historyLoading: boolean;
+  /** Mobile: chat composer vs layout matrix */
+  mobilePanel: "chat" | "layouts";
+  mobileSidebarOpen: boolean;
 
   toggleSidebar: () => void;
+  setMobilePanel: (panel: "chat" | "layouts") => void;
+  setMobileSidebarOpen: (open: boolean) => void;
   setTheme: (theme: "dark" | "light") => void;
   setPrompt: (prompt: string) => void;
   setSelectedLayouts: (layouts: LayoutId[]) => void;
@@ -74,20 +89,13 @@ interface WorkspaceState {
   setShowDesignDna: (show: boolean) => void;
   loadDesignMd: (content: string) => void;
   setActiveBrand: (brand: Brand | null) => void;
+  loadHistory: () => Promise<void>;
   newConversation: () => void;
-  selectConversation: (id: string) => void;
+  selectConversation: (id: string) => Promise<void>;
   generate: () => Promise<void>;
   remixVariant: (variantId: string) => Promise<void>;
   retryFailedVariant: (variantId: string) => Promise<void>;
 }
-
-const defaultBrand: Brand = {
-  id: "brand-porsche",
-  name: "Porsche",
-  industry: "Automotive / Luxury",
-  designMdRaw: SAMPLE_DESIGN_MD,
-  designTokens: parseDesignMd(SAMPLE_DESIGN_MD),
-};
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   sidebarExpanded: false,
@@ -108,9 +116,27 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   expandedVariantId: null,
   expandedMode: "view",
   showDesignDna: false,
-  activeBrand: defaultBrand,
-  designTokens: defaultBrand.designTokens ?? null,
+  activeBrand: null,
+  designTokens: null,
   imageModel: DEFAULT_IMAGE_MODEL,
+  historyLoaded: false,
+  historyLoading: false,
+  mobilePanel: "chat",
+  mobileSidebarOpen: false,
+
+  setMobilePanel: (panel) => set({ mobilePanel: panel }),
+  setMobileSidebarOpen: (open) => set({ mobileSidebarOpen: open }),
+
+  loadHistory: async () => {
+    if (get().historyLoading || get().historyLoaded) return;
+    set({ historyLoading: true });
+    try {
+      const conversations = await fetchConversationHistory();
+      set({ conversations, historyLoaded: true, historyLoading: false });
+    } catch {
+      set({ historyLoaded: true, historyLoading: false });
+    }
+  },
 
   toggleSidebar: () =>
     set((s) => ({ sidebarExpanded: !s.sidebarExpanded })),
@@ -199,36 +225,47 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }),
 
   newConversation: () => {
-    const id = uid();
-    const conv: Conversation = {
-      id,
-      title: "New generation",
-      messages: [],
-      variants: [],
-      createdAt: Date.now(),
-    };
     set({
-      activeConversationId: id,
-      conversations: [conv, ...get().conversations],
+      activeConversationId: null,
       prompt: "",
       variants: [],
       references: [],
       expandedVariantId: null,
+      generationError: null,
+      mobilePanel: "chat",
+      mobileSidebarOpen: false,
     });
   },
 
-  selectConversation: (id) => {
-    const conv = get().conversations.find((c) => c.id === id);
-    if (conv) {
+  selectConversation: async (id) => {
+    set({ activeConversationId: id, generationError: null, mobileSidebarOpen: false });
+
+    try {
+      const conversation = await fetchConversationById(id);
+      set((s) => ({
+        variants: conversation.variants,
+        prompt:
+          conversation.messages.find((m) => m.role === "user")?.content ??
+          conversation.title,
+        conversations: s.conversations.map((c) =>
+          c.id === id ? conversation : c
+        ),
+        mobilePanel:
+          conversation.variants.length > 0 ? "layouts" : "chat",
+      }));
+    } catch (err) {
       set({
-        activeConversationId: id,
-        variants: conv.variants,
-        prompt: conv.messages.find((m) => m.role === "user")?.content ?? "",
+        generationError:
+          err instanceof Error ? err.message : "Failed to load conversation",
       });
     }
   },
 
   generate: async () => {
+    const state = get();
+    if (state.isGenerating) return;
+    if (!state.prompt.trim()) return;
+
     const {
       prompt,
       selectedLayouts,
@@ -239,27 +276,40 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       references,
       designTokens,
       imageModel,
-      activeConversationId,
       conversations,
-    } = get();
+      activeConversationId,
+    } = state;
 
-    if (!prompt.trim()) return;
+    const existingConv = activeConversationId
+      ? conversations.find((c) => c.id === activeConversationId)
+      : null;
+    const continuing = Boolean(activeConversationId && existingConv);
 
-    set({ generationError: null });
+    let priorMessages = existingConv?.messages ?? [];
+    let priorVariantsFromFetch: LayoutVariant[] = [];
+    if (continuing && activeConversationId) {
+      const needsFull =
+        priorMessages.length === 0 ||
+        !(existingConv?.variants?.length ?? state.variants.length);
+      if (needsFull) {
+        try {
+          const full = await fetchConversationById(activeConversationId);
+          if (priorMessages.length === 0) priorMessages = full.messages;
+          priorVariantsFromFetch = full.variants;
+        } catch {
+          /* use local state */
+        }
+      }
+    }
+
+    set({ isGenerating: true, generationError: null, generationProgress: 0 });
 
     const userMsg: ChatMessage = {
-      id: uid(),
+      id: crypto.randomUUID(),
       role: "user",
       content: prompt,
       timestamp: Date.now(),
       referenceIds: references.map((r) => r.id),
-    };
-
-    const assistantMsg: ChatMessage = {
-      id: uid(),
-      role: "assistant",
-      content: `Generating ${selectedLayouts.length || 20} layout variations using ${style} style engine${get().activeBrand ? ` with ${get().activeBrand!.name} brand DNA` : ""}…`,
-      timestamp: Date.now(),
     };
 
     const layoutIds =
@@ -267,11 +317,101 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         ? selectedLayouts
         : (LAYOUT_SYSTEMS.map((l) => l.id) as LayoutId[]);
 
-    set({ isGenerating: true, generationProgress: 0, variants: [] });
+    const priorVariants = continuing
+      ? priorVariantsFromFetch.length > 0
+        ? priorVariantsFromFetch
+        : existingConv?.variants?.length
+          ? existingConv.variants
+          : state.activeConversationId === activeConversationId
+            ? state.variants.filter(
+                (v) =>
+                  v.status === "complete" ||
+                  v.status === "error" ||
+                  (v.imageUrl && v.status !== "pending")
+              )
+            : []
+      : [];
 
-    let variants: LayoutVariant[] = [];
+    const pendingVariants = buildPendingVariants({
+      prompt,
+      layoutIds,
+      style,
+      references,
+      designTokens: designTokens ?? undefined,
+    });
+
+    let conversationId: string;
+    let generationRound = 0;
+    let roundCreatedAt = Date.now();
+
     try {
-      variants = await generateLayoutVariants({
+      if (continuing && activeConversationId) {
+        const prepared = await prepareConversationForGeneration(
+          activeConversationId,
+          {
+            prompt,
+            style,
+            platform,
+            aspectRatio,
+            params,
+            imageModel,
+            selectedLayouts: layoutIds,
+            variants: pendingVariants,
+          }
+        );
+        conversationId = prepared.conversationId;
+        generationRound = prepared.generationRound;
+        roundCreatedAt = new Date(prepared.roundCreatedAt).getTime();
+      } else {
+        conversationId = await createConversationRecord({
+          prompt,
+          style,
+          platform,
+          aspectRatio,
+          params,
+          imageModel,
+          selectedLayouts: layoutIds,
+          variants: pendingVariants,
+        });
+      }
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Failed to save to history";
+      set({ isGenerating: false, generationError: message });
+      return;
+    }
+
+    const optimisticMessages = [...priorMessages, userMsg];
+
+    const pendingWithRound = pendingVariants.map((v, i) => ({
+      ...v,
+      generationRound,
+      createdAt: roundCreatedAt,
+      sortIndex: i,
+    }));
+
+    const allVariantsForUi = [...priorVariants, ...pendingWithRound];
+
+    set({
+      variants: allVariantsForUi,
+      activeConversationId: conversationId,
+      mobileSidebarOpen: false,
+      conversations: continuing
+        ? conversations.map((c) =>
+            c.id === conversationId
+              ? {
+                  ...c,
+                  messages: optimisticMessages,
+                  variants: allVariantsForUi,
+                }
+              : c
+          )
+        : conversations,
+    });
+
+    let newBatchVariants: LayoutVariant[] = [];
+    try {
+      newBatchVariants = await generateLayoutVariants({
         prompt,
         layoutIds,
         style,
@@ -281,68 +421,94 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         references,
         imageModel,
         designTokens: designTokens ?? undefined,
+        conversationId,
+        pendingVariants: pendingWithRound,
         onProgress: (progress, partial) => {
-          set({ generationProgress: progress, variants: partial });
+          set({
+            generationProgress: progress,
+            variants: [...priorVariants, ...partial],
+          });
         },
       });
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "Generation failed";
-      set({
-        isGenerating: false,
-        generationError: message,
-      });
+      try {
+        const refreshed = await fetchConversationById(conversationId);
+        set({
+          variants: refreshed.variants,
+          isGenerating: false,
+          generationError: message,
+        });
+      } catch {
+        set({
+          isGenerating: false,
+          generationError: message,
+        });
+      }
       return;
     }
 
-    const successCount = variants.filter((v) => v.status === "complete").length;
-    const errorCount = variants.filter((v) => v.status === "error").length;
+    let variants = [...priorVariants, ...newBatchVariants];
+    try {
+      const refreshed = await fetchConversationById(conversationId);
+      variants = refreshed.variants;
+    } catch {
+      /* keep merged local variants */
+    }
+
+    const successCount = newBatchVariants.filter(
+      (v) => v.status === "complete"
+    ).length;
+    const errorCount = newBatchVariants.filter((v) => v.status === "error").length;
 
     const finalAssistant: ChatMessage = {
-      id: uid(),
+      id: crypto.randomUUID(),
       role: "assistant",
       content:
         errorCount > 0
-          ? `Created ${successCount} images (${errorCount} failed — check OPENROUTER_API_KEY and credits). Open any card to expand or remix.`
-          : `Created ${successCount} layout images via OpenRouter. Each includes design rationale and platform recommendations. Open any card to edit, remix, or expand.`,
+          ? `Created ${successCount} images (${errorCount} failed). Open any card to retry, expand, or regenerate.`
+          : `Created ${successCount} layout images. Each includes design rationale and platform recommendations. Open any card to edit, regenerate, or expand.`,
       timestamp: Date.now(),
     };
 
-    const title =
-      prompt.length > 40 ? `${prompt.slice(0, 40)}…` : prompt;
+    const allMessages = [...priorMessages, userMsg, finalAssistant];
+    const title = continuing
+      ? existingConv!.title
+      : prompt.length > 40
+        ? `${prompt.slice(0, 40)}…`
+        : prompt;
 
-    let updatedConversations = [...conversations];
-    if (activeConversationId) {
-      updatedConversations = updatedConversations.map((c) =>
-        c.id === activeConversationId
-          ? {
-              ...c,
-              title,
-              messages: [...c.messages, userMsg, finalAssistant],
-              variants,
-            }
-          : c
-      );
-    } else {
-      const newId = uid();
-      updatedConversations = [
-        {
-          id: newId,
-          title,
-          messages: [userMsg, finalAssistant],
-          variants,
-          createdAt: Date.now(),
-        },
-        ...conversations,
-      ];
-      set({ activeConversationId: newId });
+    let savedConversation: Conversation | null = null;
+    try {
+      savedConversation = await finalizeConversation(conversationId, {
+        ...(continuing ? {} : { title }),
+        messages: allMessages,
+      });
+    } catch {
+      savedConversation = {
+        id: conversationId,
+        title,
+        messages: allMessages,
+        variants,
+        createdAt: existingConv?.createdAt ?? Date.now(),
+        starred: existingConv?.starred,
+      };
     }
 
+    const merged: Conversation = {
+      ...savedConversation,
+      variants,
+    };
+
+    const withoutDup = conversations.filter((c) => c.id !== conversationId);
     set({
       variants,
       isGenerating: false,
       generationProgress: 100,
-      conversations: updatedConversations,
+      conversations: [merged, ...withoutDup],
+      activeConversationId: conversationId,
+      mobilePanel: "layouts",
     });
   },
 
@@ -384,13 +550,24 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         imageModel: state.imageModel,
         designTokens: state.designTokens ?? undefined,
         existing: variant,
+        conversationId: state.activeConversationId ?? undefined,
       });
 
-      set((s) => ({
-        variants: s.variants.map((v) =>
+      set((s) => {
+        const nextVariants = s.variants.map((v) =>
           v.id === variantId ? updated : v
-        ),
-      }));
+        );
+        return {
+          variants: nextVariants,
+          conversations: s.activeConversationId
+            ? s.conversations.map((c) =>
+                c.id === s.activeConversationId
+                  ? { ...c, variants: nextVariants }
+                  : c
+              )
+            : s.conversations,
+        };
+      });
     } catch (err) {
       set((s) => ({
         variants: s.variants.map((v) =>

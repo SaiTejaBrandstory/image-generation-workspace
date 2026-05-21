@@ -1,12 +1,12 @@
 "use client";
 
-import { motion, AnimatePresence } from "framer-motion";
-import { LayoutGrid, Dna } from "lucide-react";
+import { motion } from "framer-motion";
+import { LayoutGrid } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useWorkspaceStore } from "@/store/workspace-store";
-import { LayoutCard } from "./layout-card";
-import { DesignDnaPanel } from "./design-dna-panel";
+import { LayoutMatrix } from "./layout-matrix";
 import { DownloadAllButton } from "./download-all-button";
+import { ThemeToggle } from "./theme-toggle";
 
 export function VisualPanel({ className }: { className?: string }) {
   const {
@@ -14,11 +14,10 @@ export function VisualPanel({ className }: { className?: string }) {
     isGenerating,
     generationProgress,
     generationError,
-    showDesignDna,
-    setShowDesignDna,
   } = useWorkspaceStore();
 
   const hasVariants = variants.length > 0;
+  const completeCount = variants.filter((v) => v.status === "complete").length;
 
   return (
     <div
@@ -27,12 +26,13 @@ export function VisualPanel({ className }: { className?: string }) {
         className
       )}
     >
-      <div className="flex items-center justify-between border-b border-border px-6 py-4 shrink-0">
-        <div className="flex items-center gap-2">
-          <LayoutGrid className="h-4 w-4 text-foreground-muted" />
-          <span className="text-sm font-medium">
+      {/* Desktop header */}
+      <div className="hidden shrink-0 items-center justify-between gap-2 border-b border-border px-6 py-4 lg:flex">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <LayoutGrid className="h-4 w-4 shrink-0 text-foreground-muted" />
+          <span className="truncate text-sm font-medium">
             {hasVariants
-              ? `${variants.filter((v) => v.status === "complete").length} / ${variants.length} layouts`
+              ? `${completeCount} / ${variants.length} layouts`
               : "Layout Matrix"}
           </span>
           {generationError && (
@@ -42,11 +42,11 @@ export function VisualPanel({ className }: { className?: string }) {
           )}
           {hasVariants && !generationError && (
             <span className="rounded-md bg-accent-cyan/10 px-2 py-0.5 text-[10px] text-accent-cyan">
-              OpenRouter
+              Generated
             </span>
           )}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex shrink-0 items-center gap-3">
           <DownloadAllButton variants={variants} />
           {isGenerating && (
             <div className="flex items-center gap-2">
@@ -61,40 +61,27 @@ export function VisualPanel({ className }: { className?: string }) {
               </span>
             </div>
           )}
-          <button
-            onClick={() => setShowDesignDna(!showDesignDna)}
-            className={`flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs transition-colors ${
-              showDesignDna
-                ? "bg-accent-violet/20 text-accent-violet"
-                : "text-foreground-muted hover:bg-surface-elevated"
-            }`}
-          >
-            <Dna className="h-3.5 w-3.5" />
-            Design DNA
-          </button>
+          <ThemeToggle />
         </div>
       </div>
 
-      <div className="flex flex-1 overflow-hidden">
-        <div className="flex-1 overflow-y-auto">
+      {generationError && (
+        <p className="shrink-0 border-b border-accent-orange/20 bg-accent-orange/5 px-3 py-2 text-xs text-accent-orange lg:hidden">
+          {generationError}
+        </p>
+      )}
+
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="layout-panel-scroll min-h-0 flex-1 overflow-y-auto overscroll-contain">
           {!hasVariants && !isGenerating ? (
             <EmptyState />
           ) : (
-            <div className="layout-matrix grid w-full min-w-0 grid-cols-2 gap-6 p-6 md:gap-8 md:p-8">
-              {hasVariants
-                ? variants.map((v, i) => (
-                    <LayoutCard key={v.id} variant={v} index={i} />
-                  ))
-                : Array.from({ length: 20 }).map((_, i) => (
-                    <SkeletonCard key={i} index={i} />
-                  ))}
-            </div>
+            <LayoutMatrix
+              variants={hasVariants ? variants : []}
+              skeletonCount={!hasVariants && isGenerating ? 20 : 0}
+            />
           )}
         </div>
-
-        <AnimatePresence>
-          {showDesignDna && <DesignDnaPanel />}
-        </AnimatePresence>
       </div>
     </div>
   );
@@ -102,39 +89,23 @@ export function VisualPanel({ className }: { className?: string }) {
 
 function EmptyState() {
   return (
-    <div className="flex h-full flex-col items-center justify-center px-8 text-center">
+    <div className="flex h-full min-h-[40dvh] flex-col items-center justify-center px-6 py-12 text-center lg:min-h-0 lg:px-8">
       <motion.div
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
-        className="max-w-sm space-y-6"
+        className="max-w-sm space-y-4"
       >
-        <div className="mx-auto flex h-24 w-24 items-center justify-center rounded-[32px] border border-border bg-surface-elevated">
-          <LayoutGrid className="h-10 w-10 text-foreground-muted/40" />
+        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl border border-border bg-surface-elevated lg:h-24 lg:w-24 lg:rounded-[32px]">
+          <LayoutGrid className="h-8 w-8 text-foreground-muted/40 lg:h-10 lg:w-10" />
         </div>
-        <p className="text-lg text-foreground-muted leading-relaxed">
-          Your creative layouts will appear here.
+        <p className="text-base text-foreground-muted leading-relaxed lg:text-lg">
+          Layouts appear here after you generate.
         </p>
         <p className="text-xs text-foreground-muted/60">
-          2 × 10 matrix · 20 layout systems · Reference-aware generation
+          Switch to Chat to write your prompt.
         </p>
       </motion.div>
     </div>
   );
 }
 
-function SkeletonCard({ index }: { index: number }) {
-  return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ delay: index * 0.02 }}
-      className="flex min-w-0 flex-col overflow-hidden rounded-[20px] border border-border"
-    >
-      <div className="h-[min(360px,45vh)] min-h-[240px] skeleton-shimmer" />
-      <div className="space-y-2 px-4 py-3.5">
-        <div className="h-3.5 w-2/3 rounded-md skeleton-shimmer" />
-        <div className="h-3 w-full rounded-md skeleton-shimmer" />
-      </div>
-    </motion.div>
-  );
-}
