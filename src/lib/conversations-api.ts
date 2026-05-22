@@ -137,3 +137,63 @@ export async function finalizeConversation(
   if (!res.ok) throw new Error(data.error ?? "Failed to save messages");
   return data.conversation as Conversation;
 }
+
+export async function patchConversationMeta(
+  id: string,
+  patch: {
+    title?: string;
+    starred?: boolean;
+    projectId?: string | null;
+  }
+): Promise<Conversation> {
+  const res = await fetch(`/api/conversations/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? "Failed to update conversation");
+  return (data.conversation ?? data) as Conversation;
+}
+
+export async function deleteConversation(id: string): Promise<void> {
+  const res = await fetch(`/api/conversations/${id}`, { method: "DELETE" });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? "Failed to delete conversation");
+}
+
+export async function prepareVariationsForParent(
+  conversationId: string,
+  parentVariantId: string,
+  variants: LayoutVariant[]
+): Promise<void> {
+  const res = await fetch(
+    `/api/conversations/${conversationId}/variations`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        parentVariantId,
+        variants: variants.map((v) => ({
+          id: v.id,
+          layoutId: v.layoutId,
+          parentVariantId: v.parentVariantId!,
+          variationIndex: v.variationIndex ?? 0,
+          userPrompt: v.userPrompt,
+          prompt: v.prompt,
+          rationale: v.rationale,
+          visualPsychology: v.visualPsychology,
+          bestUse: v.bestUse,
+          suggestedPlatform: v.suggestedPlatform,
+          principles: v.principles,
+          influenceBreakdown: v.influenceBreakdown,
+          status: v.status,
+          sortIndex: v.sortIndex ?? 0,
+          generationRound: v.generationRound ?? 0,
+        })),
+      }),
+    }
+  );
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? "Failed to save variations");
+}

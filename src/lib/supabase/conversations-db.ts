@@ -25,6 +25,7 @@ export interface DbConversationRow {
   params: GenerationParams;
   selected_layouts: LayoutId[];
   starred: boolean;
+  project_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -56,6 +57,9 @@ export interface DbVariantRow {
   error_message: string | null;
   sort_index: number;
   generation_round: number;
+  parent_variant_id: string | null;
+  variant_kind: string;
+  variation_index: number | null;
   created_at: string;
 }
 
@@ -84,6 +88,9 @@ export async function mapVariantRowToClient(
     generationRound: row.generation_round ?? 0,
     createdAt: new Date(row.created_at).getTime(),
     sortIndex: row.sort_index,
+    parentVariantId: row.parent_variant_id ?? undefined,
+    variantKind: (row.variant_kind as LayoutVariant["variantKind"]) ?? "layout",
+    variationIndex: row.variation_index ?? undefined,
   };
 }
 
@@ -105,7 +112,9 @@ export function mapConversationListRow(row: DbConversationRow): Conversation {
     messages: [],
     variants: [],
     createdAt: new Date(row.created_at).getTime(),
+    updatedAt: new Date(row.updated_at).getTime(),
     starred: row.starred,
+    projectId: row.project_id ?? null,
   };
 }
 
@@ -180,7 +189,58 @@ export async function fetchConversationDetail(
     variants: mappedVariants,
     createdAt: new Date(conv.created_at).getTime(),
     starred: conv.starred,
+    projectId: (conv as DbConversationRow).project_id ?? null,
   };
+}
+
+export async function updateConversationMeta(
+  supabase: SupabaseClient,
+  userId: string,
+  conversationId: string,
+  patch: {
+    title?: string;
+    starred?: boolean;
+    projectId?: string | null;
+  }
+): Promise<Conversation | null> {
+  const update: Record<string, unknown> = {
+    updated_at: new Date().toISOString(),
+  };
+  if (patch.title !== undefined) update.title = patch.title.trim();
+  if (patch.starred !== undefined) update.starred = patch.starred;
+  if (patch.projectId !== undefined) update.project_id = patch.projectId;
+
+  const { error } = await supabase
+    .from("conversations")
+    .update(update)
+    .eq("id", conversationId)
+    .eq("user_id", userId);
+
+  if (error) throw new Error(error.message);
+
+  const { data, error: fetchError } = await supabase
+    .from("conversations")
+    .select("*")
+    .eq("id", conversationId)
+    .eq("user_id", userId)
+    .single();
+
+  if (fetchError || !data) return null;
+  return mapConversationListRow(data as DbConversationRow);
+}
+
+export async function deleteConversation(
+  supabase: SupabaseClient,
+  userId: string,
+  conversationId: string
+): Promise<void> {
+  const { error } = await supabase
+    .from("conversations")
+    .delete()
+    .eq("id", conversationId)
+    .eq("user_id", userId);
+
+  if (error) throw new Error(error.message);
 }
 
 export async function listConversations(

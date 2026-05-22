@@ -9,12 +9,24 @@ import {
   fetchConversationHistory,
   finalizeConversation,
   prepareConversationForGeneration,
+  prepareVariationsForParent,
 } from "@/lib/conversations-api";
 import {
   buildPendingVariants,
   generateLayoutVariants,
   generateSingleVariant,
+  generateVariantVariations,
 } from "@/lib/generation-engine";
+import {
+  buildPendingVariations,
+  clampVariationBatch,
+  DEFAULT_VARIATION_BATCH,
+  getChildVariations,
+  getNextVariationStartIndex,
+  MAX_VARIATIONS,
+  remainingVariationSlots,
+  sourceImageToPreserveReference,
+} from "@/lib/variation-utils";
 import { DEFAULT_IMAGE_MODEL } from "@/lib/openrouter-models";
 import { LAYOUT_SYSTEMS } from "@/lib/layout-systems";
 import { uid } from "@/lib/utils";
@@ -29,8 +41,15 @@ import type {
   LayoutVariant,
   PlatformPreset,
   ReferenceImage,
+  ReferenceImagePayload,
+  ReferenceUsageMode,
   StyleEngine,
 } from "@/types";
+
+export interface ExpandedReturnTarget {
+  variantId: string;
+  mode: "view" | "edit";
+}
 
 interface WorkspaceState {
   sidebarExpanded: boolean;
@@ -46,10 +65,14 @@ interface WorkspaceState {
   references: ReferenceImage[];
   variants: LayoutVariant[];
   isGenerating: boolean;
+  generatingVariationsParentId: string | null;
+  /** How many variations to generate on the next batch (1–10) */
+  variationBatchSize: number;
   generationProgress: number;
   generationError: string | null;
   expandedVariantId: string | null;
   expandedMode: "view" | "edit";
+  expandedReturnTo: ExpandedReturnTarget | null;
   showDesignDna: boolean;
   activeBrand: Brand | null;
   designTokens: DesignTokens | null;
@@ -77,19 +100,35 @@ interface WorkspaceState {
     key: K,
     value: GenerationParams[K]
   ) => void;
-  addReference: (file: File) => void;
+  addReference: (file: File, usageMode?: ReferenceUsageMode) => void;
+  setReferencesUsageMode: (mode: ReferenceUsageMode) => void;
   removeReference: (id: string) => void;
   updateReference: (
     id: string,
-    patch: Partial<Pick<ReferenceImage, "role" | "influence" | "locked">>
+    patch: Partial<
+      Pick<ReferenceImage, "role" | "influence" | "locked" | "usageMode">
+    >
   ) => void;
   setExpandedVariant: (id: string | null, mode?: "view" | "edit") => void;
+  openExpandedWithVariations: (variantId: string) => void;
+  pushExpandedView: (
+    id: string,
+    mode: "view" | "edit",
+    returnTo: ExpandedReturnTarget
+  ) => void;
+  expandBack: () => void;
   openEditVariant: (id: string) => void;
   regenerateVariant: (variantId: string, customPrompt?: string) => Promise<void>;
+  setVariationBatchSize: (count: number) => void;
+  generateVariations: (parentVariantId: string) => Promise<void>;
   setShowDesignDna: (show: boolean) => void;
   loadDesignMd: (content: string) => void;
   setActiveBrand: (brand: Brand | null) => void;
   loadHistory: () => Promise<void>;
+  upsertConversationInList: (
+    patch: Partial<Conversation> & { id: string }
+  ) => void;
+  removeConversationFromList: (id: string) => void;
   newConversation: () => void;
   selectConversation: (id: string) => Promise<void>;
   generate: () => Promise<void>;
@@ -111,10 +150,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   references: [],
   variants: [],
   isGenerating: false,
+  generatingVariationsParentId: null,
+  variationBatchSize: DEFAULT_VARIATION_BATCH,
   generationProgress: 0,
   generationError: null,
   expandedVariantId: null,
   expandedMode: "view",
+  expandedReturnTo: null,
   showDesignDna: false,
   activeBrand: null,
   designTokens: null,
@@ -137,6 +179,33 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       set({ historyLoaded: true, historyLoading: false });
     }
   },
+
+  upsertConversationInList: (patch) =>
+    set((s) => {
+      const existing = s.conversations.find((c) => c.id === patch.id);
+      const merged: Conversation = {
+        id: patch.id,
+        title: patch.title ?? existing?.title ?? "Untitled",
+        messages: existing?.messages ?? [],
+        variants: existing?.variants ?? [],
+        createdAt: existing?.createdAt ?? Date.now(),
+        prompt: patch.prompt ?? existing?.prompt,
+        starred: patch.starred ?? existing?.starred,
+        projectId:
+          patch.projectId !== undefined
+            ? patch.projectId
+            : existing?.projectId,
+      };
+      const rest = s.conversations.filter((c) => c.id !== patch.id);
+      return { conversations: [merged, ...rest] };
+    }),
+
+  removeConversationFromList: (id) =>
+    set((s) => ({
+      conversations: s.conversations.filter((c) => c.id !== id),
+      activeConversationId:
+        s.activeConversationId === id ? null : s.activeConversationId,
+    })),
 
   toggleSidebar: () =>
     set((s) => ({ sidebarExpanded: !s.sidebarExpanded })),
@@ -170,18 +239,29 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   setParam: (key, value) =>
     set((s) => ({ params: { ...s.params, [key]: value } })),
 
-  addReference: (file) => {
+  addReference: (file, usageMode = "inspire") => {
     const url = URL.createObjectURL(file);
     const ref: ReferenceImage = {
       id: uid(),
       url,
       name: file.name,
       role: "style",
-      influence: 70,
-      locked: false,
+      influence: usageMode === "preserve" ? 100 : 70,
+      locked: usageMode === "preserve",
+      usageMode,
     };
     set((s) => ({ references: [...s.references, ref] }));
   },
+
+  setReferencesUsageMode: (mode) =>
+    set((s) => ({
+      references: s.references.map((r) => ({
+        ...r,
+        usageMode: mode,
+        locked: mode === "preserve",
+        influence: mode === "preserve" ? 100 : 70,
+      })),
+    })),
 
   removeReference: (id) => {
     const ref = get().references.find((r) => r.id === id);
@@ -202,10 +282,40 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     set({
       expandedVariantId: id,
       expandedMode: id ? mode : "view",
+      expandedReturnTo: null,
     }),
 
+  /** Opens expand for a layout; variations show inline when they exist */
+  openExpandedWithVariations: (variantId) =>
+    set({
+      expandedVariantId: variantId,
+      expandedMode: "view",
+      expandedReturnTo: null,
+    }),
+
+  pushExpandedView: (id, mode, returnTo) =>
+    set({
+      expandedVariantId: id,
+      expandedMode: mode,
+      expandedReturnTo: returnTo,
+    }),
+
+  expandBack: () => {
+    const ret = get().expandedReturnTo;
+    if (!ret) return;
+    set({
+      expandedVariantId: ret.variantId,
+      expandedMode: ret.mode,
+      expandedReturnTo: null,
+    });
+  },
+
   openEditVariant: (id) =>
-    set({ expandedVariantId: id, expandedMode: "edit" }),
+    set({
+      expandedVariantId: id,
+      expandedMode: "edit",
+      expandedReturnTo: { variantId: id, mode: "view" },
+    }),
   setShowDesignDna: (show) => set({ showDesignDna: show }),
 
   loadDesignMd: (content) => {
@@ -238,7 +348,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
 
   selectConversation: async (id) => {
-    set({ activeConversationId: id, generationError: null, mobileSidebarOpen: false });
+    set({
+      activeConversationId: id,
+      generationError: null,
+      mobileSidebarOpen: false,
+      mobilePanel: "chat",
+      expandedVariantId: null,
+      expandedMode: "view",
+    });
 
     try {
       const conversation = await fetchConversationById(id);
@@ -246,12 +363,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         variants: conversation.variants,
         prompt:
           conversation.messages.find((m) => m.role === "user")?.content ??
+          conversation.prompt ??
           conversation.title,
         conversations: s.conversations.map((c) =>
           c.id === id ? conversation : c
         ),
-        mobilePanel:
-          conversation.variants.length > 0 ? "layouts" : "chat",
+        mobilePanel: "chat",
       }));
     } catch (err) {
       set({
@@ -512,6 +629,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     });
   },
 
+  setVariationBatchSize: (count) =>
+    set({ variationBatchSize: clampVariationBatch(count) }),
+
   regenerateVariant: async (variantId, customPrompt) => {
     const state = get();
     const variant = state.variants.find((v) => v.id === variantId);
@@ -539,6 +659,18 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }));
 
     try {
+      let referenceOverrides: ReferenceImagePayload[] | undefined;
+      if (variant.parentVariantId) {
+        const parent = state.variants.find(
+          (v) => v.id === variant.parentVariantId
+        );
+        if (parent?.imageUrl) {
+          referenceOverrides = [
+            await sourceImageToPreserveReference(parent.imageUrl),
+          ];
+        }
+      }
+
       const updated = await generateSingleVariant({
         prompt: promptText,
         layoutId: variant.layoutId,
@@ -547,6 +679,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         aspectRatio: state.aspectRatio,
         params: state.params,
         references: state.references,
+        referenceOverrides,
         imageModel: state.imageModel,
         designTokens: state.designTokens ?? undefined,
         existing: variant,
@@ -587,5 +720,132 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   retryFailedVariant: async (variantId) => {
     await get().regenerateVariant(variantId);
+  },
+
+  generateVariations: async (parentVariantId) => {
+    const state = get();
+    const parent = state.variants.find((v) => v.id === parentVariantId);
+    if (!parent?.imageUrl || parent.status !== "complete") {
+      set({
+        generationError:
+          "Wait for this layout image to finish before creating variations.",
+      });
+      return;
+    }
+
+    const existing = getChildVariations(state.variants, parentVariantId);
+    const busy = existing.some(
+      (v) => v.status === "generating" || v.status === "pending"
+    );
+    if (busy) return;
+
+    const slotsLeft = remainingVariationSlots(existing);
+    if (slotsLeft <= 0) {
+      set({
+        generationError: `This layout already has the maximum of ${MAX_VARIATIONS} variations.`,
+      });
+      return;
+    }
+
+    const batchCount = Math.min(
+      clampVariationBatch(state.variationBatchSize),
+      slotsLeft
+    );
+    const startIndex = getNextVariationStartIndex(existing);
+
+    const conversationId = state.activeConversationId;
+    if (!conversationId) {
+      set({
+        generationError: "Save this generation to history before adding variations.",
+      });
+      return;
+    }
+
+    const pendingVariations = buildPendingVariations(
+      parent,
+      state.style,
+      batchCount,
+      startIndex
+    );
+    set({
+      generationError: null,
+      generatingVariationsParentId: parentVariantId,
+    });
+
+    try {
+      await prepareVariationsForParent(
+        conversationId,
+        parentVariantId,
+        pendingVariations
+      );
+    } catch (err) {
+      set({
+        generatingVariationsParentId: null,
+        generationError:
+          err instanceof Error ? err.message : "Failed to save variations",
+      });
+      return;
+    }
+
+    const withPending = [...state.variants, ...pendingVariations];
+    set({ variants: withPending });
+
+    try {
+      const completed = await generateVariantVariations({
+        parent,
+        pendingVariations,
+        style: state.style,
+        platform: state.platform,
+        aspectRatio: state.aspectRatio,
+        params: state.params,
+        imageModel: state.imageModel,
+        designTokens: state.designTokens ?? undefined,
+        conversationId,
+        onProgress: (partial) => {
+          set((s) => ({
+            variants: s.variants.map((v) => {
+              const updated = partial.find((p) => p.id === v.id);
+              return updated ?? v;
+            }),
+          }));
+        },
+      });
+
+      set((s) => {
+        const nextVariants = s.variants.map((v) => {
+          const updated = completed.find((c) => c.id === v.id);
+          return updated ?? v;
+        });
+        return {
+          variants: nextVariants,
+          generatingVariationsParentId: null,
+          conversations: s.activeConversationId
+            ? s.conversations.map((c) =>
+                c.id === s.activeConversationId
+                  ? { ...c, variants: nextVariants }
+                  : c
+              )
+            : s.conversations,
+        };
+      });
+
+      try {
+        const refreshed = await fetchConversationById(conversationId);
+        set((s) => ({
+          variants: refreshed.variants,
+          conversations: s.conversations.map((c) =>
+            c.id === conversationId ? { ...c, variants: refreshed.variants } : c
+          ),
+        }));
+      } catch {
+        /* keep local */
+      }
+    } catch (err) {
+      set({
+        generatingVariationsParentId: null,
+        generationError:
+          err instanceof Error ? err.message : "Variation generation failed",
+      });
+    }
   },
 }));

@@ -1,6 +1,8 @@
 @import "tailwindcss";
 
-:root {
+:root,
+html:not([data-theme="light"]) {
+  color-scheme: dark;
   --background: #0b0b0b;
   --foreground: #ffffff;
   --foreground-muted: #a3a3a3;
@@ -19,7 +21,9 @@
   --radius-xl: 32px;
 }
 
+html[data-theme="light"],
 [data-theme="light"] {
+  color-scheme: light;
   --background: #f5f5f5;
   --foreground: #0b0b0b;
   --foreground-muted: #525252;
@@ -165,6 +169,30 @@ body {
   gap: 20px;
 }
 
+.variations-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.variations-section-heading {
+  margin: 4px 0 0;
+  padding: 0 2px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--foreground-muted);
+}
+
+.variations-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  width: 100%;
+}
+
 @media (max-width: 1023px) {
   .layout-panel-scroll {
     padding-top: 16px;
@@ -180,6 +208,11 @@ body {
 
   .layout-matrix,
   .layout-matrix--in-round {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+
+  .variations-grid {
     grid-template-columns: 1fr;
     gap: 16px;
   }
@@ -200,6 +233,10 @@ body {
 
   .layout-matrix,
   .layout-matrix--in-round {
+    gap: 12px;
+  }
+
+  .variations-grid {
     gap: 12px;
   }
 

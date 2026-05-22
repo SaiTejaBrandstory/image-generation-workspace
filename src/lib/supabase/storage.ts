@@ -88,6 +88,28 @@ export async function uploadGenerationImage(options: {
   return { storagePath, signedUrl: signed.signedUrl };
 }
 
+/** Remove all generation images for a conversation folder. */
+export async function deleteConversationStorage(
+  userId: string,
+  conversationId: string
+): Promise<void> {
+  const admin = createAdminClient();
+  const prefix = `${userId}/${conversationId}`;
+  const { data: files, error: listError } = await admin.storage
+    .from(BUCKET)
+    .list(prefix);
+
+  if (listError) throw new Error(listError.message);
+  if (!files?.length) return;
+
+  const paths = files.map((f) => `${prefix}/${f.name}`);
+  const { error: removeError } = await admin.storage
+    .from(BUCKET)
+    .remove(paths);
+
+  if (removeError) throw new Error(removeError.message);
+}
+
 export async function getSignedImageUrl(
   storagePath: string
 ): Promise<string | null> {

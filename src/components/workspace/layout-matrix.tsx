@@ -1,6 +1,9 @@
 "use client";
 
-import { LayoutCard } from "./layout-card";
+import {
+  filterRootVariants,
+  LayoutCardGroup,
+} from "./layout-card-group";
 import {
   formatRoundLabel,
   groupVariantsByRound,
@@ -39,18 +42,19 @@ export function LayoutMatrix({ variants, skeletonCount = 0 }: LayoutMatrixProps)
           )}
           <RoundCaption
             label={formatRoundLabel(group.createdAt)}
-            count={group.variants.length}
+            count={filterRootVariants(group.variants).length}
             isLatest={groupIndex === groups.length - 1 && groups.length > 1}
             showLatestTag={groups.length > 1}
           />
           <div className="layout-matrix layout-matrix--in-round">
-            {group.variants.map((variant) => {
+            {filterRootVariants(group.variants).map((variant) => {
               const index = cardIndex++;
               return (
-                <LayoutCard
+                <LayoutCardGroup
                   key={variant.id}
                   variant={variant}
                   index={index}
+                  allVariants={variants}
                 />
               );
             })}

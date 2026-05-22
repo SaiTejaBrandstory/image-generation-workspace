@@ -92,13 +92,28 @@ function buildMessageContent(
     | { type: "image_url"; image_url: { url: string } }
   > = [{ type: "text", text: textPrompt }];
 
-  for (const ref of references.slice(0, 4)) {
-    if (ref.dataUrl) {
+  const ordered = [
+    ...references.filter((r) => r.usageMode === "preserve"),
+    ...references.filter((r) => r.usageMode !== "preserve"),
+  ].slice(0, 4);
+
+  for (const ref of ordered) {
+    if (!ref.dataUrl) continue;
+    if (ref.usageMode === "preserve") {
       parts.push({
-        type: "image_url",
-        image_url: { url: ref.dataUrl },
+        type: "text",
+        text: "PRESERVE — include this exact asset in the output without altering the subject:",
+      });
+    } else {
+      parts.push({
+        type: "text",
+        text: "INSPIRE — use for visual direction only:",
       });
     }
+    parts.push({
+      type: "image_url",
+      image_url: { url: ref.dataUrl },
+    });
   }
 
   return parts;

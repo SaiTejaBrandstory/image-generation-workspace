@@ -10,7 +10,7 @@ interface GeneratedImageProps {
   className?: string;
 }
 
-/** Shows the full image without cropping (letterboxed if needed). */
+/** Card fills the preview frame; expanded shows the full image without cropping. */
 export function GeneratedImage({
   src,
   alt,
@@ -29,7 +29,7 @@ export function GeneratedImage({
         <img
           src={src}
           alt={alt}
-          className="max-h-[calc(100dvh-8rem)] max-w-[min(100%,calc(100vw-2rem))] w-auto h-auto object-contain rounded-[24px] shadow-cinematic lg:max-h-[calc(100vh-6rem)] lg:max-w-[min(100%,calc(100vw-28rem))]"
+          className="max-h-[calc(100dvh-8rem)] max-w-[min(100%,calc(100vw-2rem))] h-auto w-auto rounded-[24px] object-contain shadow-cinematic lg:max-h-[calc(100vh-6rem)] lg:max-w-[min(100%,calc(100vw-28rem))]"
         />
       </div>
     );
@@ -38,7 +38,7 @@ export function GeneratedImage({
   return (
     <div
       className={cn(
-        "flex h-full w-full min-h-0 items-center justify-center bg-black/30",
+        "h-full w-full min-h-0 overflow-hidden",
         className
       )}
     >
@@ -46,7 +46,7 @@ export function GeneratedImage({
       <img
         src={src}
         alt={alt}
-        className="max-h-full max-w-full object-contain"
+        className="h-full w-full object-cover object-center"
       />
     </div>
   );

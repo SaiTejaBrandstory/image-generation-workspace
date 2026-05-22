@@ -22,6 +22,7 @@ export async function serializeReferences(
         role: ref.role,
         influence: ref.influence,
         dataUrl,
+        usageMode: ref.usageMode ?? "inspire",
       });
     } catch {
       // skip unreadable refs

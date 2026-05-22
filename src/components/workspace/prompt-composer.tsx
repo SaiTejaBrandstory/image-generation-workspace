@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
+import type { ReferenceUsageMode } from "@/types";
 import { motion } from "framer-motion";
 import { Loader2, Plus, Sparkles, SlidersHorizontal } from "lucide-react";
 import {
@@ -13,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
 import { Slider } from "@/components/ui/slider";
 import { ReferenceChips } from "./reference-chips";
+import { ReferenceModeDialog } from "./reference-mode-dialog";
 import { LayoutSelector } from "./layout-selector";
 import { ModelSelector } from "./model-selector";
 import { getModelConfig } from "@/lib/openrouter-models";
@@ -93,8 +95,12 @@ function AspectPlatformStyleSelects({ mobile }: { mobile?: boolean }) {
 export function PromptComposer() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showOptions, setShowOptions] = useState(false);
+  const [pendingPreviewUrls, setPendingPreviewUrls] = useState<string[]>([]);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
   const dropRef = useRef<HTMLDivElement>(null);
+  const previewUrlsRef = useRef<string[]>([]);
+  const modeDialogOpenRef = useRef(false);
 
   const {
     prompt,
@@ -121,39 +127,91 @@ export function PromptComposer() {
   const generateTooltip = isGenerating
     ? "Generation in progress…"
     : !prompt.trim()
-      ? "Enter a prompt to generate layouts"
-      : "Generate all selected layouts";
+      ? "Enter a prompt to generate creatives"
+      : "Generate all selected creatives";
 
-  const handleFiles = useCallback(
-    (files: FileList | null) => {
-      if (!files) return;
-      Array.from(files).forEach((f) => {
-        if (f.type.startsWith("image/")) addReference(f);
-      });
+  const clearPendingBatch = useCallback(() => {
+    for (const url of previewUrlsRef.current) {
+      URL.revokeObjectURL(url);
+    }
+    previewUrlsRef.current = [];
+    setPendingPreviewUrls([]);
+    setPendingFiles([]);
+    modeDialogOpenRef.current = false;
+  }, []);
+
+  const openPendingBatch = useCallback(
+    (files: File[]) => {
+      if (files.length === 0) return;
+      clearPendingBatch();
+      modeDialogOpenRef.current = true;
+      previewUrlsRef.current = files.map((f) => URL.createObjectURL(f));
+      setPendingPreviewUrls([...previewUrlsRef.current]);
+      setPendingFiles(files);
     },
-    [addReference]
+    [clearPendingBatch]
   );
+
+  const enqueueImageFiles = useCallback(
+    (files: FileList | File[] | null) => {
+      if (!files) return;
+      const images = Array.from(files).filter((f) =>
+        f.type.startsWith("image/")
+      );
+      if (images.length === 0) return;
+
+      const sessionMode = references[0]?.usageMode;
+      if (references.length > 0 && sessionMode) {
+        for (const file of images) addReference(file, sessionMode);
+        return;
+      }
+
+      if (modeDialogOpenRef.current) {
+        openPendingBatch([...pendingFiles, ...images]);
+        return;
+      }
+
+      openPendingBatch(images);
+    },
+    [references, addReference, pendingFiles, openPendingBatch]
+  );
+
+  const handleModeSelect = useCallback(
+    (mode: ReferenceUsageMode) => {
+      for (const file of pendingFiles) addReference(file, mode);
+      clearPendingBatch();
+    },
+    [addReference, pendingFiles, clearPendingBatch]
+  );
+
+  const handleModeCancel = useCallback(() => {
+    clearPendingBatch();
+  }, [clearPendingBatch]);
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
-      handleFiles(e.dataTransfer.files);
+      enqueueImageFiles(e.dataTransfer.files);
     },
-    [handleFiles]
+    [enqueueImageFiles]
   );
 
   const onPaste = useCallback(
     (e: React.ClipboardEvent) => {
       const items = e.clipboardData.items;
+      const pasted: File[] = [];
       for (const item of items) {
         if (item.type.startsWith("image/")) {
           const file = item.getAsFile();
-          if (file) addReference(file);
+          if (file) pasted.push(file);
         }
       }
+      if (pasted.length > 0) enqueueImageFiles(pasted);
     },
-    [addReference]
+    [enqueueImageFiles]
   );
+
+  const referenceMode = references[0]?.usageMode;
 
   return (
     <div
@@ -163,6 +221,14 @@ export function PromptComposer() {
       className="shrink-0 border-t border-border bg-background/95 px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur-xl sm:px-4 sm:pt-3 lg:pb-4"
     >
       <div className="mx-auto w-full max-w-3xl lg:pb-0">
+        <ReferenceModeDialog
+          open={pendingFiles.length > 0}
+          previewUrls={pendingPreviewUrls}
+          fileCount={pendingFiles.length}
+          onSelect={handleModeSelect}
+          onCancel={handleModeCancel}
+        />
+
         <ReferenceChips />
 
         <motion.div
@@ -173,15 +239,19 @@ export function PromptComposer() {
             <p
               className={cn(
                 "border-b border-border/60 px-4 py-2 text-[11px]",
-                usesVisionRefs ? "text-accent-cyan" : "text-accent-orange"
+                usesVisionRefs ? "text-foreground-muted" : "text-accent-orange"
               )}
             >
-              {references.length} reference
-              {references.length > 1 ? "s" : ""} — used on every layout you generate
-              {references.length > 4 ? " (max 4 sent per request)" : ""}
-              {usesVisionRefs
-                ? ""
-                : " · refs described in text only for this model"}
+              {references.length} image{references.length > 1 ? "s" : ""} attached
+              {referenceMode === "preserve"
+                ? " · preserve (exact assets)"
+                : referenceMode
+                  ? " · inspire (visual direction)"
+                  : ""}
+              {references.length > 4 ? " (max 4 per request)" : ""}
+              {!usesVisionRefs
+                ? " · this model uses text-only direction"
+                : ""}
             </p>
           )}
 
@@ -218,7 +288,7 @@ export function PromptComposer() {
             multiple
             className="hidden"
             onChange={(e) => {
-              handleFiles(e.target.files);
+              enqueueImageFiles(e.target.files);
               e.target.value = "";
             }}
           />
@@ -323,7 +393,7 @@ export function PromptComposer() {
                   ) : (
                     <Sparkles className="h-3.5 w-3.5" />
                   )}
-                  {isGenerating ? "Generating…" : "Generate layouts"}
+                  {isGenerating ? "Generating…" : "Generate creatives"}
                 </Button>
               </span>
             </Tooltip>
@@ -331,7 +401,7 @@ export function PromptComposer() {
         </motion.div>
 
         <p className="mt-2 text-center text-[10px] text-foreground-muted/70">
-          Drop or paste reference images · + adds a visual reference for generation
+          Drop or paste images · one Inspire or Preserve mode for all uploads
         </p>
       </div>
     </div>

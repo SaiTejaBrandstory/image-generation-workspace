@@ -1,6 +1,7 @@
 import { LAYOUT_SYSTEMS } from "@/lib/layout-systems";
 import { augmentPrompt, recommendLayouts } from "@/lib/design-md-parser";
 import { runWithConcurrency, serializeReferences } from "@/lib/reference-utils";
+import { sourceImageToPreserveReference } from "@/lib/variation-utils";
 import type {
   AspectRatio,
   DesignTokens,
@@ -9,6 +10,7 @@ import type {
   LayoutVariant,
   PlatformPreset,
   ReferenceImage,
+  ReferenceImagePayload,
   StyleEngine,
 } from "@/types";
 
@@ -61,8 +63,12 @@ function suggestPlatform(prompt: string): string {
 function buildInfluenceBreakdown(refs: ReferenceImage[]): Record<string, number> | undefined {
   if (refs.length === 0) return undefined;
   const breakdown: Record<string, number> = {};
-  refs.slice(0, 4).forEach((_, i) => {
-    breakdown[`Reference ${i + 1}`] = Math.round(100 / Math.min(refs.length, 4));
+  refs.slice(0, 4).forEach((ref, i) => {
+    const label =
+      ref.usageMode === "preserve"
+        ? `Preserve ${i + 1}`
+        : `Inspire ${i + 1}`;
+    breakdown[label] = Math.round(100 / Math.min(refs.length, 4));
   });
   return breakdown;
 }
@@ -95,10 +101,13 @@ async function generateOneImage(options: {
   imageModel: string;
   designTokens?: DesignTokens;
   references: ReferenceImage[];
+  referenceOverrides?: ReferenceImagePayload[];
   conversationId?: string;
   variant?: LayoutVariant;
 }): Promise<string> {
-  const serializedRefs = await serializeReferences(options.references);
+  const serializedRefs =
+    options.referenceOverrides ??
+    (await serializeReferences(options.references));
 
   const res = await fetch("/api/generate/image", {
     method: "POST",
@@ -279,11 +288,18 @@ export async function generateSingleVariant(options: {
   aspectRatio: AspectRatio;
   params: GenerationParams;
   references: ReferenceImage[];
+  referenceOverrides?: ReferenceImagePayload[];
   imageModel: string;
   designTokens?: DesignTokens;
   existing: LayoutVariant;
   conversationId?: string;
 }): Promise<LayoutVariant> {
+  const layoutName =
+    LAYOUT_SYSTEMS.find((l) => l.id === options.layoutId)?.name ?? "layout";
+  const isVariation =
+    options.existing.variantKind === "variation" ||
+    Boolean(options.existing.parentVariantId);
+
   const imageUrl = await generateOneImageWithRetry({
     userPrompt: options.prompt,
     layoutId: options.layoutId,
@@ -294,6 +310,7 @@ export async function generateSingleVariant(options: {
     imageModel: options.imageModel,
     designTokens: options.designTokens,
     references: options.references,
+    referenceOverrides: options.referenceOverrides,
     conversationId: options.conversationId,
     variant: options.existing,
   });
@@ -303,6 +320,11 @@ export async function generateSingleVariant(options: {
     options.designTokens
   );
 
+  const variationLabel =
+    isVariation && options.existing.variationIndex != null
+      ? `Variation ${options.existing.variationIndex + 1}`
+      : null;
+
   return {
     ...options.existing,
     id: options.existing.id,
@@ -310,8 +332,77 @@ export async function generateSingleVariant(options: {
     prompt: augmented,
     imageUrl,
     status: "complete",
-    rationale: `Regenerated with ${options.style} style — same ${LAYOUT_SYSTEMS.find((l) => l.id === options.layoutId)?.name ?? "layout"} system, updated visual execution.`,
+    rationale: variationLabel
+      ? `${variationLabel} regenerated with ${options.style} style — only this alternate was updated.`
+      : `Regenerated with ${options.style} style — same ${layoutName} system, updated visual execution.`,
   };
+}
+
+export async function generateVariantVariations(options: {
+  parent: LayoutVariant;
+  pendingVariations: LayoutVariant[];
+  style: StyleEngine;
+  platform: PlatformPreset;
+  aspectRatio: AspectRatio;
+  params: GenerationParams;
+  imageModel: string;
+  designTokens?: DesignTokens;
+  conversationId: string;
+  onProgress?: (variations: LayoutVariant[]) => void;
+}): Promise<LayoutVariant[]> {
+  if (!options.parent.imageUrl) {
+    throw new Error("Parent image is required to create variations.");
+  }
+
+  const sourceRef = await sourceImageToPreserveReference(
+    options.parent.imageUrl
+  );
+  const variations: LayoutVariant[] = options.pendingVariations.map((v) => ({
+    ...v,
+    status: "generating" as const,
+  }));
+
+  options.onProgress?.([...variations]);
+
+  await runWithConcurrency(
+    variations,
+    2,
+    async (variant, index) => {
+      const promptText = variant.userPrompt?.trim() ?? "";
+      try {
+        const imageUrl = await generateOneImageWithRetry({
+          userPrompt: promptText,
+          layoutId: variant.layoutId,
+          style: options.style,
+          platform: options.platform,
+          aspectRatio: options.aspectRatio,
+          params: options.params,
+          imageModel: options.imageModel,
+          designTokens: options.designTokens,
+          references: [],
+          referenceOverrides: [sourceRef],
+          conversationId: options.conversationId,
+          variant,
+        });
+
+        variations[index] = {
+          ...variant,
+          imageUrl,
+          status: "complete",
+        };
+      } catch (err) {
+        variations[index] = {
+          ...variant,
+          status: "error",
+          errorMessage:
+            err instanceof Error ? err.message : "Variation failed",
+        };
+      }
+      options.onProgress?.([...variations]);
+    }
+  );
+
+  return variations;
 }
 
 export { recommendLayouts };

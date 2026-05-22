@@ -4,8 +4,6 @@ import { motion } from "framer-motion";
 import { useState } from "react";
 import {
   Expand,
-  Pencil,
-  RefreshCw,
   AlertCircle,
   Loader2,
   Download,
@@ -20,6 +18,11 @@ import type { LayoutVariant } from "@/types";
 interface LayoutCardProps {
   variant: LayoutVariant;
   index: number;
+  /** Parent only — e.g. "3 variations available" */
+  variationLabel?: string;
+  onVariationLabelClick?: () => void;
+  titleOverride?: string;
+  descriptionOverride?: string;
 }
 
 function isRealImage(url?: string) {
@@ -31,15 +34,16 @@ function isRealImage(url?: string) {
   );
 }
 
-export function LayoutCard({ variant, index }: LayoutCardProps) {
+export function LayoutCard({
+  variant,
+  index,
+  variationLabel,
+  onVariationLabelClick,
+  titleOverride,
+  descriptionOverride,
+}: LayoutCardProps) {
   const layout = LAYOUT_MAP[variant.layoutId];
-  const {
-    setExpandedVariant,
-    openEditVariant,
-    remixVariant,
-    retryFailedVariant,
-    isGenerating,
-  } = useWorkspaceStore();
+  const { setExpandedVariant, retryFailedVariant } = useWorkspaceStore();
 
   const isLoading =
     variant.status === "pending" || variant.status === "generating";
@@ -89,12 +93,12 @@ export function LayoutCard({ variant, index }: LayoutCardProps) {
             <Loader2 className="h-8 w-8 animate-spin text-accent-violet" />
           </div>
         ) : hasImage && variant.imageUrl ? (
-          <div className="relative layout-card-preview">
+          <div className="relative layout-card-preview overflow-hidden">
             <GeneratedImage
               src={variant.imageUrl}
               alt={`${layout?.name} layout`}
               variant="card"
-              className="h-full min-h-0"
+              className="absolute inset-0"
             />
             <button
               type="button"
@@ -108,6 +112,17 @@ export function LayoutCard({ variant, index }: LayoutCardProps) {
               ) : (
                 <Download className="h-4 w-4" />
               )}
+            </button>
+            <button
+              type="button"
+              onClick={handleAction(() =>
+                setExpandedVariant(variant.id, "view")
+              )}
+              title="Expand to view, regenerate, or edit"
+              className="absolute bottom-2 right-2 z-20 flex items-center gap-1 rounded-lg bg-black/60 px-2.5 py-1.5 text-[11px] font-medium text-white backdrop-blur-md transition-colors hover:bg-black/80"
+            >
+              <Expand className="h-3.5 w-3.5 shrink-0" />
+              Expand
             </button>
           </div>
         ) : (
@@ -134,52 +149,19 @@ export function LayoutCard({ variant, index }: LayoutCardProps) {
             )}
           </div>
         )}
-
-        {/* Always-visible actions — works on touch and desktop */}
-        {!isLoading && (
-          <div className="absolute inset-x-0 bottom-0 z-10 flex gap-1.5 border-t border-white/10 bg-black/55 p-2 backdrop-blur-md">
-            <button
-              type="button"
-              onClick={handleAction(() => setExpandedVariant(variant.id, "view"))}
-              className="flex flex-1 items-center justify-center gap-1 rounded-lg bg-white/10 px-2 py-2 text-[11px] font-medium text-white hover:bg-white/20"
-            >
-              <Expand className="h-3 w-3 shrink-0" />
-              Expand
-            </button>
-            <button
-              type="button"
-              onClick={handleAction(() => remixVariant(variant.id))}
-              disabled={variant.status === "generating" || isGenerating}
-              title="Regenerate this layout using the current composer prompt"
-              className="flex flex-1 items-center justify-center gap-1 rounded-lg bg-white/10 px-2 py-2 text-[11px] font-medium text-white hover:bg-white/20 disabled:opacity-50"
-            >
-              <RefreshCw className="h-3 w-3 shrink-0" />
-              Regenerate
-            </button>
-            <button
-              type="button"
-              onClick={handleAction(() => openEditVariant(variant.id))}
-              title="Edit prompt and regenerate this layout only"
-              className="flex flex-1 items-center justify-center gap-1 rounded-lg bg-white/10 px-2 py-2 text-[11px] font-medium text-white hover:bg-white/20"
-            >
-              <Pencil className="h-3 w-3 shrink-0" />
-              Edit
-            </button>
-          </div>
-        )}
       </div>
 
       <div className="flex min-h-0 flex-col gap-3 border-t border-border/80 bg-surface px-4 py-3.5">
         <div className="space-y-1.5">
           <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
-            {layout?.name ?? variant.layoutId}
+            {titleOverride ?? layout?.name ?? variant.layoutId}
           </h3>
           <p className="line-clamp-2 text-xs leading-relaxed text-foreground-muted">
-            {layout?.description}
+            {descriptionOverride ?? layout?.description}
           </p>
         </div>
         {!isLoading && (
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <span
               className={cn(
                 "inline-flex max-w-full truncate rounded-lg px-2.5 py-1 text-[10px] font-medium",
@@ -190,6 +172,20 @@ export function LayoutCard({ variant, index }: LayoutCardProps) {
             >
               {isError ? "Failed" : variant.suggestedPlatform}
             </span>
+            {variationLabel &&
+              (onVariationLabelClick ? (
+                <button
+                  type="button"
+                  onClick={handleAction(onVariationLabelClick)}
+                  className="shrink-0 cursor-pointer text-[11px] font-medium text-accent-violet transition-colors hover:text-accent-violet/80 hover:underline"
+                >
+                  {variationLabel}
+                </button>
+              ) : (
+                <span className="shrink-0 text-[11px] font-medium text-accent-violet">
+                  {variationLabel}
+                </span>
+              ))}
           </div>
         )}
       </div>

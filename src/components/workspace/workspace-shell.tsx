@@ -18,14 +18,11 @@ interface WorkspaceShellProps {
 }
 
 export function WorkspaceShell({ user }: WorkspaceShellProps) {
-  const { expandedVariantId, theme, mobilePanel } = useWorkspaceStore();
+  const { expandedVariantId, mobilePanel } = useWorkspaceStore();
 
   return (
     <TooltipProvider>
-      <div
-        data-theme={theme}
-        className="flex h-dvh w-full overflow-hidden bg-background text-foreground lg:flex-row"
-      >
+      <div className="flex h-dvh w-full overflow-hidden bg-background text-foreground lg:flex-row">
         <HistoryLoader />
         <Sidebar user={user} />
 

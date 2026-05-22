@@ -70,6 +70,9 @@ export interface LayoutSystem {
   gradient: string;
 }
 
+/** How uploaded images are used in generation */
+export type ReferenceUsageMode = "inspire" | "preserve";
+
 export interface ReferenceImage {
   id: string;
   url: string;
@@ -77,6 +80,8 @@ export interface ReferenceImage {
   role: ImageRole;
   influence: number;
   locked: boolean;
+  /** inspire = visual direction; preserve = exact asset in output */
+  usageMode: ReferenceUsageMode;
 }
 
 /** Serialized reference sent to the API (base64 data URL) */
@@ -84,6 +89,7 @@ export interface ReferenceImagePayload {
   role: ImageRole;
   influence: number;
   dataUrl: string;
+  usageMode: ReferenceUsageMode;
 }
 
 export interface GenerationParams {
@@ -117,6 +123,11 @@ export interface LayoutVariant {
   /** When this batch was started (ms epoch) */
   createdAt?: number;
   sortIndex?: number;
+  /** Parent layout variant when this row is a variation */
+  parentVariantId?: string;
+  variantKind?: "layout" | "variation";
+  /** 0–9 index under a parent (up to 10 variations) */
+  variationIndex?: number;
 }
 
 export interface ChatMessage {
@@ -128,6 +139,15 @@ export interface ChatMessage {
   generationId?: string;
 }
 
+export interface Project {
+  id: string;
+  name: string;
+  description?: string | null;
+  createdAt: number;
+  updatedAt: number;
+  conversationCount?: number;
+}
+
 export interface Conversation {
   id: string;
   title: string;
@@ -136,7 +156,9 @@ export interface Conversation {
   messages: ChatMessage[];
   variants: LayoutVariant[];
   createdAt: number;
+  updatedAt?: number;
   starred?: boolean;
+  projectId?: string | null;
 }
 
 export interface DesignTokens {

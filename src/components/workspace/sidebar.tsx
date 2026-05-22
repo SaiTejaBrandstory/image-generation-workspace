@@ -1,14 +1,24 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Search, Sparkles, X } from "lucide-react";
+import {
+  FolderKanban,
+  PanelLeftClose,
+  Plus,
+  Search,
+  Sparkles,
+  X,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { fetchConversationHistory } from "@/lib/conversations-api";
 import { useIsDesktop } from "@/lib/use-media-query";
 import { useWorkspaceStore } from "@/store/workspace-store";
 import { Tooltip, TooltipProvider } from "@/components/ui/tooltip";
 import { UserMenu } from "@/components/auth/user-menu";
+import { HistoryListItem } from "@/components/workspace/history-list-item";
 import type { AuthUser } from "@/types/auth";
 import type { Conversation } from "@/types";
 
@@ -17,6 +27,8 @@ interface SidebarProps {
 }
 
 export function Sidebar({ user }: SidebarProps) {
+  const pathname = usePathname();
+  const isProjectsPage = pathname.startsWith("/projects");
   const isDesktop = useIsDesktop();
   const {
     sidebarExpanded,
@@ -38,6 +50,15 @@ export function Sidebar({ user }: SidebarProps) {
 
   const isSearching = historySearch.trim().length > 0;
   const displayed = isSearching ? (searchResults ?? []) : conversations;
+  const { starredItems, historyItems } = useMemo(() => {
+    if (isSearching) {
+      return { starredItems: [] as Conversation[], historyItems: displayed };
+    }
+    return {
+      starredItems: displayed.filter((c) => c.starred),
+      historyItems: displayed.filter((c) => !c.starred),
+    };
+  }, [displayed, isSearching]);
   const showExpanded = isDesktop ? sidebarExpanded : true;
 
   useEffect(() => {
@@ -118,28 +139,99 @@ export function Sidebar({ user }: SidebarProps) {
               </button>
             </div>
           )}
-          <button
-            onClick={() => {
-              if (isDesktop) toggleSidebar();
-            }}
-            className="flex h-11 w-full items-center gap-3 rounded-2xl px-3 text-foreground hover:bg-surface-elevated transition-colors"
+          <div
+            className={cn(
+              "flex h-11 w-full items-center rounded-2xl text-foreground",
+              showExpanded ? "gap-2 px-2" : "justify-center"
+            )}
           >
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-accent-violet to-accent-blue">
-              <Sparkles className="h-4 w-4 text-white" />
-            </div>
+            <Tooltip
+              content={
+                isDesktop
+                  ? sidebarExpanded
+                    ? "Collapse sidebar"
+                    : "Expand sidebar"
+                  : "Home"
+              }
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  if (isDesktop) {
+                    toggleSidebar();
+                  } else {
+                    setMobileSidebarOpen(false);
+                  }
+                }}
+                aria-label={
+                  isDesktop
+                    ? sidebarExpanded
+                      ? "Collapse sidebar"
+                      : "Expand sidebar"
+                    : "Close menu"
+                }
+                className={cn(
+                  "flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-accent-violet to-accent-blue transition-opacity hover:opacity-90",
+                  !isDesktop && "hover:bg-surface-elevated"
+                )}
+              >
+                <Sparkles className="h-4 w-4 text-white" />
+              </button>
+            </Tooltip>
+
             <AnimatePresence>
               {showExpanded && (
-                <motion.span
+                <motion.div
                   initial={{ opacity: 0, x: -8 }}
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0 }}
-                  className="text-sm font-semibold tracking-tight"
+                  className="flex min-w-0 flex-1 items-center gap-1"
                 >
-                  Brandwise
-                </motion.span>
+                  <Link
+                    href="/"
+                    onClick={() => {
+                      if (!isDesktop) setMobileSidebarOpen(false);
+                    }}
+                    className="min-w-0 flex-1 truncate rounded-lg px-1 py-1 text-sm font-semibold tracking-tight hover:bg-surface-elevated transition-colors"
+                  >
+                    Brandwise
+                  </Link>
+                  {isDesktop && (
+                    <Tooltip content="Collapse sidebar">
+                      <button
+                        type="button"
+                        onClick={toggleSidebar}
+                        aria-label="Collapse sidebar"
+                        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-foreground-muted hover:bg-surface-elevated hover:text-foreground transition-colors"
+                      >
+                        <PanelLeftClose className="h-4 w-4" />
+                      </button>
+                    </Tooltip>
+                  )}
+                </motion.div>
               )}
             </AnimatePresence>
-          </button>
+
+          </div>
+
+          <Tooltip content="Projects">
+            <Link
+              href="/projects"
+              onClick={() => {
+                if (!isDesktop) setMobileSidebarOpen(false);
+              }}
+              className={cn(
+                "flex h-10 w-full items-center gap-3 rounded-xl transition-colors",
+                showExpanded ? "px-3" : "justify-center",
+                isProjectsPage
+                  ? "bg-accent-violet/10 text-foreground ring-1 ring-inset ring-accent-violet/25"
+                  : "text-foreground-muted hover:bg-surface-elevated hover:text-foreground"
+              )}
+            >
+              <FolderKanban className="h-4 w-4 shrink-0" />
+              {showExpanded && <span className="text-sm">Projects</span>}
+            </Link>
+          </Tooltip>
 
           <Tooltip content="New generation">
             <button
@@ -192,11 +284,6 @@ export function Sidebar({ user }: SidebarProps) {
         </div>
 
         <div className="flex-1 overflow-y-auto px-2 py-2">
-          {showExpanded && (
-            <p className="px-2 pb-2 text-[10px] font-medium uppercase tracking-widest text-foreground-muted">
-              {isSearching ? "Results" : "History"}
-            </p>
-          )}
           <div className="space-y-0.5">
             {showExpanded && searching && (
               <p className="px-3 py-2 text-xs text-foreground-muted">
@@ -208,9 +295,7 @@ export function Sidebar({ user }: SidebarProps) {
               !historyLoading &&
               displayed.length === 0 && (
                 <p className="px-3 py-2 text-xs text-foreground-muted">
-                  {isSearching
-                    ? "No matches for your search."
-                    : "No generations yet. Create one to see it here."}
+                  No generations yet. Create one to see it here.
                 </p>
               )}
             {historyLoading && !isSearching && showExpanded && (
@@ -218,40 +303,71 @@ export function Sidebar({ user }: SidebarProps) {
                 Loading history…
               </p>
             )}
+
             {showExpanded &&
-              displayed.map((item) => {
-                const isActive = activeConversationId === item.id;
-                return (
-                  <button
+              isSearching &&
+              !searching &&
+              displayed.length === 0 && (
+                <p className="px-3 py-2 text-xs text-foreground-muted">
+                  No matches for your search.
+                </p>
+              )}
+
+            {showExpanded && isSearching && displayed.length > 0 && (
+              <>
+                <p className="px-2 pb-2 text-[10px] font-medium uppercase tracking-widest text-foreground-muted">
+                  Results
+                </p>
+                {displayed.map((item) => (
+                  <HistoryListItem
                     key={item.id}
-                    onClick={() => handleSelectConversation(item.id)}
-                    className={cn(
-                      "flex w-full flex-col rounded-xl px-3 py-2.5 text-left text-sm transition-all duration-150",
-                      isActive
-                        ? "bg-accent-violet/10 text-foreground ring-1 ring-inset ring-accent-violet/25"
-                        : "text-foreground-muted hover:bg-surface-elevated/80 hover:text-foreground"
-                    )}
-                  >
-                    <span className="min-w-0 flex-1">
-                      <span
-                        className={cn(
-                          "block truncate leading-snug",
-                          isActive ? "font-medium" : "font-normal"
-                        )}
-                      >
-                        {item.title}
-                      </span>
-                      {isSearching &&
-                        item.prompt &&
-                        item.prompt !== item.title && (
-                          <span className="mt-0.5 block truncate text-[11px] font-normal text-foreground-muted/80">
-                            {item.prompt}
-                          </span>
-                        )}
-                    </span>
-                  </button>
-                );
-              })}
+                    item={item}
+                    isActive={activeConversationId === item.id}
+                    isSearching={isSearching}
+                    onSelect={handleSelectConversation}
+                  />
+                ))}
+              </>
+            )}
+
+            {showExpanded && !isSearching && starredItems.length > 0 && (
+              <>
+                <p className="px-2 pb-2 pt-1 text-[10px] font-medium uppercase tracking-widest text-foreground-muted">
+                  Starred
+                </p>
+                {starredItems.map((item) => (
+                  <HistoryListItem
+                    key={item.id}
+                    item={item}
+                    isActive={activeConversationId === item.id}
+                    isSearching={false}
+                    onSelect={handleSelectConversation}
+                  />
+                ))}
+              </>
+            )}
+
+            {showExpanded && !isSearching && (
+              <>
+                <p
+                  className={cn(
+                    "px-2 pb-2 text-[10px] font-medium uppercase tracking-widest text-foreground-muted",
+                    starredItems.length > 0 && "pt-2"
+                  )}
+                >
+                  History
+                </p>
+                {historyItems.map((item) => (
+                  <HistoryListItem
+                    key={item.id}
+                    item={item}
+                    isActive={activeConversationId === item.id}
+                    isSearching={false}
+                    onSelect={handleSelectConversation}
+                  />
+                ))}
+              </>
+            )}
           </div>
         </div>
 

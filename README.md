@@ -35,7 +35,7 @@ Open [http://localhost:3000](http://localhost:3000) — you’ll be redirected t
 ### Database & image storage (required for history)
 
 1. Open [Supabase SQL Editor](https://supabase.com/dashboard/project/yeavejohvunhjwxqxxtb/sql/new) for your project.
-2. Run `supabase/migrations/001_conversations_and_storage.sql` then `002_generation_rounds.sql` (tables, RLS, storage, multi-batch history).
+2. Run migrations `001` through `004` in order (`001_conversations_and_storage.sql`, `002_generation_rounds.sql`, `003_projects.sql`, `004_project_description.sql`).
 3. Ensure `.env` includes `SUPABASE_SERVICE_ROLE_KEY` (server uploads images).
 
 History and images are scoped per signed-in user (`user_id` + storage path `{userId}/{conversationId}/{variantId}.png`).

@@ -1,11 +1,12 @@
 const SETUP_HINT =
-  "Database tables are missing. In Supabase Dashboard → SQL Editor, run supabase/migrations/001_conversations_and_storage.sql and 002_generation_rounds.sql, then refresh and try again.";
+  "Database tables are missing. In Supabase Dashboard → SQL Editor, run supabase/migrations/001 through 005, then refresh and try again.";
 
 export function isMissingDatabaseSetup(message: string): boolean {
   const lower = message.toLowerCase();
   return (
     lower.includes("schema cache") ||
     lower.includes("public.conversations") ||
+    lower.includes("public.projects") ||
     lower.includes("pgrst205") ||
     lower.includes("relation") && lower.includes("does not exist")
   );

@@ -1,50 +1,93 @@
 "use client";
 
-import { X } from "lucide-react";
+import { X, Sparkles, ImageIcon } from "lucide-react";
 import Image from "next/image";
 import { useWorkspaceStore } from "@/store/workspace-store";
+import { cn } from "@/lib/utils";
+import type { ReferenceUsageMode } from "@/types";
+
+const MODE_OPTIONS: {
+  value: ReferenceUsageMode;
+  label: string;
+}[] = [
+  { value: "inspire", label: "Inspire" },
+  { value: "preserve", label: "Preserve" },
+];
 
 export function ReferenceChips() {
-  const { references, removeReference } = useWorkspaceStore();
+  const { references, removeReference, setReferencesUsageMode } =
+    useWorkspaceStore();
 
   if (references.length === 0) return null;
 
+  const usageMode = references[0]?.usageMode ?? "inspire";
+
   return (
-    <div className="flex flex-wrap items-center gap-2 px-1 pb-2">
-      <span className="text-[10px] font-medium uppercase tracking-widest text-foreground-muted mr-1">
-        References
-      </span>
-      {references.map((ref, i) => (
-        <div
-          key={ref.id}
-          className="group relative flex h-11 w-11 shrink-0 overflow-hidden rounded-xl border border-border bg-surface-elevated"
-          title={ref.name}
-        >
-          <Image
-            src={ref.url}
-            alt={`Reference ${i + 1}`}
-            fill
-            className="object-cover"
-            unoptimized
-          />
-          <button
-            type="button"
-            onClick={() => removeReference(ref.id)}
-            className="absolute inset-0 flex items-center justify-center bg-black/50 opacity-0 transition-opacity group-hover:opacity-100"
-            aria-label={`Remove reference ${i + 1}`}
-          >
-            <X className="h-4 w-4 text-white" />
-          </button>
-          <span className="absolute bottom-0 left-0 right-0 bg-black/60 py-0.5 text-center text-[8px] font-medium text-white">
-            {i + 1}
-          </span>
-        </div>
-      ))}
-      {references.length > 4 && (
-        <span className="text-[10px] text-accent-orange">
-          First 4 sent to model
+    <div className="space-y-2 px-1 pb-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[10px] font-medium uppercase tracking-widest text-foreground-muted">
+          Uploaded images
         </span>
-      )}
+        <span className="text-[10px] text-foreground-muted">
+          {references.length} attached
+          {references.length > 4 ? " · first 4 sent per request" : ""}
+        </span>
+
+        <div
+          className="ml-auto flex rounded-md bg-surface-elevated p-0.5 ring-1 ring-foreground/5"
+          role="group"
+          aria-label="Usage mode for all uploaded images"
+        >
+          {MODE_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setReferencesUsageMode(opt.value)}
+              className={cn(
+                "flex cursor-pointer items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium transition-colors",
+                usageMode === opt.value
+                  ? opt.value === "preserve"
+                    ? "bg-accent-cyan/20 text-accent-cyan"
+                    : "bg-accent-violet/20 text-accent-violet"
+                  : "text-foreground-muted hover:text-foreground"
+              )}
+            >
+              {opt.value === "inspire" ? (
+                <Sparkles className="h-3 w-3" />
+              ) : (
+                <ImageIcon className="h-3 w-3" />
+              )}
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        {references.map((ref, i) => (
+          <div
+            key={ref.id}
+            className="group relative h-14 w-14 shrink-0 overflow-hidden rounded-lg bg-surface-elevated shadow-sm ring-1 ring-foreground/5"
+            title={ref.name}
+          >
+            <Image
+              src={ref.url}
+              alt={`Upload ${i + 1}`}
+              fill
+              className="object-cover"
+              unoptimized
+            />
+            <button
+              type="button"
+              onClick={() => removeReference(ref.id)}
+              className="absolute inset-0 flex cursor-pointer items-center justify-center bg-black/50 opacity-0 transition-opacity group-hover:opacity-100"
+              aria-label={`Remove image ${i + 1}`}
+            >
+              <X className="h-4 w-4 text-white" />
+            </button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

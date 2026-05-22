@@ -63,10 +63,23 @@ export function buildLayoutImagePrompt(options: {
   const { userPrompt, style, platform, params, designTokens, references } =
     options;
 
-  const refNote =
-    references && references.length > 0
-      ? `IMPORTANT — Use the ${Math.min(references.length, 4)} reference image(s) attached to this request for visual direction (mood, composition, subject, colors). Match them closely in the output.`
-      : "";
+  const inspireRefs =
+    references?.filter((r) => r.usageMode !== "preserve") ?? [];
+  const preserveRefs =
+    references?.filter((r) => r.usageMode === "preserve") ?? [];
+
+  const refNotes: string[] = [];
+  if (inspireRefs.length > 0) {
+    refNotes.push(
+      `INSPIRE (${inspireRefs.length} image(s)): Use attached reference(s) for visual direction only — mood, palette, composition, and styling. You may reinterpret content to fit the "${layout?.name}" layout.`
+    );
+  }
+  if (preserveRefs.length > 0) {
+    refNotes.push(
+      `PRESERVE (${preserveRefs.length} image(s)): The attached asset(s) labeled preserve must appear in the output with the EXACT same subject, product, people, logos, colors, and fine details. Do not redraw, replace, stylize away, or reinterpret the asset. Only adapt surrounding layout, background, typography zones, and framing per the layout system.`
+    );
+  }
+  const refNote = refNotes.length > 0 ? refNotes.join(" ") : "";
 
   const accentDesc = colorForImagePrompt(designTokens?.colors.accent);
   const primaryDesc = colorForImagePrompt(designTokens?.colors.primary);

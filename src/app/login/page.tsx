@@ -11,10 +11,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
   const authError = params.error;
 
   return (
-    <div
-      data-theme="dark"
-      className="flex min-h-screen flex-col items-center justify-center bg-background px-4 text-foreground"
-    >
+    <div className="flex min-h-screen flex-col items-center justify-center bg-background px-4 text-foreground">
       <div className="w-full max-w-md space-y-8">
         <div className="flex flex-col items-center gap-4 text-center">
           <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-accent-violet to-accent-blue shadow-[0_0_40px_rgba(124,58,237,0.35)]">
