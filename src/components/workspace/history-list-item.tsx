@@ -2,6 +2,7 @@
 
 import { cn } from "@/lib/utils";
 import { HistoryItemMenu } from "./history-item-menu";
+import { MediaTypeBadge } from "./media-type-badge";
 import type { Conversation } from "@/types";
 
 interface HistoryListItemProps {
@@ -42,13 +43,16 @@ export function HistoryListItem({
         )}
       >
         <span className="min-w-0 flex-1">
-          <span
-            className={cn(
-              "block truncate leading-snug",
-              isActive ? "font-medium" : "font-normal"
-            )}
-          >
-            {item.title}
+          <span className="flex min-w-0 items-center gap-2">
+            <span
+              className={cn(
+                "min-w-0 truncate leading-snug",
+                isActive ? "font-medium" : "font-normal"
+              )}
+            >
+              {item.title}
+            </span>
+            <MediaTypeBadge mediaType={item.mediaType} />
           </span>
           {timestampLabel && (
             <span

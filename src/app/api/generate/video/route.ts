@@ -1,29 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { formatOpenRouterErrorForUser } from "@/lib/openrouter-errors";
-import { generateImageWithOpenRouter } from "@/lib/openrouter-image";
+import { validateVideoReferencePayloads } from "@/lib/reference-image-formats";
+import { generateVideoWithOpenRouter } from "@/lib/openrouter-video";
 import { createClient } from "@/lib/supabase/server";
-import type {
-  AspectRatio,
-  DesignTokens,
-  GenerationParams,
-  LayoutId,
-  PlatformPreset,
-  ReferenceImagePayload,
-  StyleEngine,
-} from "@/types";
+import type { ReferenceImagePayload, VideoMeta } from "@/types";
 
-export const maxDuration = 120;
+export const maxDuration = 300;
 
-interface GenerateImageBody {
+interface GenerateVideoBody {
   userPrompt: string;
-  layoutId: LayoutId;
-  style: StyleEngine;
-  platform: PlatformPreset;
-  aspectRatio: AspectRatio;
-  params: GenerationParams;
-  designTokens?: DesignTokens;
+  model: string;
+  duration?: number;
+  resolution?: string;
+  aspectRatio?: string;
+  generateAudio?: boolean;
   references?: ReferenceImagePayload[];
-  model?: string;
   conversationId?: string;
   variantId?: string;
   variantMeta?: {
@@ -32,13 +23,12 @@ interface GenerateImageBody {
     bestUse?: string;
     suggestedPlatform?: string;
     principles?: string[];
-    influenceBreakdown?: Record<string, number>;
-    prompt?: string;
+    videoMeta?: VideoMeta;
   };
 }
 
 export async function POST(request: NextRequest) {
-  let body: GenerateImageBody | null = null;
+  let body: GenerateVideoBody | null = null;
 
   try {
     const supabase = await createClient();
@@ -48,7 +38,7 @@ export async function POST(request: NextRequest) {
 
     if (!user) {
       return NextResponse.json(
-        { error: "Please sign in to generate images." },
+        { error: "Please sign in to generate videos." },
         { status: 401 }
       );
     }
@@ -57,13 +47,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "Image generation is temporarily unavailable. Please try again later.",
+            "Video generation is temporarily unavailable. Please try again later.",
         },
         { status: 503 }
       );
     }
 
-    body = (await request.json()) as GenerateImageBody;
+    body = (await request.json()) as GenerateVideoBody;
 
     if (!body.userPrompt?.trim()) {
       return NextResponse.json(
@@ -72,29 +62,32 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (!body.layoutId) {
-      return NextResponse.json(
-        { error: "layoutId is required" },
-        { status: 400 }
-      );
+    if (!body.model) {
+      return NextResponse.json({ error: "model is required" }, { status: 400 });
     }
 
-    const result = await generateImageWithOpenRouter({
-      userPrompt: body.userPrompt,
-      layoutId: body.layoutId,
-      style: body.style ?? "luxury",
-      platform: body.platform ?? "instagram-post",
-      aspectRatio: body.aspectRatio ?? "auto",
-      params: body.params,
-      designTokens: body.designTokens,
-      references: body.references,
+    try {
+      validateVideoReferencePayloads(body.references);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Invalid reference image format";
+      return NextResponse.json({ error: message }, { status: 400 });
+    }
+
+    const result = await generateVideoWithOpenRouter({
       model: body.model,
+      prompt: body.userPrompt,
+      duration: body.duration,
+      resolution: body.resolution,
+      aspectRatio: body.aspectRatio,
+      generateAudio: body.generateAudio,
+      references: body.references,
     });
 
-    let imageUrl = result.imageUrl;
+    let videoUrl: string | null = null;
 
     if (body.conversationId && body.variantId) {
-      const { persistVariantImage } = await import(
+      const { persistVariantVideo } = await import(
         "@/lib/supabase/conversations-db"
       );
 
@@ -105,41 +98,52 @@ export async function POST(request: NextRequest) {
         .eq("conversation_id", body.conversationId)
         .eq("user_id", user.id);
 
-      const persisted = await persistVariantImage(
+      const persisted = await persistVariantVideo(
         supabase,
         user.id,
         body.conversationId,
         body.variantId,
-        result.imageUrl,
+        { buffer: result.videoBuffer, mime: result.mime },
         {
           status: "complete",
           userPrompt: body.userPrompt,
-          prompt: body.variantMeta?.prompt,
           rationale: body.variantMeta?.rationale,
           visualPsychology: body.variantMeta?.visualPsychology,
           bestUse: body.variantMeta?.bestUse,
           suggestedPlatform: body.variantMeta?.suggestedPlatform,
           principles: body.variantMeta?.principles,
-          influenceBreakdown: body.variantMeta?.influenceBreakdown,
+          videoMeta: body.variantMeta?.videoMeta,
           errorMessage: null,
         }
       );
 
-      imageUrl = persisted.signedUrl;
+      videoUrl = persisted.signedUrl;
 
       await supabase
         .from("conversations")
         .update({ updated_at: new Date().toISOString() })
         .eq("id", body.conversationId)
         .eq("user_id", user.id);
+    } else {
+      return NextResponse.json(
+        {
+          error:
+            "conversationId and variantId are required to save generated video.",
+        },
+        { status: 400 }
+      );
     }
 
-    return NextResponse.json({ ...result, imageUrl });
+    return NextResponse.json({
+      videoUrl: videoUrl!,
+      jobId: result.jobId,
+      videoMeta: body.variantMeta?.videoMeta,
+    });
   } catch (err) {
     const raw =
-      err instanceof Error ? err.message : "Image generation failed";
+      err instanceof Error ? err.message : "Video generation failed";
     const message = formatOpenRouterErrorForUser(raw);
-    console.error("[generate/image]", message);
+    console.error("[generate/video]", message);
 
     if (body?.conversationId && body?.variantId) {
       try {
@@ -160,7 +164,7 @@ export async function POST(request: NextRequest) {
             .eq("user_id", user.id);
         }
       } catch {
-        /* ignore secondary failure */
+        /* ignore */
       }
     }
 

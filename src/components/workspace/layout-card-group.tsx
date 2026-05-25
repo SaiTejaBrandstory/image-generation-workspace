@@ -19,7 +19,10 @@ export function LayoutCardGroup({
   const openExpandedWithVariations = useWorkspaceStore(
     (s) => s.openExpandedWithVariations
   );
-  const children = getChildVariations(allVariants, variant.id);
+  const isVideo = variant.mediaType === "video";
+  const children = isVideo
+    ? []
+    : getChildVariations(allVariants, variant.id);
   const variationTotal = children.length;
   const variationsBusy = children.some(
     (v) => v.status === "generating" || v.status === "pending"

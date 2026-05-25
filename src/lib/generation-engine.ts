@@ -1,5 +1,11 @@
 import { LAYOUT_SYSTEMS } from "@/lib/layout-systems";
 import { augmentPrompt, recommendLayouts } from "@/lib/design-md-parser";
+import {
+  formatOpenRouterErrorForUser,
+  isRetryableOpenRouterError,
+  retryDelayMs,
+  sleepMs,
+} from "@/lib/openrouter-errors";
 import { runWithConcurrency, serializeReferences } from "@/lib/reference-utils";
 import { sourceImageToPreserveReference } from "@/lib/variation-utils";
 import type {
@@ -75,20 +81,27 @@ function buildInfluenceBreakdown(refs: ReferenceImage[]): Record<string, number>
 
 async function generateOneImageWithRetry(
   options: Parameters<typeof generateOneImage>[0],
-  retries = 1
+  maxAttempts = 4
 ): Promise<string> {
   let lastError: Error | null = null;
-  for (let attempt = 0; attempt <= retries; attempt++) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
     try {
       return await generateOneImage(options);
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
-      if (attempt < retries) {
-        await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+      if (
+        isRetryableOpenRouterError(undefined, lastError.message) &&
+        attempt < maxAttempts - 1
+      ) {
+        await sleepMs(retryDelayMs(attempt));
+        continue;
       }
+      throw new Error(formatOpenRouterErrorForUser(lastError.message));
     }
   }
-  throw lastError ?? new Error("Generation failed");
+  throw new Error(
+    formatOpenRouterErrorForUser(lastError?.message ?? "Generation failed")
+  );
 }
 
 async function generateOneImage(options: {

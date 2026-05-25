@@ -34,6 +34,15 @@ function isRealImage(url?: string) {
   );
 }
 
+function isRealVideo(url?: string) {
+  return (
+    !!url &&
+    (url.startsWith("data:video") ||
+      url.startsWith("http://") ||
+      url.startsWith("https://"))
+  );
+}
+
 export function LayoutCard({
   variant,
   index,
@@ -44,25 +53,43 @@ export function LayoutCard({
 }: LayoutCardProps) {
   const layout = LAYOUT_MAP[variant.layoutId];
   const { setExpandedVariant, retryFailedVariant } = useWorkspaceStore();
+  const isVideo = variant.mediaType === "video";
 
   const isLoading =
     variant.status === "pending" || variant.status === "generating";
   const isError = variant.status === "error";
   const gradient = layout?.gradient ?? "from-zinc-900 to-zinc-800";
   const hasImage = isRealImage(variant.imageUrl);
+  const hasVideo = isRealVideo(variant.videoUrl);
   const [downloading, setDownloading] = useState(false);
 
   const handleDownload = async () => {
-    if (!variant.imageUrl || !layout) return;
+    const src = isVideo ? variant.videoUrl : variant.imageUrl;
+    if (!src) return;
     setDownloading(true);
     try {
-      await downloadImage(
-        variant.imageUrl,
-        buildImageFilename(layout.name, variant.layoutId, index)
-      );
+      if (isVideo) {
+        const res = await fetch(src);
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `video-${index + 1}.mp4`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } else if (layout) {
+        await downloadImage(
+          src,
+          buildImageFilename(layout.name, variant.layoutId, index)
+        );
+      }
     } catch (err) {
       console.error("Download failed:", err);
-      alert(err instanceof Error ? err.message : "Failed to download image");
+      alert(
+        err instanceof Error
+          ? err.message
+          : `Failed to download ${isVideo ? "video" : "image"}`
+      );
     } finally {
       setDownloading(false);
     }
@@ -91,6 +118,41 @@ export function LayoutCard({
         {isLoading ? (
           <div className="layout-card-preview flex items-center justify-center">
             <Loader2 className="h-8 w-8 animate-spin text-accent-violet" />
+          </div>
+        ) : hasVideo && variant.videoUrl ? (
+          <div className="relative layout-card-preview overflow-hidden bg-black">
+            <video
+              src={variant.videoUrl}
+              className="h-full w-full object-cover"
+              muted
+              playsInline
+              loop
+              preload="metadata"
+            />
+            <button
+              type="button"
+              onClick={handleAction(() => void handleDownload())}
+              disabled={downloading}
+              title="Download video"
+              className="absolute right-2 top-2 z-20 flex h-8 w-8 items-center justify-center rounded-lg bg-black/60 text-white backdrop-blur-md transition-colors hover:bg-black/80 disabled:opacity-60"
+            >
+              {downloading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Download className="h-4 w-4" />
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={handleAction(() =>
+                setExpandedVariant(variant.id, "view")
+              )}
+              title="Expand to preview video"
+              className="absolute bottom-2 right-2 z-20 flex items-center gap-1 rounded-lg bg-black/60 px-2.5 py-1.5 text-[11px] font-medium text-white backdrop-blur-md transition-colors hover:bg-black/80"
+            >
+              <Expand className="h-3.5 w-3.5 shrink-0" />
+              Expand
+            </button>
           </div>
         ) : hasImage && variant.imageUrl ? (
           <div className="relative layout-card-preview overflow-hidden">
@@ -154,10 +216,13 @@ export function LayoutCard({
       <div className="flex min-h-0 flex-col gap-3 border-t border-border/80 bg-surface px-4 py-3.5">
         <div className="space-y-1.5">
           <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
-            {titleOverride ?? layout?.name ?? variant.layoutId}
+            {titleOverride ?? (isVideo ? "Video" : layout?.name ?? variant.layoutId)}
           </h3>
           <p className="line-clamp-2 text-xs leading-relaxed text-foreground-muted">
-            {descriptionOverride ?? layout?.description}
+            {descriptionOverride ??
+              (isVideo
+                ? variant.rationale
+                : layout?.description)}
           </p>
         </div>
         {!isLoading && (

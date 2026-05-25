@@ -139,6 +139,11 @@ body {
 
 .generation-round {
   padding: 0 32px 28px;
+  scroll-margin-top: 12px;
+}
+
+[data-latest-generation-round] {
+  scroll-margin-top: 12px;
 }
 
 .generation-round-caption {
@@ -167,6 +172,14 @@ body {
 .layout-matrix--in-round {
   padding: 0;
   gap: 20px;
+}
+
+/* One video per prompt — not a multi-layout grid */
+.layout-matrix--single-video {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 640px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 .variations-section {

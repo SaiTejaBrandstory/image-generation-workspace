@@ -5,6 +5,7 @@ import type {
   GenerationParams,
   LayoutId,
   LayoutVariant,
+  MediaType,
   PlatformPreset,
   StyleEngine,
 } from "@/types";
@@ -67,6 +68,8 @@ export async function prepareConversationForGeneration(
     platform: PlatformPreset;
     aspectRatio: AspectRatio;
     imageModel: string;
+    mediaType?: MediaType;
+    videoModel?: string;
     params: GenerationParams;
     selectedLayouts: LayoutId[];
     variants: LayoutVariant[];
@@ -81,6 +84,8 @@ export async function prepareConversationForGeneration(
       platform: options.platform,
       aspectRatio: options.aspectRatio,
       imageModel: options.imageModel,
+      mediaType: options.mediaType ?? "image",
+      videoModel: options.videoModel,
       params: options.params,
       selectedLayouts: options.selectedLayouts,
       variants: variantsToApiPayload(options.variants, options.prompt),
@@ -101,6 +106,8 @@ export async function createConversationRecord(options: {
   platform: PlatformPreset;
   aspectRatio: AspectRatio;
   imageModel: string;
+  mediaType?: MediaType;
+  videoModel?: string;
   params: GenerationParams;
   selectedLayouts: LayoutId[];
   variants: LayoutVariant[];
@@ -114,6 +121,8 @@ export async function createConversationRecord(options: {
       platform: options.platform,
       aspectRatio: options.aspectRatio,
       imageModel: options.imageModel,
+      mediaType: options.mediaType ?? "image",
+      videoModel: options.videoModel,
       params: options.params,
       selectedLayouts: options.selectedLayouts,
       variants: variantsToApiPayload(options.variants, options.prompt),

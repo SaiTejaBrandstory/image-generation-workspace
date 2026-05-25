@@ -18,6 +18,11 @@ import { useIsDesktop } from "@/lib/use-media-query";
 import { useWorkspaceStore } from "@/store/workspace-store";
 import { Tooltip, TooltipProvider } from "@/components/ui/tooltip";
 import { UserMenu } from "@/components/auth/user-menu";
+import {
+  conversationMatchesMediaFilter,
+  HistoryMediaFilterToggle,
+  type HistoryMediaFilter,
+} from "@/components/workspace/history-media-filter";
 import { HistoryListItem } from "@/components/workspace/history-list-item";
 import type { AuthUser } from "@/types/auth";
 import type { Conversation } from "@/types";
@@ -43,6 +48,8 @@ export function Sidebar({ user }: SidebarProps) {
   } = useWorkspaceStore();
 
   const [historySearch, setHistorySearch] = useState("");
+  const [historyMediaFilter, setHistoryMediaFilter] =
+    useState<HistoryMediaFilter>("all");
   const [searchResults, setSearchResults] = useState<Conversation[] | null>(
     null
   );
@@ -50,15 +57,25 @@ export function Sidebar({ user }: SidebarProps) {
 
   const isSearching = historySearch.trim().length > 0;
   const displayed = isSearching ? (searchResults ?? []) : conversations;
+  const filteredDisplayed = useMemo(
+    () =>
+      displayed.filter((c) =>
+        conversationMatchesMediaFilter(c, historyMediaFilter)
+      ),
+    [displayed, historyMediaFilter]
+  );
   const { starredItems, historyItems } = useMemo(() => {
     if (isSearching) {
-      return { starredItems: [] as Conversation[], historyItems: displayed };
+      return {
+        starredItems: [] as Conversation[],
+        historyItems: filteredDisplayed,
+      };
     }
     return {
-      starredItems: displayed.filter((c) => c.starred),
-      historyItems: displayed.filter((c) => !c.starred),
+      starredItems: filteredDisplayed.filter((c) => c.starred),
+      historyItems: filteredDisplayed.filter((c) => !c.starred),
     };
-  }, [displayed, isSearching]);
+  }, [filteredDisplayed, isSearching]);
   const showExpanded = isDesktop ? sidebarExpanded : true;
 
   useEffect(() => {
@@ -293,9 +310,22 @@ export function Sidebar({ user }: SidebarProps) {
             {showExpanded &&
               !searching &&
               !historyLoading &&
-              displayed.length === 0 && (
+              conversations.length === 0 && (
                 <p className="px-3 py-2 text-xs text-foreground-muted">
                   No generations yet. Create one to see it here.
+                </p>
+              )}
+            {showExpanded &&
+              !searching &&
+              !historyLoading &&
+              conversations.length > 0 &&
+              filteredDisplayed.length === 0 && (
+                <p className="px-3 py-2 text-xs text-foreground-muted">
+                  {historyMediaFilter === "video"
+                    ? "No video generations in history yet."
+                    : historyMediaFilter === "image"
+                      ? "No image generations in history yet."
+                      : "No generations match this filter."}
                 </p>
               )}
             {historyLoading && !isSearching && showExpanded && (
@@ -307,18 +337,30 @@ export function Sidebar({ user }: SidebarProps) {
             {showExpanded &&
               isSearching &&
               !searching &&
-              displayed.length === 0 && (
+              filteredDisplayed.length === 0 && (
                 <p className="px-3 py-2 text-xs text-foreground-muted">
-                  No matches for your search.
+                  {displayed.length === 0
+                    ? "No matches for your search."
+                    : historyMediaFilter === "video"
+                      ? "No videos match your search."
+                      : historyMediaFilter === "image"
+                        ? "No images match your search."
+                        : "No matches for this filter."}
                 </p>
               )}
 
-            {showExpanded && isSearching && displayed.length > 0 && (
+            {showExpanded && isSearching && filteredDisplayed.length > 0 && (
               <>
-                <p className="px-2 pb-2 text-[10px] font-medium uppercase tracking-widest text-foreground-muted">
-                  Results
-                </p>
-                {displayed.map((item) => (
+                <div className="mb-2 flex items-center justify-between gap-2 px-2">
+                  <p className="text-[10px] font-medium uppercase tracking-widest text-foreground-muted">
+                    Results
+                  </p>
+                  <HistoryMediaFilterToggle
+                    value={historyMediaFilter}
+                    onChange={setHistoryMediaFilter}
+                  />
+                </div>
+                {filteredDisplayed.map((item) => (
                   <HistoryListItem
                     key={item.id}
                     item={item}
@@ -349,14 +391,20 @@ export function Sidebar({ user }: SidebarProps) {
 
             {showExpanded && !isSearching && (
               <>
-                <p
+                <div
                   className={cn(
-                    "px-2 pb-2 text-[10px] font-medium uppercase tracking-widest text-foreground-muted",
+                    "mb-2 flex items-center justify-between gap-2 px-2",
                     starredItems.length > 0 && "pt-2"
                   )}
                 >
-                  History
-                </p>
+                  <p className="text-[10px] font-medium uppercase tracking-widest text-foreground-muted">
+                    History
+                  </p>
+                  <HistoryMediaFilterToggle
+                    value={historyMediaFilter}
+                    onChange={setHistoryMediaFilter}
+                  />
+                </div>
                 {historyItems.map((item) => (
                   <HistoryListItem
                     key={item.id}

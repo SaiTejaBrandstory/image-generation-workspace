@@ -6,8 +6,10 @@ import type {
   GenerationParams,
   LayoutId,
   LayoutVariant,
+  MediaType,
   PlatformPreset,
   StyleEngine,
+  VideoMeta,
 } from "@/types";
 
 interface RouteParams {
@@ -20,11 +22,15 @@ interface PrepareBody {
   platform: PlatformPreset;
   aspectRatio: AspectRatio;
   imageModel: string;
+  mediaType?: MediaType;
+  videoModel?: string;
   params: GenerationParams;
   selectedLayouts: LayoutId[];
   variants: Array<{
     id: string;
     layoutId: LayoutId;
+    mediaType?: MediaType;
+    videoMeta?: VideoMeta;
     userPrompt?: string;
     prompt: string;
     rationale: string;
@@ -75,6 +81,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         platform: body.platform,
         aspect_ratio: body.aspectRatio,
         image_model: body.imageModel,
+        media_type: body.mediaType ?? "image",
+        video_model: body.videoModel ?? null,
         params: body.params,
         selected_layouts: body.selectedLayouts,
         updated_at: new Date().toISOString(),
@@ -114,6 +122,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         sort_index: v.sortIndex,
         generation_round: generationRound,
         created_at: roundCreatedAt,
+        media_type: v.mediaType ?? body.mediaType ?? "image",
+        video_meta: v.videoMeta ?? null,
       }));
 
       const { error: variantsError } = await supabase

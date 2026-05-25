@@ -1,4 +1,10 @@
+import { ensureReferenceMinDimensions } from "@/lib/reference-image-dimensions";
 import type { ReferenceImage, ReferenceImagePayload } from "@/types";
+
+export interface SerializeReferencesOptions {
+  /** Upscale refs below provider minimum (video: 240×240) */
+  minDimension?: number;
+}
 
 export async function blobUrlToDataUrl(url: string): Promise<string> {
   const res = await fetch(url);
@@ -12,12 +18,20 @@ export async function blobUrlToDataUrl(url: string): Promise<string> {
 }
 
 export async function serializeReferences(
-  references: ReferenceImage[]
+  references: ReferenceImage[],
+  options?: SerializeReferencesOptions
 ): Promise<ReferenceImagePayload[]> {
   const payloads: ReferenceImagePayload[] = [];
   for (const ref of references) {
     try {
-      const dataUrl = await blobUrlToDataUrl(ref.url);
+      let dataUrl = await blobUrlToDataUrl(ref.url);
+      if (options?.minDimension != null && options.minDimension > 0) {
+        const normalized = await ensureReferenceMinDimensions(
+          dataUrl,
+          options.minDimension
+        );
+        dataUrl = normalized.dataUrl;
+      }
       payloads.push({
         role: ref.role,
         influence: ref.influence,

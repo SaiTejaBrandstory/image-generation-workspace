@@ -7,8 +7,10 @@ import type {
   GenerationParams,
   LayoutId,
   LayoutVariant,
+  MediaType,
   PlatformPreset,
   StyleEngine,
+  VideoMeta,
 } from "@/types";
 
 const GENERATIONS_BUCKET = "generations";
@@ -22,6 +24,8 @@ export interface DbConversationRow {
   platform: string | null;
   aspect_ratio: string | null;
   image_model: string | null;
+  video_model: string | null;
+  media_type: MediaType;
   params: GenerationParams;
   selected_layouts: LayoutId[];
   starred: boolean;
@@ -60,20 +64,29 @@ export interface DbVariantRow {
   parent_variant_id: string | null;
   variant_kind: string;
   variation_index: number | null;
+  media_type: MediaType;
+  video_meta: VideoMeta | null;
   created_at: string;
 }
 
 export async function mapVariantRowToClient(
   row: DbVariantRow
 ): Promise<LayoutVariant> {
+  const isVideo = row.media_type === "video";
   let imageUrl: string | undefined;
+  let videoUrl: string | undefined;
   if (row.storage_path) {
-    imageUrl = (await getSignedImageUrl(row.storage_path)) ?? undefined;
+    const signed = (await getSignedImageUrl(row.storage_path)) ?? undefined;
+    if (isVideo) videoUrl = signed;
+    else imageUrl = signed;
   }
 
   return {
     id: row.id,
     layoutId: row.layout_id as LayoutId,
+    mediaType: row.media_type ?? "image",
+    videoUrl,
+    videoMeta: row.video_meta ?? undefined,
     userPrompt: row.user_prompt ?? undefined,
     prompt: row.prompt ?? "",
     imageUrl,
@@ -109,6 +122,7 @@ export function mapConversationListRow(row: DbConversationRow): Conversation {
     id: row.id,
     title: row.title,
     prompt: row.prompt ?? undefined,
+    mediaType: row.media_type ?? "image",
     messages: [],
     variants: [],
     createdAt: new Date(row.created_at).getTime(),
@@ -182,14 +196,21 @@ export async function fetchConversationDetail(
     ((variants ?? []) as DbVariantRow[]).map(mapVariantRowToClient)
   );
 
+  const row = conv as DbConversationRow;
+  const inferredMediaType =
+    row.media_type ??
+    (mappedVariants.some((v) => v.mediaType === "video") ? "video" : "image");
   return {
-    id: conv.id,
-    title: conv.title,
+    id: row.id,
+    title: row.title,
+    prompt: row.prompt ?? undefined,
+    mediaType: inferredMediaType,
     messages: ((messages ?? []) as DbMessageRow[]).map(mapMessageRow),
     variants: mappedVariants,
-    createdAt: new Date(conv.created_at).getTime(),
-    starred: conv.starred,
-    projectId: (conv as DbConversationRow).project_id ?? null,
+    createdAt: new Date(row.created_at).getTime(),
+    updatedAt: new Date(row.updated_at).getTime(),
+    starred: row.starred,
+    projectId: row.project_id ?? null,
   };
 }
 
@@ -270,6 +291,7 @@ type VariantDbPatch = Partial<{
   suggestedPlatform: string;
   principles: string[];
   influenceBreakdown: Record<string, number>;
+  videoMeta: VideoMeta;
 }>;
 
 /** Map client field names to Postgres column names for layout_variants */
@@ -342,7 +364,80 @@ export async function persistVariantImage(
 
   return {
     storagePath: storagePath ?? "",
-    signedUrl: signedUrl ?? imageSource,
+    signedUrl: signedUrl ?? (typeof imageSource === "string" ? imageSource : ""),
+  };
+}
+
+export async function persistVariantVideo(
+  supabase: SupabaseClient,
+  userId: string,
+  conversationId: string,
+  variantId: string,
+  videoSource:
+    | string
+    | { buffer: Buffer; mime?: string },
+  patch: VariantDbPatch & { videoMeta?: VideoMeta }
+): Promise<{ storagePath: string; signedUrl: string }> {
+  const {
+    uploadGenerationVideo,
+    uploadGenerationVideoBuffer,
+    isPersistableVideoUrl,
+  } = await import("@/lib/supabase/storage");
+
+  let storagePath: string | null = null;
+  let signedUrl: string | null = null;
+
+  if (typeof videoSource === "object" && Buffer.isBuffer(videoSource.buffer)) {
+    const uploaded = await uploadGenerationVideoBuffer({
+      userId,
+      conversationId,
+      variantId,
+      buffer: videoSource.buffer,
+      mime: videoSource.mime,
+    });
+    storagePath = uploaded.storagePath;
+    signedUrl = uploaded.signedUrl;
+  } else if (
+    typeof videoSource === "string" &&
+    isPersistableVideoUrl(videoSource)
+  ) {
+    const uploaded = await uploadGenerationVideo({
+      userId,
+      conversationId,
+      variantId,
+      videoSource,
+    });
+    storagePath = uploaded.storagePath;
+    signedUrl = uploaded.signedUrl;
+  }
+
+  const update: Record<string, unknown> = {
+    updated_at: new Date().toISOString(),
+    media_type: "video",
+    ...variantPatchToDb(patch),
+  };
+  if (storagePath) update.storage_path = storagePath;
+  if (patch.videoMeta) update.video_meta = patch.videoMeta;
+  if (patch.status === "error") {
+    update.error_message = patch.errorMessage ?? null;
+  } else if (patch.status === "complete") {
+    update.error_message = null;
+  }
+
+  const { error } = await supabase
+    .from("layout_variants")
+    .update(update)
+    .eq("id", variantId)
+    .eq("user_id", userId)
+    .eq("conversation_id", conversationId);
+
+  if (error) throw new Error(error.message);
+
+  return {
+    storagePath: storagePath ?? "",
+    signedUrl:
+      signedUrl ??
+      (typeof videoSource === "string" ? videoSource : ""),
   };
 }
 

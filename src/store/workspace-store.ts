@@ -28,7 +28,25 @@ import {
   sourceImageToPreserveReference,
 } from "@/lib/variation-utils";
 import { DEFAULT_IMAGE_MODEL } from "@/lib/openrouter-models";
-import { LAYOUT_SYSTEMS } from "@/lib/layout-systems";
+import {
+  clampVideoSettingsToModel,
+  DEFAULT_VIDEO_ASPECT,
+  DEFAULT_VIDEO_DURATION,
+  DEFAULT_VIDEO_MODEL,
+  DEFAULT_VIDEO_RESOLUTION,
+} from "@/lib/openrouter-video-models";
+import {
+  buildPendingVideoVariant,
+  generateVideoVariant,
+} from "@/lib/video-generation";
+import {
+  estimateVideoGenerationMs,
+  startEstimatedVideoProgress,
+} from "@/lib/video-progress";
+import {
+  DEFAULT_SELECTED_LAYOUTS,
+  LAYOUT_SYSTEMS,
+} from "@/lib/layout-systems";
 import { uid } from "@/lib/utils";
 import type {
   AspectRatio,
@@ -39,11 +57,14 @@ import type {
   GenerationParams,
   LayoutId,
   LayoutVariant,
+  MediaType,
   PlatformPreset,
   ReferenceImage,
   ReferenceImagePayload,
   ReferenceUsageMode,
   StyleEngine,
+  VideoAspectRatio,
+  VideoResolution,
 } from "@/types";
 
 export interface ExpandedReturnTarget {
@@ -77,6 +98,12 @@ interface WorkspaceState {
   activeBrand: Brand | null;
   designTokens: DesignTokens | null;
   imageModel: string;
+  mediaType: MediaType;
+  videoModel: string;
+  videoDuration: number;
+  videoResolution: VideoResolution;
+  videoAspectRatio: VideoAspectRatio;
+  videoGenerateAudio: boolean;
   historyLoaded: boolean;
   historyLoading: boolean;
   /** Mobile: chat composer vs layout matrix */
@@ -93,6 +120,12 @@ interface WorkspaceState {
   clearLayouts: () => void;
   toggleLayout: (id: LayoutId) => void;
   setImageModel: (model: string) => void;
+  setMediaType: (type: MediaType) => void;
+  setVideoModel: (model: string) => void;
+  setVideoDuration: (seconds: number) => void;
+  setVideoResolution: (resolution: VideoResolution) => void;
+  setVideoAspectRatio: (ratio: VideoAspectRatio) => void;
+  setVideoGenerateAudio: (enabled: boolean) => void;
   setAspectRatio: (ratio: AspectRatio) => void;
   setPlatform: (platform: PlatformPreset) => void;
   setStyle: (style: StyleEngine) => void;
@@ -133,7 +166,284 @@ interface WorkspaceState {
   selectConversation: (id: string) => Promise<void>;
   generate: () => Promise<void>;
   remixVariant: (variantId: string) => Promise<void>;
+  retryVideoVariant: (variantId: string) => Promise<void>;
   retryFailedVariant: (variantId: string) => Promise<void>;
+}
+
+type WorkspaceSet = (
+  partial:
+    | Partial<WorkspaceState>
+    | ((state: WorkspaceState) => Partial<WorkspaceState>)
+) => void;
+
+/** Synchronous lock — prevents double-clicks before any await. */
+function claimGenerationStart(set: WorkspaceSet): boolean {
+  let claimed = false;
+  set((s) => {
+    if (s.isGenerating || !s.prompt.trim()) return s;
+    claimed = true;
+    return {
+      isGenerating: true,
+      generationError: null,
+      generationProgress: 0,
+    };
+  });
+  return claimed;
+}
+
+async function runVideoGeneration(
+  get: () => WorkspaceState,
+  set: (
+    partial:
+      | Partial<WorkspaceState>
+      | ((state: WorkspaceState) => Partial<WorkspaceState>)
+  ) => void
+) {
+  const state = get();
+  const {
+    prompt,
+    style,
+    platform,
+    aspectRatio,
+    params,
+    references,
+    videoModel,
+    videoDuration,
+    videoResolution,
+    videoAspectRatio,
+    videoGenerateAudio,
+    conversations,
+    activeConversationId,
+  } = state;
+
+  const existingConv = activeConversationId
+    ? conversations.find((c) => c.id === activeConversationId)
+    : null;
+  const continuing = Boolean(activeConversationId && existingConv);
+
+  let priorMessages = existingConv?.messages ?? [];
+  let priorVariantsFromFetch: LayoutVariant[] = [];
+  if (continuing && activeConversationId) {
+    try {
+      const full = await fetchConversationById(activeConversationId);
+      if (priorMessages.length === 0) priorMessages = full.messages;
+      priorVariantsFromFetch = full.variants;
+    } catch {
+      /* use local */
+    }
+  }
+
+  const userMsg: ChatMessage = {
+    id: crypto.randomUUID(),
+    role: "user",
+    content: prompt,
+    timestamp: Date.now(),
+    referenceIds: references.map((r) => r.id),
+  };
+
+  const videoMeta = {
+    duration: videoDuration,
+    resolution: videoResolution,
+    aspectRatio: videoAspectRatio,
+    generateAudio: videoGenerateAudio,
+    model: videoModel,
+  };
+
+  const pendingVariant = buildPendingVideoVariant({ prompt, videoMeta });
+
+  const priorVariants = continuing
+    ? priorVariantsFromFetch.length > 0
+      ? priorVariantsFromFetch
+      : (existingConv?.variants ?? state.variants)
+    : [];
+
+  let conversationId: string;
+  let generationRound = 0;
+  let roundCreatedAt = Date.now();
+
+  try {
+    if (continuing && activeConversationId) {
+      const prepared = await prepareConversationForGeneration(
+        activeConversationId,
+        {
+          prompt,
+          style,
+          platform,
+          aspectRatio,
+          params,
+          imageModel: state.imageModel,
+          mediaType: "video",
+          videoModel,
+          selectedLayouts: [],
+          variants: [pendingVariant],
+        }
+      );
+      conversationId = prepared.conversationId;
+      generationRound = prepared.generationRound;
+      roundCreatedAt = new Date(prepared.roundCreatedAt).getTime();
+    } else {
+      conversationId = await createConversationRecord({
+        prompt,
+        style,
+        platform,
+        aspectRatio,
+        params,
+        imageModel: state.imageModel,
+        mediaType: "video",
+        videoModel,
+        selectedLayouts: [],
+        variants: [pendingVariant],
+      });
+    }
+  } catch (err) {
+    set({
+      isGenerating: false,
+      generationError:
+        err instanceof Error ? err.message : "Failed to save to history",
+    });
+    return;
+  }
+
+  const pendingWithRound = {
+    ...pendingVariant,
+    generationRound,
+    createdAt: roundCreatedAt,
+    sortIndex: 0,
+    status: "generating" as const,
+  };
+
+  const allVariantsForUi = [...priorVariants, pendingWithRound];
+  const optimisticMessages = [...priorMessages, userMsg];
+
+  set({
+    variants: allVariantsForUi,
+    activeConversationId: conversationId,
+    mobileSidebarOpen: false,
+    mobilePanel: "layouts",
+    conversations: continuing
+      ? conversations.map((c) =>
+          c.id === conversationId
+            ? {
+                ...c,
+                mediaType: "video" as const,
+                messages: optimisticMessages,
+                variants: allVariantsForUi,
+              }
+            : c
+        )
+      : [
+          {
+            id: conversationId,
+            title:
+              prompt.length > 40 ? `${prompt.slice(0, 40)}…` : prompt,
+            prompt,
+            mediaType: "video",
+            messages: optimisticMessages,
+            variants: allVariantsForUi,
+            createdAt: Date.now(),
+          },
+          ...conversations,
+        ],
+  });
+
+  let completedVariant: LayoutVariant = pendingWithRound;
+  const stopEstimatedProgress = startEstimatedVideoProgress(
+    estimateVideoGenerationMs(videoDuration),
+    (percent) => set({ generationProgress: percent })
+  );
+  try {
+    set({ generationProgress: 8 });
+    completedVariant = await generateVideoVariant({
+      prompt,
+      videoModel,
+      duration: videoDuration,
+      resolution: videoResolution,
+      aspectRatio: videoAspectRatio,
+      generateAudio: videoGenerateAudio,
+      references,
+      conversationId,
+      variant: pendingWithRound,
+    });
+  } catch (err) {
+    const message =
+      err instanceof Error ? err.message : "Video generation failed";
+    completedVariant = {
+      ...pendingWithRound,
+      status: "error",
+      errorMessage: message,
+    };
+    stopEstimatedProgress();
+    set({
+      variants: [...priorVariants, completedVariant],
+      isGenerating: false,
+      generationProgress: 0,
+      generationError: message,
+    });
+    return;
+  }
+  stopEstimatedProgress();
+
+  let variants = [...priorVariants, completedVariant];
+  try {
+    const refreshed = await fetchConversationById(conversationId);
+    variants = refreshed.variants;
+  } catch {
+    /* keep local */
+  }
+
+  const finalAssistant: ChatMessage = {
+    id: crypto.randomUUID(),
+    role: "assistant",
+    content:
+      completedVariant.status === "complete"
+        ? "Your video is ready. Open the card to preview or download."
+        : "Video generation failed. Try again with a shorter prompt.",
+    timestamp: Date.now(),
+  };
+
+  const allMessages = [...priorMessages, userMsg, finalAssistant];
+  const title = continuing
+    ? existingConv!.title
+    : prompt.length > 40
+      ? `${prompt.slice(0, 40)}…`
+      : prompt;
+
+  let savedConversation: Conversation | null = null;
+  try {
+    savedConversation = await finalizeConversation(conversationId, {
+      ...(continuing ? {} : { title }),
+      messages: allMessages,
+    });
+  } catch {
+    savedConversation = {
+      id: conversationId,
+      title,
+      prompt,
+      mediaType: "video",
+      messages: allMessages,
+      variants,
+      createdAt: existingConv?.createdAt ?? Date.now(),
+      starred: existingConv?.starred,
+    };
+  }
+
+  const merged: Conversation = {
+    ...savedConversation,
+    mediaType: "video",
+    variants,
+  };
+
+  set({
+    variants,
+    isGenerating: false,
+    generationProgress: 100,
+    conversations: [
+      merged,
+      ...conversations.filter((c) => c.id !== conversationId),
+    ],
+    activeConversationId: conversationId,
+    mobilePanel: "layouts",
+  });
 }
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
@@ -142,7 +452,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   activeConversationId: null,
   conversations: [],
   prompt: "",
-  selectedLayouts: LAYOUT_SYSTEMS.map((l) => l.id),
+  selectedLayouts: [...DEFAULT_SELECTED_LAYOUTS],
   aspectRatio: "auto",
   platform: "instagram-post",
   style: "luxury",
@@ -161,6 +471,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   activeBrand: null,
   designTokens: null,
   imageModel: DEFAULT_IMAGE_MODEL,
+  mediaType: "image",
+  videoModel: DEFAULT_VIDEO_MODEL,
+  videoDuration: DEFAULT_VIDEO_DURATION,
+  videoResolution: DEFAULT_VIDEO_RESOLUTION,
+  videoAspectRatio: DEFAULT_VIDEO_ASPECT,
+  videoGenerateAudio: true,
   historyLoaded: false,
   historyLoading: false,
   mobilePanel: "chat",
@@ -190,6 +506,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         variants: existing?.variants ?? [],
         createdAt: existing?.createdAt ?? Date.now(),
         prompt: patch.prompt ?? existing?.prompt,
+        mediaType: patch.mediaType ?? existing?.mediaType ?? "image",
         starred: patch.starred ?? existing?.starred,
         projectId:
           patch.projectId !== undefined
@@ -231,6 +548,41 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
 
   setImageModel: (model) => set({ imageModel: model }),
+  setMediaType: (type) =>
+    set((s) => ({
+      mediaType: type,
+      generationError: null,
+      mobilePanel: type === "video" ? "layouts" : s.mobilePanel,
+      references:
+        type === "video"
+          ? s.references.map((r) => ({
+              ...r,
+              usageMode: "inspire" as const,
+              locked: false,
+              influence: 70,
+            }))
+          : s.references,
+    })),
+  setVideoModel: (model) => {
+    const state = get();
+    const clamped = clampVideoSettingsToModel(model, {
+      duration: state.videoDuration,
+      resolution: state.videoResolution,
+      aspectRatio: state.videoAspectRatio,
+      generateAudio: state.videoGenerateAudio,
+    });
+    set({
+      videoModel: model,
+      videoDuration: clamped.duration,
+      videoResolution: clamped.resolution,
+      videoAspectRatio: clamped.aspectRatio,
+      videoGenerateAudio: clamped.generateAudio,
+    });
+  },
+  setVideoDuration: (seconds) => set({ videoDuration: seconds }),
+  setVideoResolution: (resolution) => set({ videoResolution: resolution }),
+  setVideoAspectRatio: (ratio) => set({ videoAspectRatio: ratio }),
+  setVideoGenerateAudio: (enabled) => set({ videoGenerateAudio: enabled }),
 
   setAspectRatio: (ratio) => set({ aspectRatio: ratio }),
   setPlatform: (platform) => set({ platform }),
@@ -240,15 +592,18 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     set((s) => ({ params: { ...s.params, [key]: value } })),
 
   addReference: (file, usageMode = "inspire") => {
+    const state = get();
+    const mode =
+      state.mediaType === "video" ? "inspire" : usageMode;
     const url = URL.createObjectURL(file);
     const ref: ReferenceImage = {
       id: uid(),
       url,
       name: file.name,
       role: "style",
-      influence: usageMode === "preserve" ? 100 : 70,
-      locked: usageMode === "preserve",
-      usageMode,
+      influence: mode === "preserve" ? 100 : 70,
+      locked: mode === "preserve",
+      usageMode: mode,
     };
     set((s) => ({ references: [...s.references, ref] }));
   },
@@ -340,6 +695,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       prompt: "",
       variants: [],
       references: [],
+      selectedLayouts: [...DEFAULT_SELECTED_LAYOUTS],
       expandedVariantId: null,
       generationError: null,
       mobilePanel: "chat",
@@ -361,6 +717,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       const conversation = await fetchConversationById(id);
       set((s) => ({
         variants: conversation.variants,
+        mediaType: conversation.mediaType ?? "image",
         prompt:
           conversation.messages.find((m) => m.role === "user")?.content ??
           conversation.prompt ??
@@ -379,9 +736,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
 
   generate: async () => {
+    if (!claimGenerationStart(set)) return;
+
     const state = get();
-    if (state.isGenerating) return;
-    if (!state.prompt.trim()) return;
+
+    if (state.mediaType === "video") {
+      await runVideoGeneration(get, set);
+      return;
+    }
 
     const {
       prompt,
@@ -419,8 +781,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       }
     }
 
-    set({ isGenerating: true, generationError: null, generationProgress: 0 });
-
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: "user",
@@ -432,7 +792,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const layoutIds =
       selectedLayouts.length > 0
         ? selectedLayouts
-        : (LAYOUT_SYSTEMS.map((l) => l.id) as LayoutId[]);
+        : [...DEFAULT_SELECTED_LAYOUTS];
 
     const priorVariants = continuing
       ? priorVariantsFromFetch.length > 0
@@ -513,6 +873,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       variants: allVariantsForUi,
       activeConversationId: conversationId,
       mobileSidebarOpen: false,
+      mobilePanel: "layouts",
       conversations: continuing
         ? conversations.map((c) =>
             c.id === conversationId
@@ -637,6 +998,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const variant = state.variants.find((v) => v.id === variantId);
     if (!variant) return;
 
+    if (variant.mediaType === "video") {
+      await get().retryVideoVariant(variantId);
+      return;
+    }
+
     // When customPrompt is passed (edit panel), use it exactly — never fall back to variant.prompt
     const promptText =
       customPrompt !== undefined
@@ -718,7 +1084,91 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     await get().regenerateVariant(variantId);
   },
 
+  retryVideoVariant: async (variantId) => {
+    const state = get();
+    const variant = state.variants.find((v) => v.id === variantId);
+    if (!variant || variant.mediaType !== "video") return;
+
+    const promptText = (
+      state.prompt.trim() ||
+      variant.userPrompt ||
+      variant.prompt ||
+      ""
+    ).trim();
+    if (!promptText) {
+      set({ generationError: "Enter a prompt to retry video generation." });
+      return;
+    }
+
+    const conversationId = state.activeConversationId;
+    if (!conversationId) {
+      set({ generationError: "No active conversation for this video." });
+      return;
+    }
+
+    const meta = variant.videoMeta ?? {
+      duration: state.videoDuration,
+      resolution: state.videoResolution,
+      aspectRatio: state.videoAspectRatio,
+      generateAudio: state.videoGenerateAudio,
+      model: state.videoModel,
+    };
+
+    set((s) => ({
+      generationError: null,
+      variants: s.variants.map((v) =>
+        v.id === variantId
+          ? { ...v, status: "generating" as const, errorMessage: undefined }
+          : v
+      ),
+    }));
+
+    try {
+      const updated = await generateVideoVariant({
+        prompt: promptText,
+        videoModel: meta.model ?? state.videoModel,
+        duration: meta.duration ?? state.videoDuration,
+        resolution: meta.resolution ?? state.videoResolution,
+        aspectRatio: meta.aspectRatio ?? state.videoAspectRatio,
+        generateAudio: meta.generateAudio ?? state.videoGenerateAudio,
+        references: state.references,
+        conversationId,
+        variant: { ...variant, status: "generating" },
+      });
+
+      set((s) => {
+        const nextVariants = s.variants.map((v) =>
+          v.id === variantId ? updated : v
+        );
+        return {
+          variants: nextVariants,
+          conversations: s.conversations.map((c) =>
+            c.id === conversationId
+              ? { ...c, variants: nextVariants }
+              : c
+          ),
+        };
+      });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Video generation failed";
+      set((s) => ({
+        variants: s.variants.map((v) =>
+          v.id === variantId
+            ? { ...v, status: "error" as const, errorMessage: message }
+            : v
+        ),
+        generationError: message,
+      }));
+    }
+  },
+
   retryFailedVariant: async (variantId) => {
+    const variant = get().variants.find((v) => v.id === variantId);
+    if (variant?.mediaType === "video") {
+      await get().retryVideoVariant(variantId);
+      return;
+    }
     await get().regenerateVariant(variantId);
   },
 

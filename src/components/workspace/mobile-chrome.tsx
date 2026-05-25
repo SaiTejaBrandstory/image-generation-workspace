@@ -15,11 +15,18 @@ export function MobileChrome() {
     variants,
     isGenerating,
     generationProgress,
+    mediaType,
   } = useWorkspaceStore();
 
-  const completeCount = variants.filter((v) => v.status === "complete").length;
-  const totalCount = variants.length;
-  const hasLayouts = totalCount > 0 || isGenerating;
+  const isVideo = mediaType === "video";
+  const displayVariants = variants.filter((v) =>
+    isVideo ? v.mediaType === "video" : v.mediaType !== "video"
+  );
+  const completeCount = displayVariants.filter(
+    (v) => v.status === "complete"
+  ).length;
+  const totalCount = displayVariants.length;
+  const hasResults = totalCount > 0 || isGenerating;
 
   return (
     <header className="flex shrink-0 items-center gap-2 border-b border-border bg-surface/95 px-3 pb-2.5 pt-[max(0.625rem,env(safe-area-inset-top))] backdrop-blur-md supports-[backdrop-filter]:bg-surface/80 lg:hidden">
@@ -66,8 +73,8 @@ export function MobileChrome() {
             type="button"
             role="tab"
             aria-selected={mobilePanel === "layouts"}
-            onClick={() => hasLayouts && setMobilePanel("layouts")}
-            disabled={!hasLayouts}
+            onClick={() => hasResults && setMobilePanel("layouts")}
+            disabled={!hasResults}
             className={cn(
               "relative flex flex-1 items-center justify-center gap-1.5 rounded-lg py-2 text-xs font-medium transition-colors disabled:opacity-35",
               mobilePanel === "layouts"
@@ -84,9 +91,16 @@ export function MobileChrome() {
             )}
             <span className="relative z-10 flex items-center gap-1.5">
               <LayoutGrid className="h-3.5 w-3.5" />
-              Layouts
+              {isVideo ? "Video" : "Layouts"}
               {totalCount > 0 && (
-                <span className="rounded-md bg-accent-violet/15 px-1.5 py-0.5 text-[10px] tabular-nums text-accent-violet">
+                <span
+                  className={cn(
+                    "rounded-md px-1.5 py-0.5 text-[10px] tabular-nums",
+                    isVideo
+                      ? "bg-accent-cyan/15 text-accent-cyan"
+                      : "bg-accent-violet/15 text-accent-violet"
+                  )}
+                >
                   {isGenerating
                     ? `${completeCount}/${totalCount}`
                     : totalCount}
@@ -99,13 +113,24 @@ export function MobileChrome() {
 
       <div className="flex shrink-0 items-center gap-1">
         {isGenerating && (
-          <span className="flex h-10 items-center gap-1.5 rounded-xl bg-accent-violet/10 px-2 text-[10px] font-medium tabular-nums text-accent-violet">
+          <span
+            className={cn(
+              "flex h-10 items-center gap-1.5 rounded-xl px-2 text-[10px] font-medium tabular-nums",
+              isVideo
+                ? "bg-accent-cyan/10 text-accent-cyan"
+                : "bg-accent-violet/10 text-accent-violet"
+            )}
+          >
             <Sparkles className="h-3.5 w-3.5 animate-pulse" />
-            {Math.round(generationProgress)}%
+            {isVideo ? (
+              <>~{Math.round(generationProgress)}% est.</>
+            ) : (
+              <>{Math.round(generationProgress)}%</>
+            )}
           </span>
         )}
         {mobilePanel === "layouts" && completeCount > 0 && !isGenerating && (
-          <DownloadAllButton variants={variants} variant="icon" />
+          <DownloadAllButton variants={displayVariants} variant="icon" />
         )}
         <ThemeToggle />
       </div>

@@ -47,6 +47,21 @@ export type PlatformPreset =
   | "pinterest"
   | "tiktok";
 
+export type MediaType = "image" | "video";
+
+/** Per-model values from OpenRouter (e.g. 16:9, 21:9, 4K) */
+export type VideoAspectRatio = string;
+
+export type VideoResolution = string;
+
+export interface VideoMeta {
+  duration?: number;
+  resolution?: VideoResolution;
+  aspectRatio?: VideoAspectRatio;
+  generateAudio?: boolean;
+  model?: string;
+}
+
 export type StyleEngine =
   | "luxury"
   | "tech"
@@ -102,9 +117,15 @@ export interface GenerationParams {
   uiPresence: number;
 }
 
+/** Placeholder layout id for video-only rows */
+export const VIDEO_LAYOUT_ID = "single-hero" as LayoutId;
+
 export interface LayoutVariant {
   id: string;
   layoutId: LayoutId;
+  mediaType?: MediaType;
+  videoUrl?: string;
+  videoMeta?: VideoMeta;
   /** Raw creative brief from the user (composer or edit panel) */
   userPrompt?: string;
   /** Full augmented prompt stored for reference */
@@ -153,6 +174,7 @@ export interface Conversation {
   title: string;
   /** Original user prompt (for history search) */
   prompt?: string;
+  mediaType?: MediaType;
   messages: ChatMessage[];
   variants: LayoutVariant[];
   createdAt: number;

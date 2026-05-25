@@ -25,6 +25,15 @@ function isRealImage(url?: string) {
   );
 }
 
+function isRealVideo(url?: string) {
+  return (
+    !!url &&
+    (url.startsWith("data:video") ||
+      url.startsWith("http://") ||
+      url.startsWith("https://"))
+  );
+}
+
 export function ExpandedLayoutView() {
   const {
     expandedVariantId,
@@ -118,6 +127,8 @@ export function ExpandedLayoutView() {
   const previewVariation = previewVariationId
     ? childVariations.find((c) => c.id === previewVariationId)
     : null;
+  const isVideoLayout =
+    variant.mediaType === "video" || previewVariation?.mediaType === "video";
   const actionVariant =
     isRoot && previewVariation ? previewVariation : variant;
   const actionIsVariation =
@@ -140,6 +151,7 @@ export function ExpandedLayoutView() {
 
   const canvasVariant = previewVariation ?? variant;
   const canvasHasImage = isRealImage(canvasVariant.imageUrl);
+  const canvasHasVideo = isRealVideo(canvasVariant.videoUrl);
   const canvasRegenerating = canvasVariant.status === "generating";
   const previewVariationLabel = previewVariation
     ? `Variation ${(previewVariation.variationIndex ?? 0) + 1}`
@@ -165,18 +177,31 @@ export function ExpandedLayoutView() {
   };
 
   const handleDownload = async () => {
-    if (!canvasVariant.imageUrl || !layout) return;
+    const videoSrc = canvasVariant.videoUrl;
+    const imageSrc = canvasVariant.imageUrl;
+    if (!videoSrc && !imageSrc) return;
     setDownloading(true);
     try {
-      const suffix = previewVariation
-        ? `-variation-${(previewVariation.variationIndex ?? 0) + 1}`
-        : "";
-      await downloadImage(
-        canvasVariant.imageUrl,
-        buildImageFilename(`${layout.name}${suffix}`, variant.layoutId)
-      );
+      if (videoSrc) {
+        const res = await fetch(videoSrc);
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "generated-video.mp4";
+        a.click();
+        URL.revokeObjectURL(url);
+      } else if (imageSrc && layout) {
+        const suffix = previewVariation
+          ? `-variation-${(previewVariation.variationIndex ?? 0) + 1}`
+          : "";
+        await downloadImage(
+          imageSrc,
+          buildImageFilename(`${layout.name}${suffix}`, variant.layoutId)
+        );
+      }
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Failed to download image");
+      alert(err instanceof Error ? err.message : "Failed to download");
     } finally {
       setDownloading(false);
     }
@@ -239,6 +264,15 @@ export function ExpandedLayoutView() {
               <Loader2 className="h-10 w-10 animate-spin text-accent-violet" />
               <p className="text-sm">Regenerating with your prompt…</p>
             </div>
+          ) : canvasHasVideo && canvasVariant.videoUrl ? (
+            <video
+              src={canvasVariant.videoUrl}
+              controls
+              autoPlay
+              loop
+              playsInline
+              className="max-h-[85vh] max-w-full rounded-2xl shadow-2xl"
+            />
           ) : canvasHasImage && canvasVariant.imageUrl ? (
             <GeneratedImage
               src={canvasVariant.imageUrl}
@@ -266,8 +300,10 @@ export function ExpandedLayoutView() {
             </p>
             <h2 className="text-xl font-semibold">
               {expandedMode === "edit"
-                ? layout?.name
-                : (variationTitle ?? layout?.name)}
+                ? isVideoLayout
+                  ? "Video"
+                  : layout?.name
+                : (variationTitle ?? (isVideoLayout ? "Video" : layout?.name))}
             </h2>
             {isRoot && previewVariationLabel && expandedMode === "view" && (
               <p className="mt-1 text-sm text-accent-violet">
@@ -337,6 +373,7 @@ export function ExpandedLayoutView() {
                 </p>
               )}
 
+              {!isVideoLayout && (
               <button
                 type="button"
                 onClick={handleRemix}
@@ -357,7 +394,9 @@ export function ExpandedLayoutView() {
                   ? `Regenerate ${actionVariationLabel}`
                   : "Regenerate (same composer prompt)"}
               </button>
+              )}
 
+              {!isVideoLayout && (
               <button
                 type="button"
                 onClick={openEditMode}
@@ -371,8 +410,9 @@ export function ExpandedLayoutView() {
               >
                 Edit prompt…
               </button>
+              )}
 
-              {isRoot && (
+              {isRoot && variant.mediaType !== "video" && (
                 <div className="space-y-3">
                   {(hasVariations || canGenerateMore) && (
                     <div className="space-y-3">

@@ -1,5 +1,11 @@
 import { buildLayoutImagePrompt, mapAspectRatio } from "@/lib/layout-prompt-builder";
 import {
+  formatOpenRouterErrorForUser,
+  isRetryableOpenRouterError,
+  retryDelayMs,
+  sleepMs,
+} from "@/lib/openrouter-errors";
+import {
   getModalities,
   getModelConfig,
 } from "@/lib/openrouter-models";
@@ -167,31 +173,51 @@ export async function generateImageWithOpenRouter(options: {
     };
   }
 
-  const response = await fetch(OPENROUTER_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer":
-        process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
-      "X-Title": "Brandwise Layout Workspace",
-    },
-    body: JSON.stringify(body),
-  });
+  const maxAttempts = 4;
+  let lastMessage = "Image generation failed";
 
-  const data = await response.json();
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const response = await fetch(OPENROUTER_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "HTTP-Referer":
+          process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
+        "X-Title": "Brandwise Layout Workspace",
+      },
+      body: JSON.stringify(body),
+    });
 
-  if (!response.ok) {
-    const err =
-      (data as { error?: { message?: string } })?.error?.message ??
-      JSON.stringify(data);
-    throw new Error(`Image generation failed (${response.status}): ${err}`);
+    const data = await response.json();
+
+    if (!response.ok) {
+      const err =
+        (data as { error?: { message?: string } })?.error?.message ??
+        JSON.stringify(data);
+      lastMessage = err;
+      if (
+        isRetryableOpenRouterError(response.status, err) &&
+        attempt < maxAttempts - 1
+      ) {
+        await sleepMs(retryDelayMs(attempt));
+        continue;
+      }
+      throw new Error(formatOpenRouterErrorForUser(err));
+    }
+
+    const imageUrl = extractImageUrl(data);
+    if (!imageUrl) {
+      lastMessage = "No image was returned";
+      if (attempt < maxAttempts - 1) {
+        await sleepMs(retryDelayMs(attempt));
+        continue;
+      }
+      throw new Error("No image was returned. Please try again.");
+    }
+
+    return { imageUrl, model };
   }
 
-  const imageUrl = extractImageUrl(data);
-  if (!imageUrl) {
-    throw new Error("No image was returned. Please try again.");
-  }
-
-  return { imageUrl, model };
+  throw new Error(formatOpenRouterErrorForUser(lastMessage));
 }

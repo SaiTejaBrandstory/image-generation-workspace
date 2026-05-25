@@ -1,4 +1,4 @@
-import type { LayoutSystem } from "@/types";
+import type { LayoutId, LayoutSystem } from "@/types";
 
 export const LAYOUT_SYSTEMS: LayoutSystem[] = [
   {
@@ -166,3 +166,8 @@ export const LAYOUT_SYSTEMS: LayoutSystem[] = [
 export const LAYOUT_MAP = Object.fromEntries(
   LAYOUT_SYSTEMS.map((l) => [l.id, l])
 ) as Record<string, LayoutSystem>;
+
+/** Default image generation: first layout only (Single Hero) */
+export const DEFAULT_SELECTED_LAYOUTS: LayoutId[] = [
+  LAYOUT_SYSTEMS[0].id as LayoutId,
+];
