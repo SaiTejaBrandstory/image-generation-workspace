@@ -94,6 +94,7 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
+    // "free" is a valid pseudo-layout that bypasses the layout system prompt
 
     const result = await generateImageWithOpenRouter({
       userPrompt: body.userPrompt,

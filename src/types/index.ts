@@ -18,7 +18,10 @@ export type LayoutId =
   | "radial"
   | "timeline"
   | "ui-showcase"
-  | "collage-scrapbook";
+  | "collage-scrapbook"
+  | "free";
+
+export type ImageGenerationMode = "layout" | "free";
 
 export type ImageRole =
   | "style"

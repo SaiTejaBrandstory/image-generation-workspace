@@ -254,7 +254,7 @@ export function LayoutCard({
       <div className="flex min-h-0 flex-col gap-3 border-t border-border/80 bg-surface px-4 py-3.5">
         <div className="space-y-1.5">
           <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
-            {titleOverride ?? (isVideo ? "Video" : layout?.name ?? variant.layoutId)}
+            {titleOverride ?? (isVideo ? "Video" : variant.layoutId === "free" ? "Free Style" : layout?.name ?? variant.layoutId)}
           </h3>
           <p className="line-clamp-2 text-xs leading-relaxed text-foreground-muted">
             {descriptionOverride ??

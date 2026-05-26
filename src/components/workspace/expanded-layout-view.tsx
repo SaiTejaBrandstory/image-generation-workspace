@@ -1,10 +1,22 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { motion } from "framer-motion";
-import { X, RefreshCw, Loader2, Download, Layers, ArrowLeft } from "lucide-react";
+import {
+  X,
+  RefreshCw,
+  Loader2,
+  Download,
+  Layers,
+  ArrowLeft,
+  ImagePlus,
+  Trash2,
+  ChevronLeft,
+  ChevronRight,
+} from "lucide-react";
 import {
   getChildVariations,
+  isRootVariant,
   MAX_VARIATIONS,
   remainingVariationSlots,
 } from "@/lib/variation-utils";
@@ -15,6 +27,13 @@ import { useWorkspaceStore } from "@/store/workspace-store";
 import { GeneratedImage } from "./generated-image";
 import { cn } from "@/lib/utils";
 import type { LayoutVariant } from "@/types";
+import {
+  type LogoState,
+  LogoOverlay,
+  CornerPresetButtons,
+  compositeLogoOnImage,
+  getPresetPosition,
+} from "./logo-overlay";
 
 function isRealImage(url?: string) {
   return (
@@ -32,6 +51,21 @@ function isRealVideo(url?: string) {
       url.startsWith("http://") ||
       url.startsWith("https://"))
   );
+}
+
+/** Root variants in chat order — used for prev/next in expand view */
+function getNavigableRootVariants(variants: LayoutVariant[]): LayoutVariant[] {
+  return variants
+    .filter(isRootVariant)
+    .sort((a, b) => {
+      const ra = a.generationRound ?? 0;
+      const rb = b.generationRound ?? 0;
+      if (ra !== rb) return ra - rb;
+      const sa = a.sortIndex ?? 0;
+      const sb = b.sortIndex ?? 0;
+      if (sa !== sb) return sa - sb;
+      return (a.createdAt ?? 0) - (b.createdAt ?? 0);
+    });
 }
 
 export function ExpandedLayoutView() {
@@ -60,9 +94,38 @@ export function ExpandedLayoutView() {
   );
   const editSessionRef = useRef<string | null>(null);
 
+  // ── Logo overlay state ────────────────────────────────────────────────────
+  const [logo, setLogo] = useState<LogoState | null>(null);
+  const canvasContainerRef = useRef<HTMLDivElement>(null);
+  const logoInputRef = useRef<HTMLInputElement>(null);
+
+  const handleLogoUpload = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const dataUrl = ev.target?.result as string;
+        setLogo({ dataUrl, ...getPresetPosition("br", 20), size: 20 });
+      };
+      reader.readAsDataURL(file);
+      e.target.value = "";
+    },
+    []
+  );
+
+  const updateLogo = useCallback((patch: Partial<LogoState>) => {
+    setLogo((prev) => (prev ? { ...prev, ...patch } : null));
+  }, []);
+
   useEffect(() => {
     setPreviewVariationId(null);
+    setLogo(null);
   }, [expandedVariantId]);
+
+  useEffect(() => {
+    setLogo(null);
+  }, [previewVariationId]);
 
   useEffect(() => {
     if (!expandedVariantId) return;
@@ -101,9 +164,49 @@ export function ExpandedLayoutView() {
     setEditPrompt(initial);
   }, [expandedMode, expandedVariantId, variant, composerPrompt]);
 
+  const navigableRoots = getNavigableRootVariants(variants);
+  const expandedForNav = expandedVariantId
+    ? variants.find((v) => v.id === expandedVariantId)
+    : undefined;
+  const currentRootId = expandedForNav
+    ? expandedForNav.parentVariantId ?? expandedForNav.id
+    : null;
+  const currentNavIndex =
+    currentRootId != null
+      ? navigableRoots.findIndex((v) => v.id === currentRootId)
+      : -1;
+  const canNavigateGallery =
+    navigableRoots.length > 1 && currentNavIndex >= 0;
+
+  const goToAdjacent = useCallback(
+    (direction: -1 | 1) => {
+      if (currentNavIndex < 0) return;
+      const next = navigableRoots[currentNavIndex + direction];
+      if (next) setExpandedVariant(next.id, "view");
+    },
+    [currentNavIndex, navigableRoots, setExpandedVariant]
+  );
+
+  useEffect(() => {
+    if (!expandedVariantId || !canNavigateGallery || expandedMode !== "view")
+      return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        goToAdjacent(-1);
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        goToAdjacent(1);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [expandedVariantId, canNavigateGallery, expandedMode, goToAdjacent]);
+
   if (!variant) return null;
 
-  const layout = LAYOUT_MAP[variant.layoutId];
+  const isFreeVariant = variant.layoutId === "free";
+  const layout = isFreeVariant ? null : LAYOUT_MAP[variant.layoutId];
   const hasImage = isRealImage(variant.imageUrl);
   const isRoot = !variant.parentVariantId && variant.variantKind !== "variation";
   const childVariations = isRoot
@@ -157,6 +260,10 @@ export function ExpandedLayoutView() {
     ? `Variation ${(previewVariation.variationIndex ?? 0) + 1}`
     : null;
 
+  const canGoPrev = canNavigateGallery && currentNavIndex > 0;
+  const canGoNext =
+    canNavigateGallery && currentNavIndex < navigableRoots.length - 1;
+
   const handleRemix = () => {
     void regenerateVariant(actionVariant.id);
   };
@@ -191,14 +298,27 @@ export function ExpandedLayoutView() {
         a.download = "generated-video.mp4";
         a.click();
         URL.revokeObjectURL(url);
-      } else if (imageSrc && layout) {
+      } else if (imageSrc) {
         const suffix = previewVariation
           ? `-variation-${(previewVariation.variationIndex ?? 0) + 1}`
           : "";
-        await downloadImage(
-          imageSrc,
-          buildImageFilename(`${layout.name}${suffix}`, variant.layoutId)
+        const filename = buildImageFilename(
+          `${isFreeVariant ? "free-style" : layout?.name ?? variant.layoutId}${suffix}`,
+          variant.layoutId
         );
+
+        if (logo) {
+          // Composite logo onto image via Canvas, then download as PNG
+          const blob = await compositeLogoOnImage(imageSrc, logo);
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = filename.replace(/\.\w+$/, "") + "-with-logo.png";
+          a.click();
+          URL.revokeObjectURL(url);
+        } else {
+          await downloadImage(imageSrc, filename);
+        }
       }
     } catch (err) {
       alert(err instanceof Error ? err.message : "Failed to download");
@@ -235,12 +355,45 @@ export function ExpandedLayoutView() {
             )}
           </div>
           <div className="absolute right-4 top-4 z-20 flex items-center gap-2 lg:right-8 lg:top-8">
-            {canvasHasImage && canvasVariant.imageUrl && (
+            {/* Add / remove logo — images only */}
+            {canvasHasImage && (
+              <>
+                <input
+                  ref={logoInputRef}
+                  type="file"
+                  accept="image/png,image/svg+xml,image/jpeg,image/webp"
+                  className="hidden"
+                  onChange={handleLogoUpload}
+                />
+                {logo ? (
+                  <button
+                    type="button"
+                    onClick={() => setLogo(null)}
+                    title="Remove logo"
+                    className="flex h-10 items-center gap-1.5 rounded-full bg-accent-orange/15 px-3 text-xs font-medium text-accent-orange hover:bg-accent-orange/25"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Remove logo
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => logoInputRef.current?.click()}
+                    title="Add logo overlay"
+                    className="flex h-10 items-center gap-1.5 rounded-full bg-surface-elevated px-3 text-xs font-medium text-foreground-muted hover:bg-surface-hover hover:text-foreground"
+                  >
+                    <ImagePlus className="h-4 w-4" />
+                    Add logo
+                  </button>
+                )}
+              </>
+            )}
+            {(canvasHasImage || canvasHasVideo) && (
               <button
                 type="button"
                 onClick={() => void handleDownload()}
                 disabled={downloading}
-                title="Download image"
+                title={logo ? "Download with logo" : "Download"}
                 className="flex h-10 w-10 items-center justify-center rounded-full bg-surface-elevated hover:bg-surface-hover disabled:opacity-50"
               >
                 {downloading ? (
@@ -259,6 +412,36 @@ export function ExpandedLayoutView() {
             </button>
           </div>
 
+          {canNavigateGallery && (
+            <>
+              <button
+                type="button"
+                onClick={() => goToAdjacent(-1)}
+                disabled={!canGoPrev}
+                aria-label="Previous image or video"
+                className={cn(
+                  "absolute left-2 top-1/2 z-20 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-black/50 text-white backdrop-blur-md transition-colors hover:bg-black/70 disabled:pointer-events-none disabled:opacity-25 lg:left-6 lg:h-12 lg:w-12"
+                )}
+              >
+                <ChevronLeft className="h-6 w-6" />
+              </button>
+              <button
+                type="button"
+                onClick={() => goToAdjacent(1)}
+                disabled={!canGoNext}
+                aria-label="Next image or video"
+                className={cn(
+                  "absolute right-2 top-1/2 z-20 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-black/50 text-white backdrop-blur-md transition-colors hover:bg-black/70 disabled:pointer-events-none disabled:opacity-25 lg:right-6 lg:h-12 lg:w-12"
+                )}
+              >
+                <ChevronRight className="h-6 w-6" />
+              </button>
+              <p className="pointer-events-none absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-full bg-black/45 px-3 py-1 text-[11px] font-medium tabular-nums text-white/90 backdrop-blur-sm">
+                {currentNavIndex + 1} / {navigableRoots.length}
+              </p>
+            </>
+          )}
+
           {canvasRegenerating ? (
             <div className="flex flex-col items-center gap-3 text-foreground-muted">
               <Loader2 className="h-10 w-10 animate-spin text-accent-violet" />
@@ -274,11 +457,20 @@ export function ExpandedLayoutView() {
               className="max-h-[85vh] max-w-full rounded-2xl shadow-2xl"
             />
           ) : canvasHasImage && canvasVariant.imageUrl ? (
-            <GeneratedImage
-              src={canvasVariant.imageUrl}
-              alt={previewVariationLabel ?? layout?.name ?? "Layout"}
-              variant="expanded"
-            />
+            <div ref={canvasContainerRef} className="relative max-h-[85vh] max-w-full">
+              <GeneratedImage
+                src={canvasVariant.imageUrl}
+                alt={previewVariationLabel ?? (isFreeVariant ? "Free Style" : layout?.name) ?? "Layout"}
+                variant="expanded"
+              />
+              {logo && (
+                <LogoOverlay
+                  logo={logo}
+                  containerRef={canvasContainerRef}
+                  onChange={updateLogo}
+                />
+              )}
+            </div>
           ) : (
             <div
               className={cn(
@@ -290,6 +482,49 @@ export function ExpandedLayoutView() {
         </div>
 
         <aside className="w-full shrink-0 overflow-y-auto border-t border-border bg-surface p-6 lg:w-[420px] lg:border-l lg:border-t-0 lg:p-8 space-y-5">
+          {/* Logo controls — images only */}
+          {logo && canvasHasImage && (
+            <div className="rounded-2xl border border-border bg-surface-elevated p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] font-medium uppercase tracking-widest text-foreground-muted">
+                  Logo position
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setLogo(null)}
+                  className="text-[10px] text-foreground-muted hover:text-accent-orange transition-colors"
+                >
+                  Remove
+                </button>
+              </div>
+
+              {/* Corner snap presets */}
+              <CornerPresetButtons
+                size={logo.size}
+                onSelect={(pos) => updateLogo(pos)}
+              />
+
+              {/* Logo size slider */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] text-foreground-muted">Size</label>
+                  <span className="text-[10px] tabular-nums text-foreground-muted">{Math.round(logo.size)}%</span>
+                </div>
+                <input
+                  type="range"
+                  min={5}
+                  max={50}
+                  step={1}
+                  value={logo.size}
+                  onChange={(e) =>
+                    updateLogo({ size: Number(e.target.value) })
+                  }
+                  className="w-full accent-accent-violet"
+                />
+              </div>
+
+            </div>
+          )}
           <div>
             <p className="text-[10px] uppercase tracking-widest text-foreground-muted mb-1">
               {expandedMode === "edit"
@@ -302,8 +537,8 @@ export function ExpandedLayoutView() {
               {expandedMode === "edit"
                 ? isVideoLayout
                   ? "Video"
-                  : layout?.name
-                : (variationTitle ?? (isVideoLayout ? "Video" : layout?.name))}
+                  : isFreeVariant ? "Free Style" : layout?.name
+                : (variationTitle ?? (isVideoLayout ? "Video" : isFreeVariant ? "Free Style" : layout?.name))}
             </h2>
             {isRoot && previewVariationLabel && expandedMode === "view" && (
               <p className="mt-1 text-sm text-accent-violet">

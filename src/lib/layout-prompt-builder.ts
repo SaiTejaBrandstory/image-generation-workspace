@@ -59,6 +59,17 @@ export function buildLayoutImagePrompt(options: {
   designTokens?: DesignTokens;
   references?: ReferenceImagePayload[];
 }): string {
+  // Free-style: pass the prompt straight through with only minimal quality hints
+  if (options.layoutId === "free") {
+    const { userPrompt, references } = options;
+    const inspireRefs = references?.filter((r) => r.usageMode !== "preserve") ?? [];
+    const preserveRefs = references?.filter((r) => r.usageMode === "preserve") ?? [];
+    const refNotes: string[] = [];
+    if (inspireRefs.length > 0) refNotes.push(`INSPIRE (${inspireRefs.length} image(s)): Use for visual direction only — mood, palette, and styling.`);
+    if (preserveRefs.length > 0) refNotes.push(`PRESERVE (${preserveRefs.length} image(s)): The attached asset(s) must appear in the output with their exact subject, colors, and fine details.`);
+    return [userPrompt, ...refNotes, "Output a single polished, production-ready image. No text watermarks."].filter(Boolean).join(" ");
+  }
+
   const layout = LAYOUT_MAP[options.layoutId];
   const { userPrompt, style, platform, params, designTokens, references } =
     options;

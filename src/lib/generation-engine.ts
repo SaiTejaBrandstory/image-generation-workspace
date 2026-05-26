@@ -212,6 +212,29 @@ export function buildPendingVariants(options: {
   }));
 }
 
+/** Build N free-style pending variants (no layout system applied). */
+export function buildFreeStyleVariants(options: {
+  prompt: string;
+  count: number;
+  references: ReferenceImage[];
+}): LayoutVariant[] {
+  const { prompt, count, references } = options;
+  return Array.from({ length: count }, (_, i) => ({
+    id: newVariantId(),
+    layoutId: "free" as const,
+    userPrompt: prompt,
+    prompt,
+    rationale: `Free-style generation — your prompt was sent directly to the model.`,
+    visualPsychology: "Direct generation without layout constraints.",
+    bestUse: "Any use case",
+    suggestedPlatform: suggestPlatform(prompt),
+    principles: [],
+    influenceBreakdown: buildInfluenceBreakdown(references),
+    sortIndex: i,
+    status: "pending" as const,
+  }));
+}
+
 export async function generateLayoutVariants(options: {
   prompt: string;
   layoutIds: LayoutId[];

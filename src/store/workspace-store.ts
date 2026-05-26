@@ -12,6 +12,7 @@ import {
   prepareVariationsForParent,
 } from "@/lib/conversations-api";
 import {
+  buildFreeStyleVariants,
   buildPendingVariants,
   generateLayoutVariants,
   generateSingleVariant,
@@ -67,6 +68,7 @@ import type {
   Conversation,
   DesignTokens,
   GenerationParams,
+  ImageGenerationMode,
   LayoutId,
   LayoutVariant,
   MediaType,
@@ -112,6 +114,8 @@ interface WorkspaceState {
   activeBrand: Brand | null;
   designTokens: DesignTokens | null;
   imageModel: string;
+  imageGenerationMode: ImageGenerationMode;
+  freeStyleCount: number;
   mediaType: MediaType;
   videoModel: string;
   videoDuration: number;
@@ -134,6 +138,8 @@ interface WorkspaceState {
   clearLayouts: () => void;
   toggleLayout: (id: LayoutId) => void;
   setImageModel: (model: string) => void;
+  setImageGenerationMode: (mode: ImageGenerationMode) => void;
+  setFreeStyleCount: (count: number) => void;
   setMediaType: (type: MediaType) => void;
   setVideoModel: (model: string) => void;
   setVideoDuration: (seconds: number) => void;
@@ -652,6 +658,224 @@ async function runVideoGeneration(
   }));
 }
 
+// ── Free-style image generation ───────────────────────────────────────────
+
+async function runFreeStyleGeneration(
+  get: () => WorkspaceState,
+  set: WorkspaceSet
+) {
+  const state = get();
+  const {
+    prompt,
+    freeStyleCount,
+    platform,
+    aspectRatio,
+    params,
+    references,
+    imageModel,
+    conversations,
+    activeConversationId,
+  } = state;
+
+  const existingConv = activeConversationId
+    ? conversations.find((c) => c.id === activeConversationId)
+    : null;
+  const continuing = Boolean(activeConversationId && existingConv);
+
+  let priorMessages = existingConv?.messages ?? [];
+  let priorVariantsFromFetch: LayoutVariant[] = [];
+  if (continuing && activeConversationId) {
+    try {
+      const full = await fetchConversationById(activeConversationId);
+      if (priorMessages.length === 0) priorMessages = full.messages;
+      priorVariantsFromFetch = full.variants;
+    } catch { /* use local */ }
+  }
+
+  const userMsg: ChatMessage = {
+    id: crypto.randomUUID(),
+    role: "user",
+    content: prompt,
+    timestamp: Date.now(),
+    referenceIds: references.map((r) => r.id),
+  };
+
+  const pendingVariants = buildFreeStyleVariants({
+    prompt,
+    count: freeStyleCount,
+    references,
+  });
+
+  const priorVariants = continuing
+    ? priorVariantsFromFetch.length > 0
+      ? priorVariantsFromFetch
+      : existingConv?.variants ?? state.variants
+    : [];
+
+  let conversationId: string;
+  let generationRound = 0;
+  let roundCreatedAt = Date.now();
+
+  try {
+    if (continuing && activeConversationId) {
+      const prepared = await prepareConversationForGeneration(
+        activeConversationId,
+        {
+          prompt,
+          style: state.style,
+          platform,
+          aspectRatio,
+          params,
+          imageModel,
+          selectedLayouts: ["free"],
+          variants: pendingVariants,
+          userMessage: userMsg,
+        }
+      );
+      conversationId = prepared.conversationId;
+      generationRound = prepared.generationRound;
+      roundCreatedAt = new Date(prepared.roundCreatedAt).getTime();
+    } else {
+      conversationId = await createConversationRecord({
+        prompt,
+        style: state.style,
+        platform,
+        aspectRatio,
+        params,
+        imageModel,
+        selectedLayouts: ["free"],
+        variants: pendingVariants,
+        userMessage: userMsg,
+      });
+    }
+  } catch (err) {
+    set({
+      isGenerating: false,
+      generatingConversationId: null,
+      generationProgress: 0,
+      generationError: err instanceof Error ? err.message : "Failed to save to history",
+    });
+    return;
+  }
+
+  const optimisticMessages = [...priorMessages, userMsg];
+  const pendingWithRound = pendingVariants.map((v, i) => ({
+    ...v,
+    generationRound,
+    createdAt: roundCreatedAt,
+    sortIndex: i,
+  }));
+  const allVariantsForUi = [...priorVariants, ...pendingWithRound];
+
+  set((s) => {
+    const viewing = shouldUpdateActiveView(s.activeConversationId, conversationId);
+    const listPatch = continuing
+      ? mergeConversationInList(s.conversations, conversationId, {
+          messages: optimisticMessages,
+          variants: allVariantsForUi,
+          prompt,
+        }, { pinToTop: true })
+      : [
+          {
+            id: conversationId,
+            title: prompt.length > 40 ? `${prompt.slice(0, 40)}…` : prompt,
+            prompt,
+            messages: optimisticMessages,
+            variants: allVariantsForUi,
+            createdAt: Date.now(),
+          },
+          ...s.conversations,
+        ];
+    return {
+      generatingConversationId: conversationId,
+      activeConversationId: conversationId,
+      mobileSidebarOpen: false,
+      mobilePanel: "layouts",
+      conversations: listPatch,
+      ...(viewing ? { variants: allVariantsForUi, generationError: null } : {}),
+    };
+  });
+
+  let newBatchVariants: LayoutVariant[] = [];
+  try {
+    newBatchVariants = await generateLayoutVariants({
+      prompt,
+      layoutIds: pendingWithRound.map(() => "free" as const),
+      style: state.style,
+      platform,
+      aspectRatio,
+      params,
+      references,
+      imageModel,
+      conversationId,
+      pendingVariants: pendingWithRound,
+      onProgress: (progress, partial) => {
+        if (get().activeConversationId !== conversationId) return;
+        set({ generationProgress: progress, variants: [...priorVariants, ...partial] });
+      },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Generation failed";
+    set(finishGenerationState(conversationId, { generationError: message }));
+    return;
+  }
+
+  let variants = [...priorVariants, ...newBatchVariants];
+  try {
+    const refreshed = await fetchConversationById(conversationId);
+    variants = refreshed.variants;
+  } catch { /* keep local */ }
+
+  const successCount = newBatchVariants.filter((v) => v.status === "complete").length;
+  const errorCount = newBatchVariants.filter((v) => v.status === "error").length;
+  const finalAssistant: ChatMessage = {
+    id: crypto.randomUUID(),
+    role: "assistant",
+    content: errorCount > 0
+      ? `Created ${successCount} image${successCount === 1 ? "" : "s"} (${errorCount} failed). Open any card to retry.`
+      : `Created ${successCount} free-style image${successCount === 1 ? "" : "s"} from your prompt.`,
+    timestamp: Date.now(),
+  };
+
+  const title = continuing
+    ? existingConv!.title
+    : prompt.length > 40 ? `${prompt.slice(0, 40)}…` : prompt;
+
+  let savedConversation: Conversation | null = null;
+  try {
+    savedConversation = await finalizeConversation(conversationId, {
+      ...(continuing ? {} : { title }),
+      assistantMessage: finalAssistant,
+    });
+  } catch {
+    savedConversation = {
+      id: conversationId,
+      title,
+      prompt,
+      messages: [...priorMessages, userMsg, finalAssistant],
+      variants,
+      createdAt: existingConv?.createdAt ?? Date.now(),
+    };
+  }
+
+  set((s) => ({
+    ...finishGenerationState(conversationId, {
+      variants,
+      generationProgress: 100,
+      generationError: null,
+      prompt: "",
+      references: [],
+    })(s),
+    conversations: [
+      { ...savedConversation!, variants },
+      ...s.conversations.filter((c) => c.id !== conversationId),
+    ],
+    mobilePanel: shouldUpdateActiveView(s.activeConversationId, conversationId)
+      ? "layouts"
+      : s.mobilePanel,
+  }));
+}
+
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   sidebarExpanded: false,
   theme: "dark",
@@ -678,6 +902,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   activeBrand: null,
   designTokens: null,
   imageModel: DEFAULT_IMAGE_MODEL,
+  imageGenerationMode: "layout",
+  freeStyleCount: 1,
   mediaType: "image",
   videoModel: DEFAULT_VIDEO_MODEL,
   videoDuration: DEFAULT_VIDEO_DURATION,
@@ -757,6 +983,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
 
   setImageModel: (model) => set({ imageModel: model }),
+  setImageGenerationMode: (mode) => set({ imageGenerationMode: mode }),
+  setFreeStyleCount: (count) => set({ freeStyleCount: Math.max(1, Math.min(10, count)) }),
   setMediaType: (type) =>
     set((s) => ({
       mediaType: type,
@@ -1030,6 +1258,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
     if (state.mediaType === "video") {
       await runVideoGeneration(get, set);
+      return;
+    }
+
+    if (state.imageGenerationMode === "free") {
+      await runFreeStyleGeneration(get, set);
       return;
     }
 
