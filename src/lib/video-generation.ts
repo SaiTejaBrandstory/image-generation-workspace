@@ -4,6 +4,11 @@ import {
   retryDelayMs,
   sleepMs,
 } from "@/lib/openrouter-errors";
+import {
+  apiErrorMessageFromResponse,
+  parseApiJsonResponse,
+} from "@/lib/parse-api-response";
+import { maxReferencesForMedia } from "@/lib/reference-limits";
 import { MIN_VIDEO_REFERENCE_DIMENSION } from "@/lib/reference-image-dimensions";
 import { serializeReferences } from "@/lib/reference-utils";
 import type {
@@ -47,7 +52,9 @@ export async function generateVideoVariant(options: {
   conversationId: string;
   variant: LayoutVariant;
 }): Promise<LayoutVariant> {
-  const refPayloads = await serializeReferences(options.references, {
+  const maxRefs = maxReferencesForMedia("video");
+  const refsToSend = options.references.slice(0, maxRefs);
+  const refPayloads = await serializeReferences(refsToSend, {
     minDimension: MIN_VIDEO_REFERENCE_DIMENSION,
   });
 
@@ -85,8 +92,13 @@ export async function generateVideoVariant(options: {
       }),
     });
 
-    const data = await res.json();
-    if (res.ok) {
+    const { data, raw, parseError } = await parseApiJsonResponse<{
+      error?: string;
+      videoUrl?: string;
+      videoMeta?: VideoMeta;
+    }>(res);
+
+    if (res.ok && data) {
       return {
         ...options.variant,
         status: "complete",
@@ -96,7 +108,14 @@ export async function generateVideoVariant(options: {
       };
     }
 
-    lastError = (data.error as string) ?? lastError;
+    lastError = data?.error
+      ? formatOpenRouterErrorForUser(data.error)
+      : apiErrorMessageFromResponse(
+          res,
+          raw,
+          parseError,
+          `Video generation failed (${res.status})`
+        );
     if (
       isRetryableOpenRouterError(res.status, lastError) &&
       attempt < maxAttempts - 1

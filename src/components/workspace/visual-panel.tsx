@@ -4,19 +4,24 @@ import { motion } from "framer-motion";
 import { Film, LayoutGrid } from "lucide-react";
 import { useScrollToLatestGeneration } from "@/hooks/use-scroll-to-latest-generation";
 import { cn } from "@/lib/utils";
-import { useWorkspaceStore } from "@/store/workspace-store";
+import {
+  selectIsViewingActiveGeneration,
+  useWorkspaceStore,
+} from "@/store/workspace-store";
 import { LayoutMatrix } from "./layout-matrix";
 import { DownloadAllButton } from "./download-all-button";
 import { ThemeToggle } from "./theme-toggle";
 
 export function VisualPanel({ className }: { className?: string }) {
-  const {
-    variants,
-    isGenerating,
-    generationProgress,
-    generationError,
-    mediaType,
-  } = useWorkspaceStore();
+  const variants = useWorkspaceStore((s) => s.variants);
+  const generationProgress = useWorkspaceStore((s) => s.generationProgress);
+  const mediaType = useWorkspaceStore((s) => s.mediaType);
+  const isGenerating = useWorkspaceStore(selectIsViewingActiveGeneration);
+  const generationError = useWorkspaceStore((s) =>
+    s.isGenerating && !selectIsViewingActiveGeneration(s)
+      ? null
+      : s.generationError
+  );
 
   const isVideo = mediaType === "video";
   const displayVariants = variants.filter((v) =>
@@ -79,31 +84,18 @@ export function VisualPanel({ className }: { className?: string }) {
         </div>
         <div className="flex shrink-0 items-center gap-3">
           <DownloadAllButton variants={displayVariants} />
-          {isGenerating && (
+          {/* Progress bar only for images — video cards show their own time-based bar */}
+          {isGenerating && !isVideo && (
             <div className="flex items-center gap-2">
               <div className="h-1.5 w-24 overflow-hidden rounded-full bg-surface-elevated">
                 <motion.div
-                  className={cn(
-                    "h-full",
-                    isVideo ? "bg-accent-cyan" : "bg-accent-violet"
-                  )}
+                  className="h-full bg-accent-violet"
                   animate={{ width: `${generationProgress}%` }}
-                  transition={
-                    isVideo
-                      ? { duration: 0.6, ease: "easeOut" }
-                      : { duration: 0.2 }
-                  }
+                  transition={{ duration: 0.2 }}
                 />
               </div>
               <span className="text-xs text-foreground-muted">
-                {isVideo ? (
-                  <>
-                    ~{Math.round(generationProgress)}%
-                    <span className="text-foreground-muted/70"> est.</span>
-                  </>
-                ) : (
-                  <>{Math.round(generationProgress)}%</>
-                )}
+                {Math.round(generationProgress)}%
               </span>
             </div>
           )}

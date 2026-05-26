@@ -92,6 +92,8 @@ export interface ReferenceImage {
   id: string;
   url: string;
   name: string;
+  /** Original file size in bytes (for upload budget limits) */
+  sizeBytes?: number;
   role: ImageRole;
   influence: number;
   locked: boolean;

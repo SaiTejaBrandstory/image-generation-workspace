@@ -49,6 +49,8 @@ interface PatchBody {
   starred?: boolean;
   projectId?: string | null;
   messages?: ChatMessage[];
+  /** Append a single message without replacing the full history */
+  appendMessage?: ChatMessage;
 }
 
 export async function PATCH(request: NextRequest, { params }: RouteParams) {
@@ -96,15 +98,12 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
       }
     }
 
-    if (!body.messages?.length) {
+    const hasMessages = body.messages?.length || body.appendMessage;
+    if (!hasMessages) {
       if (metaUpdated) {
         return NextResponse.json({ conversation: metaUpdated });
       }
-      const conversation = await fetchConversationDetail(
-        supabase,
-        id,
-        user.id
-      );
+      const conversation = await fetchConversationDetail(supabase, id, user.id);
       if (!conversation) {
         return NextResponse.json({ error: "Not found" }, { status: 404 });
       }
@@ -113,7 +112,6 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
 
     if (body.messages?.length) {
       await supabase.from("chat_messages").delete().eq("conversation_id", id);
-
       const rows = body.messages.map((m, i) => ({
         id: m.id,
         conversation_id: id,
@@ -124,8 +122,29 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
         position: i,
         created_at: new Date(m.timestamp).toISOString(),
       }));
-
       const { error } = await supabase.from("chat_messages").insert(rows);
+      if (error) throw new Error(error.message);
+    } else if (body.appendMessage) {
+      const m = body.appendMessage;
+      const { data: lastMsg } = await supabase
+        .from("chat_messages")
+        .select("position")
+        .eq("conversation_id", id)
+        .eq("user_id", user.id)
+        .order("position", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const nextPosition = (lastMsg?.position ?? -1) + 1;
+      const { error } = await supabase.from("chat_messages").upsert({
+        id: m.id,
+        conversation_id: id,
+        user_id: user.id,
+        role: m.role,
+        content: m.content,
+        reference_ids: m.referenceIds ?? null,
+        position: nextPosition,
+        created_at: new Date(m.timestamp).toISOString(),
+      });
       if (error) throw new Error(error.message);
     }
 

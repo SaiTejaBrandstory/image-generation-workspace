@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { formatOpenRouterErrorForUser } from "@/lib/openrouter-errors";
+import {
+  maxPromptCharsForMedia,
+  promptOverLimitMessage,
+} from "@/lib/prompt-limits";
 import { generateImageWithOpenRouter } from "@/lib/openrouter-image";
 import { createClient } from "@/lib/supabase/server";
 import type {
@@ -68,6 +72,18 @@ export async function POST(request: NextRequest) {
     if (!body.userPrompt?.trim()) {
       return NextResponse.json(
         { error: "userPrompt is required" },
+        { status: 400 }
+      );
+    }
+
+    if (body.userPrompt.length > maxPromptCharsForMedia("image")) {
+      return NextResponse.json(
+        {
+          error: promptOverLimitMessage(
+            body.userPrompt.length,
+            "image"
+          ),
+        },
         { status: 400 }
       );
     }

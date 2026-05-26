@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Expand,
   AlertCircle,
@@ -11,6 +11,7 @@ import {
 import { LAYOUT_MAP } from "@/lib/layout-systems";
 import { buildImageFilename, downloadImage } from "@/lib/download-utils";
 import { useWorkspaceStore } from "@/store/workspace-store";
+import { estimateVideoGenerationMs } from "@/lib/video-progress";
 import { GeneratedImage } from "./generated-image";
 import { cn } from "@/lib/utils";
 import type { LayoutVariant } from "@/types";
@@ -62,6 +63,25 @@ export function LayoutCard({
   const hasImage = isRealImage(variant.imageUrl);
   const hasVideo = isRealVideo(variant.videoUrl);
   const [downloading, setDownloading] = useState(false);
+
+  // Live estimated progress for video generating cards (persists across tab switches)
+  const [cardProgress, setCardProgress] = useState<number | null>(null);
+  useEffect(() => {
+    if (!isLoading || !isVideo || !variant.createdAt) {
+      setCardProgress(null);
+      return;
+    }
+    const estimateMs = estimateVideoGenerationMs(
+      variant.videoMeta?.duration ?? 6
+    );
+    const tick = () => {
+      const elapsed = Date.now() - variant.createdAt!;
+      setCardProgress(Math.min(92, Math.round(8 + (elapsed / estimateMs) * 84)));
+    };
+    tick();
+    const id = setInterval(tick, 2_000);
+    return () => clearInterval(id);
+  }, [isLoading, isVideo, variant.createdAt, variant.videoMeta?.duration]);
 
   const handleDownload = async () => {
     const src = isVideo ? variant.videoUrl : variant.imageUrl;
@@ -116,8 +136,26 @@ export function LayoutCard({
     >
       <div className="relative w-full shrink-0 overflow-hidden">
         {isLoading ? (
-          <div className="layout-card-preview flex items-center justify-center">
-            <Loader2 className="h-8 w-8 animate-spin text-accent-violet" />
+          <div className="layout-card-preview flex flex-col items-center justify-center gap-3">
+            <Loader2
+              className={cn(
+                "h-8 w-8 animate-spin",
+                isVideo ? "text-accent-cyan" : "text-accent-violet"
+              )}
+            />
+            {isVideo && cardProgress !== null && (
+              <div className="w-28 space-y-1.5 px-1">
+                <div className="h-1 w-full overflow-hidden rounded-full bg-foreground/10">
+                  <div
+                    className="h-full bg-accent-cyan transition-[width] duration-1000 ease-linear"
+                    style={{ width: `${cardProgress}%` }}
+                  />
+                </div>
+                <p className="text-center text-[10px] text-foreground-muted/70">
+                  ~{cardProgress}% estimated
+                </p>
+              </div>
+            )}
           </div>
         ) : hasVideo && variant.videoUrl ? (
           <div className="relative layout-card-preview overflow-hidden bg-black">
@@ -197,13 +235,13 @@ export function LayoutCard({
             {isError && (
               <div className="flex flex-col items-center gap-2 p-4 text-center">
                 <AlertCircle className="h-5 w-5 text-accent-orange" />
-                <span className="text-[10px] text-white/80 leading-snug line-clamp-3">
+                <span className="text-[10px] text-foreground-muted leading-snug line-clamp-3">
                   {variant.errorMessage ?? "Generation failed"}
                 </span>
                 <button
                   type="button"
                   onClick={handleAction(() => retryFailedVariant(variant.id))}
-                  className="rounded-lg bg-white/15 px-3 py-1 text-[10px] font-medium text-white hover:bg-white/25"
+                  className="rounded-lg bg-accent-orange/10 px-3 py-1 text-[10px] font-medium text-accent-orange hover:bg-accent-orange/20"
                 >
                   Retry
                 </button>

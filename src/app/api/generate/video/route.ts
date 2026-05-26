@@ -1,5 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { formatOpenRouterErrorForUser } from "@/lib/openrouter-errors";
+import {
+  maxPromptCharsForMedia,
+  promptOverLimitMessage,
+} from "@/lib/prompt-limits";
 import { validateVideoReferencePayloads } from "@/lib/reference-image-formats";
 import { generateVideoWithOpenRouter } from "@/lib/openrouter-video";
 import { createClient } from "@/lib/supabase/server";
@@ -62,6 +66,18 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (body.userPrompt.length > maxPromptCharsForMedia("video")) {
+      return NextResponse.json(
+        {
+          error: promptOverLimitMessage(
+            body.userPrompt.length,
+            "video"
+          ),
+        },
+        { status: 400 }
+      );
+    }
+
     if (!body.model) {
       return NextResponse.json({ error: "model is required" }, { status: 400 });
     }
@@ -118,6 +134,32 @@ export async function POST(request: NextRequest) {
       );
 
       videoUrl = persisted.signedUrl;
+
+      // Save the assistant message server-side so it persists even if the
+      // browser was refreshed or the tab was closed during generation.
+      try {
+        const { data: lastMsg } = await supabase
+          .from("chat_messages")
+          .select("position")
+          .eq("conversation_id", body.conversationId)
+          .eq("user_id", user.id)
+          .order("position", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        await supabase.from("chat_messages").insert({
+          id: crypto.randomUUID(),
+          conversation_id: body.conversationId,
+          user_id: user.id,
+          role: "assistant",
+          content: "Your video is ready. Open the card to preview or download.",
+          reference_ids: null,
+          position: (lastMsg?.position ?? -1) + 1,
+          created_at: new Date().toISOString(),
+        });
+      } catch {
+        /* non-fatal — message can be re-written client-side if needed */
+      }
 
       await supabase
         .from("conversations")

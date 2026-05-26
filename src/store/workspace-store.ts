@@ -47,6 +47,18 @@ import {
   DEFAULT_SELECTED_LAYOUTS,
   LAYOUT_SYSTEMS,
 } from "@/lib/layout-systems";
+import {
+  maxReferencesForMedia,
+  MAX_REFERENCE_FILE_BYTES,
+  MAX_REFERENCES_TOTAL_BYTES,
+  totalReferenceBytes,
+} from "@/lib/reference-limits";
+import {
+  clampPromptText,
+  maxPromptCharsForMedia,
+  promptOverLimitMessage,
+  promptWithinLimit,
+} from "@/lib/prompt-limits";
 import { uid } from "@/lib/utils";
 import type {
   AspectRatio,
@@ -86,6 +98,8 @@ interface WorkspaceState {
   references: ReferenceImage[];
   variants: LayoutVariant[];
   isGenerating: boolean;
+  /** Conversation that owns the in-flight main generate() job */
+  generatingConversationId: string | null;
   generatingVariationsParentId: string | null;
   /** How many variations to generate on the next batch (1–10) */
   variationBatchSize: number;
@@ -180,15 +194,166 @@ type WorkspaceSet = (
 function claimGenerationStart(set: WorkspaceSet): boolean {
   let claimed = false;
   set((s) => {
-    if (s.isGenerating || !s.prompt.trim()) return s;
+    if (s.isGenerating || !promptWithinLimit(s.prompt, s.mediaType)) return s;
     claimed = true;
     return {
       isGenerating: true,
+      generatingConversationId: s.activeConversationId,
       generationError: null,
       generationProgress: 0,
     };
   });
   return claimed;
+}
+
+function mergeConversationInList(
+  conversations: Conversation[],
+  conversationId: string,
+  patch: Partial<Conversation>,
+  options?: { pinToTop?: boolean }
+): Conversation[] {
+  const index = conversations.findIndex((c) => c.id === conversationId);
+  if (index === -1) return conversations;
+
+  const merged: Conversation = {
+    ...conversations[index]!,
+    ...patch,
+    ...(options?.pinToTop ? { updatedAt: Date.now() } : {}),
+  };
+
+  if (options?.pinToTop) {
+    return [merged, ...conversations.filter((c) => c.id !== conversationId)];
+  }
+
+  const next = [...conversations];
+  next[index] = merged;
+  return next;
+}
+
+function shouldUpdateActiveView(
+  activeConversationId: string | null,
+  conversationId: string
+): boolean {
+  return (
+    activeConversationId === null || activeConversationId === conversationId
+  );
+}
+
+function finishGenerationState(
+  conversationId: string,
+  patch: Partial<WorkspaceState>
+): (state: WorkspaceState) => Partial<WorkspaceState> {
+  return (s) => {
+    const viewing = shouldUpdateActiveView(
+      s.activeConversationId,
+      conversationId
+    );
+    return {
+      isGenerating: false,
+      generatingConversationId: null,
+      generationProgress: 0,
+      ...(viewing
+        ? patch
+        : {
+            generationError: null,
+          }),
+    };
+  };
+}
+
+/** True when the visible conversation is the one currently generating. */
+export function selectIsViewingActiveGeneration(
+  state: WorkspaceState
+): boolean {
+  return (
+    state.isGenerating &&
+    state.generatingConversationId !== null &&
+    state.generatingConversationId === state.activeConversationId
+  );
+}
+
+/** Max age before a stuck "generating" variant is marked as timed-out. */
+const VARIANT_STALE_MS = 7 * 60 * 1000; // 7 minutes (server maxDuration = 5min)
+
+/**
+ * For a conversation we just loaded: if any variants are stuck in
+ * "generating/pending" and are NOT ours (i.e. from a previous session),
+ * mark old ones as error immediately and poll the DB for fresh ones.
+ */
+function recoverGeneratingVariants(
+  get: () => WorkspaceState,
+  set: WorkspaceSet,
+  conversationId: string,
+  variantIds: string[]
+) {
+  if (variantIds.length === 0) return;
+
+  let attempts = 0;
+  const MAX_POLL_ATTEMPTS = 24; // 24 × 15 s = 6 min max polling
+
+  const poll = async () => {
+    // Stop if the user navigated away or started their own generation on this conversation
+    const s = get();
+    if (
+      s.activeConversationId !== conversationId ||
+      (s.isGenerating && s.generatingConversationId === conversationId)
+    )
+      return;
+
+    attempts++;
+
+    try {
+      const refreshed = await fetchConversationById(conversationId);
+      const stillGenerating = refreshed.variants.filter(
+        (v) =>
+          variantIds.includes(v.id) &&
+          (v.status === "generating" || v.status === "pending")
+      );
+
+      // Update variants AND messages from DB (messages include server-saved assistant reply)
+      set((st) => ({
+        variants:
+          st.activeConversationId === conversationId
+            ? refreshed.variants
+            : st.variants,
+        conversations: mergeConversationInList(
+          st.conversations,
+          conversationId,
+          { variants: refreshed.variants, messages: refreshed.messages }
+        ),
+      }));
+
+      if (stillGenerating.length > 0 && attempts < MAX_POLL_ATTEMPTS) {
+        setTimeout(poll, 15_000);
+      } else if (stillGenerating.length > 0) {
+        // Timed out polling — mark them as error locally
+        const stuckIds = new Set(stillGenerating.map((v) => v.id));
+        const errorMsg = "Generation timed out — tap Retry to try again.";
+        set((st) => {
+          const fix = (vs: LayoutVariant[]) =>
+            vs.map((v) =>
+              stuckIds.has(v.id)
+                ? { ...v, status: "error" as const, errorMessage: errorMsg }
+                : v
+            );
+          return {
+            variants:
+              st.activeConversationId === conversationId
+                ? fix(st.variants)
+                : st.variants,
+            conversations: st.conversations.map((c) =>
+              c.id === conversationId ? { ...c, variants: fix(c.variants ?? []) } : c
+            ),
+          };
+        });
+      }
+    } catch {
+      /* ignore poll errors */
+    }
+  };
+
+  // First poll after 10 s — gives the server a chance to finish
+  setTimeout(poll, 10_000);
 }
 
 async function runVideoGeneration(
@@ -276,6 +441,7 @@ async function runVideoGeneration(
           videoModel,
           selectedLayouts: [],
           variants: [pendingVariant],
+          userMessage: userMsg,
         }
       );
       conversationId = prepared.conversationId;
@@ -293,11 +459,14 @@ async function runVideoGeneration(
         videoModel,
         selectedLayouts: [],
         variants: [pendingVariant],
+        userMessage: userMsg,
       });
     }
   } catch (err) {
     set({
       isGenerating: false,
+      generatingConversationId: null,
+      generationProgress: 0,
       generationError:
         err instanceof Error ? err.message : "Failed to save to history",
     });
@@ -315,21 +484,22 @@ async function runVideoGeneration(
   const allVariantsForUi = [...priorVariants, pendingWithRound];
   const optimisticMessages = [...priorMessages, userMsg];
 
-  set({
-    variants: allVariantsForUi,
-    activeConversationId: conversationId,
-    mobileSidebarOpen: false,
-    mobilePanel: "layouts",
-    conversations: continuing
-      ? conversations.map((c) =>
-          c.id === conversationId
-            ? {
-                ...c,
-                mediaType: "video" as const,
-                messages: optimisticMessages,
-                variants: allVariantsForUi,
-              }
-            : c
+  set((s) => {
+    const viewing = shouldUpdateActiveView(
+      s.activeConversationId,
+      conversationId
+    );
+    const listPatch = continuing
+      ? mergeConversationInList(
+          s.conversations,
+          conversationId,
+          {
+            mediaType: "video" as const,
+            messages: optimisticMessages,
+            variants: allVariantsForUi,
+            prompt,
+          },
+          { pinToTop: true }
         )
       : [
           {
@@ -337,22 +507,38 @@ async function runVideoGeneration(
             title:
               prompt.length > 40 ? `${prompt.slice(0, 40)}…` : prompt,
             prompt,
-            mediaType: "video",
+            mediaType: "video" as const,
             messages: optimisticMessages,
             variants: allVariantsForUi,
             createdAt: Date.now(),
           },
-          ...conversations,
-        ],
+          ...s.conversations,
+        ];
+    return {
+      generatingConversationId: conversationId,
+      activeConversationId: conversationId,
+      mobileSidebarOpen: false,
+      mobilePanel: "layouts",
+      conversations: listPatch,
+      ...(viewing
+        ? { variants: allVariantsForUi, generationError: null }
+        : {}),
+    };
   });
 
   let completedVariant: LayoutVariant = pendingWithRound;
   const stopEstimatedProgress = startEstimatedVideoProgress(
     estimateVideoGenerationMs(videoDuration),
-    (percent) => set({ generationProgress: percent })
+    (percent) => {
+      if (get().activeConversationId === conversationId) {
+        set({ generationProgress: percent });
+      }
+    }
   );
   try {
-    set({ generationProgress: 8 });
+    if (get().activeConversationId === conversationId) {
+      set({ generationProgress: 8 });
+    }
     completedVariant = await generateVideoVariant({
       prompt,
       videoModel,
@@ -373,12 +559,22 @@ async function runVideoGeneration(
       errorMessage: message,
     };
     stopEstimatedProgress();
-    set({
-      variants: [...priorVariants, completedVariant],
-      isGenerating: false,
-      generationProgress: 0,
-      generationError: message,
-    });
+    const errorVariants = [...priorVariants, completedVariant];
+    set((s) => ({
+      ...finishGenerationState(conversationId, {
+        variants: errorVariants,
+        generationError: message,
+      })(s),
+      conversations: mergeConversationInList(
+        s.conversations,
+        conversationId,
+        {
+          variants: errorVariants,
+          messages: optimisticMessages,
+        },
+        { pinToTop: true }
+      ),
+    }));
     return;
   }
   stopEstimatedProgress();
@@ -401,20 +597,25 @@ async function runVideoGeneration(
     timestamp: Date.now(),
   };
 
-  const allMessages = [...priorMessages, userMsg, finalAssistant];
   const title = continuing
     ? existingConv!.title
     : prompt.length > 40
       ? `${prompt.slice(0, 40)}…`
       : prompt;
 
+  // For successful video generation the server route already saved the assistant
+  // message — only append it client-side on failure (error msg) or new conversation
+  // title update, so we don't create duplicates.
+  const serverAlreadySavedReply = completedVariant.status === "complete";
+
   let savedConversation: Conversation | null = null;
   try {
     savedConversation = await finalizeConversation(conversationId, {
       ...(continuing ? {} : { title }),
-      messages: allMessages,
+      ...(serverAlreadySavedReply ? {} : { assistantMessage: finalAssistant }),
     });
   } catch {
+    const allMessages = [...priorMessages, userMsg, finalAssistant];
     savedConversation = {
       id: conversationId,
       title,
@@ -433,17 +634,22 @@ async function runVideoGeneration(
     variants,
   };
 
-  set({
-    variants,
-    isGenerating: false,
-    generationProgress: 100,
+  set((s) => ({
+    ...finishGenerationState(conversationId, {
+      variants,
+      generationProgress: 100,
+      generationError: null,
+      prompt: "",
+      references: [],
+    })(s),
     conversations: [
       merged,
-      ...conversations.filter((c) => c.id !== conversationId),
+      ...s.conversations.filter((c) => c.id !== conversationId),
     ],
-    activeConversationId: conversationId,
-    mobilePanel: "layouts",
-  });
+    mobilePanel: shouldUpdateActiveView(s.activeConversationId, conversationId)
+      ? "layouts"
+      : s.mobilePanel,
+  }));
 }
 
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
@@ -460,6 +666,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   references: [],
   variants: [],
   isGenerating: false,
+  generatingConversationId: null,
   generatingVariationsParentId: null,
   variationBatchSize: DEFAULT_VARIATION_BATCH,
   generationProgress: 0,
@@ -514,7 +721,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             : existing?.projectId,
       };
       const rest = s.conversations.filter((c) => c.id !== patch.id);
-      return { conversations: [merged, ...rest] };
+      return {
+        conversations: [{ ...merged, updatedAt: Date.now() }, ...rest],
+      };
     }),
 
   removeConversationFromList: (id) =>
@@ -551,6 +760,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   setMediaType: (type) =>
     set((s) => ({
       mediaType: type,
+      prompt: clampPromptText(s.prompt, type),
       generationError: null,
       mobilePanel: type === "video" ? "layouts" : s.mobilePanel,
       references:
@@ -593,13 +803,22 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   addReference: (file, usageMode = "inspire") => {
     const state = get();
-    const mode =
-      state.mediaType === "video" ? "inspire" : usageMode;
+    const max = maxReferencesForMedia(state.mediaType);
+    if (state.references.length >= max) return;
+    if (file.size > MAX_REFERENCE_FILE_BYTES) return;
+    if (
+      totalReferenceBytes(state.references) + file.size >
+      MAX_REFERENCES_TOTAL_BYTES
+    ) {
+      return;
+    }
+    const mode = state.mediaType === "video" ? "inspire" : usageMode;
     const url = URL.createObjectURL(file);
     const ref: ReferenceImage = {
       id: uid(),
       url,
       name: file.name,
+      sizeBytes: file.size,
       role: "style",
       influence: mode === "preserve" ? 100 : 70,
       locked: mode === "preserve",
@@ -704,9 +923,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
 
   selectConversation: async (id) => {
+    const viewingInFlight =
+      get().isGenerating && get().generatingConversationId === id;
+
     set({
       activeConversationId: id,
-      generationError: null,
+      prompt: "",
+      references: [],
+      generationError: viewingInFlight ? get().generationError : null,
       mobileSidebarOpen: false,
       mobilePanel: "chat",
       expandedVariantId: null,
@@ -715,16 +939,69 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
     try {
       const conversation = await fetchConversationById(id);
+      let variants = conversation.variants;
+
+      if (viewingInFlight) {
+        const cached = get().conversations.find((c) => c.id === id);
+        const inFlight = (cached?.variants ?? []).filter(
+          (v) => v.status === "generating" || v.status === "pending"
+        );
+        if (inFlight.length > 0) {
+          const inFlightIds = new Set(inFlight.map((v) => v.id));
+          variants = [
+            ...variants.filter((v) => !inFlightIds.has(v.id)),
+            ...inFlight,
+          ];
+        }
+      }
+
+      // Stale-variant recovery: mark timed-out ones as error, poll fresh ones
+      if (!viewingInFlight) {
+        const now = Date.now();
+        const staleErrorMsg =
+          "Generation timed out — tap Retry to try again.";
+
+        const staleIds = new Set(
+          variants
+            .filter(
+              (v) =>
+                (v.status === "generating" || v.status === "pending") &&
+                v.createdAt != null &&
+                now - v.createdAt > VARIANT_STALE_MS
+            )
+            .map((v) => v.id)
+        );
+
+        const freshGeneratingIds = variants
+          .filter(
+            (v) =>
+              (v.status === "generating" || v.status === "pending") &&
+              !staleIds.has(v.id)
+          )
+          .map((v) => v.id);
+
+        if (staleIds.size > 0) {
+          variants = variants.map((v) =>
+            staleIds.has(v.id)
+              ? {
+                  ...v,
+                  status: "error" as const,
+                  errorMessage: staleErrorMsg,
+                }
+              : v
+          );
+        }
+
+        recoverGeneratingVariants(get, set, id, freshGeneratingIds);
+      }
+
+      const hydrated: Conversation = { ...conversation, variants };
+
       set((s) => ({
-        variants: conversation.variants,
+        variants,
         mediaType: conversation.mediaType ?? "image",
-        prompt:
-          conversation.messages.find((m) => m.role === "user")?.content ??
-          conversation.prompt ??
-          conversation.title,
-        conversations: s.conversations.map((c) =>
-          c.id === id ? conversation : c
-        ),
+        conversations: mergeConversationInList(s.conversations, id, hydrated),
+        generationProgress: viewingInFlight ? s.generationProgress : 0,
         mobilePanel: "chat",
       }));
     } catch (err) {
@@ -736,6 +1013,17 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
 
   generate: async () => {
+    const pre = get();
+    if (!pre.prompt.trim()) return;
+    if (pre.prompt.length > maxPromptCharsForMedia(pre.mediaType)) {
+      set({
+        generationError: promptOverLimitMessage(
+          pre.prompt.length,
+          pre.mediaType
+        ),
+      });
+      return;
+    }
     if (!claimGenerationStart(set)) return;
 
     const state = get();
@@ -834,6 +1122,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             imageModel,
             selectedLayouts: layoutIds,
             variants: pendingVariants,
+            userMessage: userMsg,
           }
         );
         conversationId = prepared.conversationId;
@@ -849,12 +1138,17 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
           imageModel,
           selectedLayouts: layoutIds,
           variants: pendingVariants,
+          userMessage: userMsg,
         });
       }
     } catch (err) {
-      const message =
-        err instanceof Error ? err.message : "Failed to save to history";
-      set({ isGenerating: false, generationError: message });
+      set({
+        isGenerating: false,
+        generatingConversationId: null,
+        generationProgress: 0,
+        generationError:
+          err instanceof Error ? err.message : "Failed to save to history",
+      });
       return;
     }
 
@@ -869,22 +1163,44 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
     const allVariantsForUi = [...priorVariants, ...pendingWithRound];
 
-    set({
-      variants: allVariantsForUi,
-      activeConversationId: conversationId,
-      mobileSidebarOpen: false,
-      mobilePanel: "layouts",
-      conversations: continuing
-        ? conversations.map((c) =>
-            c.id === conversationId
-              ? {
-                  ...c,
-                  messages: optimisticMessages,
-                  variants: allVariantsForUi,
-                }
-              : c
+    set((s) => {
+      const viewing = shouldUpdateActiveView(
+        s.activeConversationId,
+        conversationId
+      );
+      const listPatch = continuing
+        ? mergeConversationInList(
+            s.conversations,
+            conversationId,
+            {
+              messages: optimisticMessages,
+              variants: allVariantsForUi,
+              prompt,
+            },
+            { pinToTop: true }
           )
-        : conversations,
+        : [
+            {
+              id: conversationId,
+              title:
+                prompt.length > 40 ? `${prompt.slice(0, 40)}…` : prompt,
+              prompt,
+              messages: optimisticMessages,
+              variants: allVariantsForUi,
+              createdAt: Date.now(),
+            },
+            ...s.conversations,
+          ];
+      return {
+        generatingConversationId: conversationId,
+        activeConversationId: conversationId,
+        mobileSidebarOpen: false,
+        mobilePanel: "layouts",
+        conversations: listPatch,
+        ...(viewing
+          ? { variants: allVariantsForUi, generationError: null }
+          : {}),
+      };
     });
 
     let newBatchVariants: LayoutVariant[] = [];
@@ -902,6 +1218,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         conversationId,
         pendingVariants: pendingWithRound,
         onProgress: (progress, partial) => {
+          if (get().activeConversationId !== conversationId) return;
           set({
             generationProgress: progress,
             variants: [...priorVariants, ...partial],
@@ -913,16 +1230,24 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         err instanceof Error ? err.message : "Generation failed";
       try {
         const refreshed = await fetchConversationById(conversationId);
-        set({
-          variants: refreshed.variants,
-          isGenerating: false,
-          generationError: message,
-        });
+        set((s) => ({
+          ...finishGenerationState(conversationId, {
+            variants: refreshed.variants,
+            generationError: message,
+          })(s),
+          conversations: mergeConversationInList(
+            s.conversations,
+            conversationId,
+            { variants: refreshed.variants },
+            { pinToTop: true }
+          ),
+        }));
       } catch {
-        set({
-          isGenerating: false,
-          generationError: message,
-        });
+        set(
+          finishGenerationState(conversationId, {
+            generationError: message,
+          })
+        );
       }
       return;
     }
@@ -961,7 +1286,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     try {
       savedConversation = await finalizeConversation(conversationId, {
         ...(continuing ? {} : { title }),
-        messages: allMessages,
+        assistantMessage: finalAssistant,
       });
     } catch {
       savedConversation = {
@@ -979,15 +1304,22 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       variants,
     };
 
-    const withoutDup = conversations.filter((c) => c.id !== conversationId);
-    set({
-      variants,
-      isGenerating: false,
-      generationProgress: 100,
-      conversations: [merged, ...withoutDup],
-      activeConversationId: conversationId,
-      mobilePanel: "layouts",
-    });
+    set((s) => ({
+      ...finishGenerationState(conversationId, {
+        variants,
+        generationProgress: 100,
+        generationError: null,
+        prompt: "",
+        references: [],
+      })(s),
+      conversations: [
+        merged,
+        ...s.conversations.filter((c) => c.id !== conversationId),
+      ],
+      mobilePanel: shouldUpdateActiveView(s.activeConversationId, conversationId)
+        ? "layouts"
+        : s.mobilePanel,
+    }));
   },
 
   setVariationBatchSize: (count) =>
@@ -1090,9 +1422,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     if (!variant || variant.mediaType !== "video") return;
 
     const promptText = (
+      variant.userPrompt?.trim() ||
+      variant.prompt?.trim() ||
       state.prompt.trim() ||
-      variant.userPrompt ||
-      variant.prompt ||
       ""
     ).trim();
     if (!promptText) {

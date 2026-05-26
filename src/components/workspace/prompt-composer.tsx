@@ -2,14 +2,16 @@
 
 import { useCallback, useMemo, useRef, useState } from "react";
 import type { ReferenceUsageMode } from "@/types";
-import { motion } from "framer-motion";
-import { Loader2, Plus, Sparkles, SlidersHorizontal } from "lucide-react";
+import { Loader2, Plus, Sparkles, SlidersHorizontal, X } from "lucide-react";
 import { ASPECT_RATIOS, PLATFORM_PRESETS } from "@/lib/constants";
 import {
   getVideoModelConfig,
   videoModelAcceptsReferences,
 } from "@/lib/openrouter-video-models";
-import { useWorkspaceStore } from "@/store/workspace-store";
+import {
+  selectIsViewingActiveGeneration,
+  useWorkspaceStore,
+} from "@/store/workspace-store";
 import { Button } from "@/components/ui/button";
 import { Tooltip } from "@/components/ui/tooltip";
 import { ReferenceChips } from "./reference-chips";
@@ -32,7 +34,21 @@ import {
   referenceFormatHint,
   referenceImageAcceptAttr,
 } from "@/lib/reference-image-formats";
+import {
+  formatReferenceLimitHint,
+  planReferenceFileAdds,
+  remainingReferenceSlots,
+  totalReferenceBytes,
+} from "@/lib/reference-limits";
+import {
+  clampPromptText,
+  maxPromptCharsForMedia,
+  promptOverLimitMessage,
+  promptWithinLimit,
+} from "@/lib/prompt-limits";
 import { cn } from "@/lib/utils";
+import { PromptCountBadge } from "./prompt-count-badge";
+import { ReferenceCountBadge } from "./reference-count-badge";
 
 function AspectPlatformSelects({ mobile }: { mobile?: boolean }) {
   const { aspectRatio, setAspectRatio, platform, setPlatform } =
@@ -96,11 +112,13 @@ export function PromptComposer() {
     mediaType,
     addReference,
     generate,
-    isGenerating,
     references,
     imageModel,
     videoModel,
   } = useWorkspaceStore();
+
+  const isGenerating = useWorkspaceStore((s) => s.isGenerating);
+  const isViewingGeneration = useWorkspaceStore(selectIsViewingActiveGeneration);
 
   const isVideo = mediaType === "video";
   const modelConfig = getModelConfig(imageModel);
@@ -111,6 +129,14 @@ export function PromptComposer() {
     : modelConfig.supportsVisionInput;
   const refsAttachedButIgnored =
     isVideo && references.length > 0 && !videoAcceptsRefs;
+
+  const referenceSlotsLeft = remainingReferenceSlots(
+    references.length,
+    mediaType
+  );
+  const atReferenceLimit = referenceSlotsLeft === 0;
+  const canAddReferences =
+    (!isVideo || videoAcceptsRefs) && !atReferenceLimit;
 
   const invalidAttachedRefs = useMemo(() => {
     if (!isVideo || references.length === 0) return [];
@@ -125,28 +151,41 @@ export function PromptComposer() {
 
   const [generateClickLock, setGenerateClickLock] = useState(false);
 
+  const maxPromptChars = maxPromptCharsForMedia(mediaType);
+  const promptCharCount = prompt.length;
+  const promptTooLong = promptCharCount > maxPromptChars;
+
   const canGenerate =
-    prompt.trim().length > 0 &&
+    promptWithinLimit(prompt, mediaType) &&
     !isGenerating &&
     !generateClickLock &&
     invalidAttachedRefs.length === 0;
 
+  const handlePromptChange = useCallback(
+    (value: string) => {
+      setPrompt(clampPromptText(value, mediaType));
+    },
+    [setPrompt, mediaType]
+  );
+
   const handleGenerate = useCallback(async () => {
-    if (generateClickLock || isGenerating || !prompt.trim()) return;
+    if (generateClickLock || isGenerating || !canGenerate) return;
     setGenerateClickLock(true);
     try {
       await generate();
     } finally {
       setGenerateClickLock(false);
     }
-  }, [generateClickLock, isGenerating, prompt, generate]);
-  const generateTooltip = isGenerating
+  }, [generateClickLock, isGenerating, canGenerate, generate]);
+  const generateTooltip = isViewingGeneration
     ? "Generation in progress…"
-    : !prompt.trim()
-      ? "Enter a prompt to generate"
-      : isVideo
-        ? "Generate video from your prompt"
-        : "Generate all selected creatives";
+    : promptTooLong
+      ? promptOverLimitMessage(promptCharCount, mediaType)
+      : !prompt.trim()
+        ? "Enter a prompt to generate"
+        : isVideo
+          ? "Generate video from your prompt"
+          : "Generate all selected creatives";
 
   const clearPendingBatch = useCallback(() => {
     for (const url of previewUrlsRef.current) {
@@ -158,27 +197,54 @@ export function PromptComposer() {
     modeDialogOpenRef.current = false;
   }, []);
 
+  const applyReferenceLimits = useCallback(
+    (
+      files: File[],
+      baseCount: number,
+      baseBytes: number
+    ): { toAdd: File[]; warnings: string[] } => {
+      const { accepted: formatOk, rejected: formatRejected } =
+        partitionReferenceImageFiles(files, mediaType);
+      const { toAdd, rejections: limitRejected } = planReferenceFileAdds(
+        formatOk,
+        baseCount,
+        baseBytes,
+        mediaType
+      );
+      const warnings = [
+        ...(formatRejected.length > 0
+          ? [formatReferenceRejectionMessage(formatRejected, mediaType)]
+          : []),
+        ...limitRejected,
+      ];
+      if (warnings.length > 0) {
+        setReferenceUploadWarning(warnings.join(" "));
+      } else if (toAdd.length > 0) {
+        setReferenceUploadWarning(null);
+      }
+      return { toAdd, warnings };
+    },
+    [mediaType]
+  );
+
   const openPendingBatch = useCallback(
     (files: File[]) => {
       if (files.length === 0) return;
-      const { accepted, rejected } = partitionReferenceImageFiles(
+      const { toAdd } = applyReferenceLimits(
         files,
-        mediaType
+        references.length + pendingFiles.length,
+        totalReferenceBytes(references) +
+          pendingFiles.reduce((s, f) => s + f.size, 0)
       );
-      if (rejected.length > 0) {
-        setReferenceUploadWarning(
-          formatReferenceRejectionMessage(rejected, mediaType)
-        );
-      }
-      if (accepted.length === 0) return;
+      if (toAdd.length === 0) return;
 
       clearPendingBatch();
       modeDialogOpenRef.current = true;
-      previewUrlsRef.current = accepted.map((f) => URL.createObjectURL(f));
+      previewUrlsRef.current = toAdd.map((f) => URL.createObjectURL(f));
       setPendingPreviewUrls([...previewUrlsRef.current]);
-      setPendingFiles(accepted);
+      setPendingFiles(toAdd);
     },
-    [clearPendingBatch, mediaType]
+    [applyReferenceLimits, references, pendingFiles, clearPendingBatch]
   );
 
   const enqueueImageFiles = useCallback(
@@ -194,20 +260,14 @@ export function PromptComposer() {
         return;
       }
 
-      const { accepted, rejected } = partitionReferenceImageFiles(
-        candidates,
-        mediaType
-      );
-
-      if (rejected.length > 0) {
-        setReferenceUploadWarning(
-          formatReferenceRejectionMessage(rejected, mediaType)
-        );
-      } else {
-        setReferenceUploadWarning(null);
+      if (!canAddReferences) {
+        if (atReferenceLimit) {
+          setReferenceUploadWarning(
+            `Maximum references reached (${formatReferenceLimitHint(mediaType)}).`
+          );
+        }
+        return;
       }
-
-      if (accepted.length === 0) return;
 
       // Video: consistency references (avatar, location, style) — not keyframe cards
       if (isVideo) {
@@ -217,9 +277,16 @@ export function PromptComposer() {
           );
           return;
         }
+        const { toAdd, warnings: limitWarnings } = applyReferenceLimits(
+          candidates,
+          references.length,
+          totalReferenceBytes(references)
+        );
+        if (toAdd.length === 0) return;
+
         void (async () => {
           const small: string[] = [];
-          for (const file of accepted) {
+          for (const file of toAdd) {
             try {
               const dims = await getFileImageDimensions(file);
               if (
@@ -240,8 +307,11 @@ export function PromptComposer() {
             addReference(file, "inspire");
           }
           if (small.length > 0) {
+            const upscaleNote = `Reference${small.length > 1 ? "s" : ""} below ${MIN_VIDEO_REFERENCE_DIMENSION}×${MIN_VIDEO_REFERENCE_DIMENSION}px — auto-upscaled before send.`;
             setReferenceUploadWarning(
-              `Small reference${small.length > 1 ? "s" : ""} will be upscaled to at least ${MIN_VIDEO_REFERENCE_DIMENSION}×${MIN_VIDEO_REFERENCE_DIMENSION}px before send: ${small.join(", ")}`
+              limitWarnings.length > 0
+                ? `${limitWarnings.join(" ")} ${upscaleNote}`
+                : upscaleNote
             );
           }
         })();
@@ -250,34 +320,46 @@ export function PromptComposer() {
 
       const sessionMode = references[0]?.usageMode;
       if (references.length > 0 && sessionMode) {
-        for (const file of accepted) addReference(file, sessionMode);
+        const { toAdd } = applyReferenceLimits(
+          candidates,
+          references.length,
+          totalReferenceBytes(references)
+        );
+        for (const file of toAdd) addReference(file, sessionMode);
         return;
       }
 
       if (modeDialogOpenRef.current) {
-        openPendingBatch([...pendingFiles, ...accepted]);
+        openPendingBatch([...pendingFiles, ...candidates]);
         return;
       }
 
-      openPendingBatch(accepted);
+      openPendingBatch(candidates);
     },
     [
       mediaType,
       isVideo,
       videoAcceptsRefs,
+      canAddReferences,
       references,
       addReference,
       pendingFiles,
       openPendingBatch,
+      applyReferenceLimits,
     ]
   );
 
   const handleModeSelect = useCallback(
     (mode: ReferenceUsageMode) => {
-      for (const file of pendingFiles) addReference(file, mode);
+      const { toAdd } = applyReferenceLimits(
+        pendingFiles,
+        references.length,
+        totalReferenceBytes(references)
+      );
+      for (const file of toAdd) addReference(file, mode);
       clearPendingBatch();
     },
-    [addReference, pendingFiles, clearPendingBatch]
+    [addReference, pendingFiles, clearPendingBatch, applyReferenceLimits, references]
   );
 
   const handleModeCancel = useCallback(() => {
@@ -333,81 +415,54 @@ export function PromptComposer() {
 
         <ReferenceChips />
 
-        <motion.div
-          layout
-          className="rounded-[20px] border border-border bg-surface shadow-cinematic overflow-hidden"
-        >
-          {videoKeyframeMode && references.length > 0 && (
-            <p
-              role="status"
-              className="border-b border-accent-orange/20 bg-accent-orange/5 px-4 py-2 text-xs text-accent-orange"
-            >
-              Keyframe mode treats uploads as opening/closing clips, not avatar or
-              location consistency. Switch to <strong>Consistency</strong> in the
-              reference bar above.
-            </p>
-          )}
-
-          {(referenceUploadWarning || invalidAttachedRefs.length > 0) && (
-            <p
-              role="alert"
-              className="border-b border-accent-orange/20 bg-accent-orange/5 px-4 py-2 text-xs text-accent-orange"
-            >
+        {(referenceUploadWarning ||
+          invalidAttachedRefs.length > 0 ||
+          refsAttachedButIgnored ||
+          (videoKeyframeMode && references.length > 0)) && (
+          <div
+            role="alert"
+            className="mb-2 flex items-start gap-2 rounded-xl border border-accent-orange/25 bg-accent-orange/5 px-2.5 py-2 text-[11px] leading-snug text-accent-orange"
+          >
+            <p className="min-w-0 flex-1">
               {invalidAttachedRefs.length > 0
-                ? `Remove unsupported references (${referenceFormatHint("video")}) before generating: ${invalidAttachedRefs.map((r) => r.name).join(", ")}`
-                : referenceUploadWarning}
+                ? `Unsupported format — remove before generating (${referenceFormatHint("video")}): ${invalidAttachedRefs.map((r) => r.name).join(", ")}`
+                : refsAttachedButIgnored
+                  ? "This video model is text-only — references will not be sent."
+                  : videoKeyframeMode
+                    ? "Keyframe mode uses start/end frames, not consistency. Switch to Consistency above."
+                    : referenceUploadWarning}
             </p>
-          )}
+            {referenceUploadWarning && invalidAttachedRefs.length === 0 && (
+              <button
+                type="button"
+                onClick={() => setReferenceUploadWarning(null)}
+                className="shrink-0 rounded-md p-0.5 text-accent-orange/80 hover:bg-accent-orange/10 hover:text-accent-orange"
+                aria-label="Dismiss notice"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            )}
+          </div>
+        )}
 
-          {references.length > 0 && (
-            <p
-              className={cn(
-                "border-b border-border/60 px-4 py-2 text-[11px]",
-                refsAttachedButIgnored
-                  ? "text-accent-orange"
-                  : usesVisionRefs
-                    ? isVideo
-                      ? "text-accent-cyan"
-                      : "text-foreground-muted"
-                    : "text-accent-orange"
-              )}
-            >
-              {isVideo ? "Video: " : ""}
-              {references.length} reference image
-              {references.length > 1 ? "s" : ""} + prompt
-              {isVideo &&
-                videoAcceptsRefs &&
-                (referenceMode === "preserve"
-                  ? " · keyframe clip (advanced)"
-                  : " · consistency refs")}
-              {!isVideo &&
-                (referenceMode === "preserve"
-                  ? " · preserve (exact assets)"
-                  : referenceMode
-                    ? " · inspire (visual direction)"
-                    : "")}
-              {references.length > 4 ? " (max 4 per request)" : ""}
-              {refsAttachedButIgnored
-                ? " · this video model is text-only — images will not be sent"
-                : null}
-              {!usesVisionRefs && !isVideo
-                ? " · this model uses text-only direction"
-                : null}
-            </p>
-          )}
-
+        <div className="rounded-[20px] border border-border bg-surface shadow-cinematic overflow-hidden">
           <div className="relative">
             <textarea
               value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
+              onChange={(e) => handlePromptChange(e.target.value)}
               onPaste={onPaste}
+              maxLength={maxPromptChars}
               placeholder={
                 isVideo
                   ? "Describe the video you want to generate…"
                   : "Describe the creative you want to generate..."
               }
               rows={3}
-              className="w-full resize-none bg-transparent pl-14 pr-5 py-4 text-[15px] leading-relaxed text-foreground placeholder:text-foreground-muted outline-none min-h-[96px]"
+              aria-describedby="prompt-char-count"
+              className={cn(
+                "w-full resize-none bg-transparent pl-14 pr-16 py-4 text-[15px] leading-relaxed text-foreground placeholder:text-foreground-muted outline-none min-h-[96px]",
+                promptTooLong && "text-accent-orange"
+              )}
               onInput={(e) => {
                 const t = e.target as HTMLTextAreaElement;
                 t.style.height = "auto";
@@ -415,20 +470,35 @@ export function PromptComposer() {
               }}
             />
 
+            <div
+              id="prompt-char-count"
+              className="pointer-events-none absolute right-3 top-3"
+            >
+              <PromptCountBadge length={promptCharCount} mediaType={mediaType} />
+            </div>
+
             <Tooltip
               content={
-                isVideo && !videoAcceptsRefs
-                  ? `${videoConfig.label} does not accept reference images — prompt only`
+                !canAddReferences
+                  ? atReferenceLimit
+                    ? `Maximum references attached (${formatReferenceLimitHint(mediaType)})`
+                    : `${videoConfig.label} does not accept reference images — prompt only`
                   : isVideo
-                    ? "Add image + prompt (first frame or style reference)"
-                    : "Add reference image"
+                    ? `Add consistency reference (${formatReferenceLimitHint("video")})`
+                    : `Add reference image (${formatReferenceLimitHint("image")})`
               }
             >
-              <span className="absolute left-3 bottom-3 inline-flex">
+              <span className="absolute left-3 bottom-3 inline-flex items-center gap-1.5">
+              {references.length > 0 && (
+                <ReferenceCountBadge
+                  count={references.length}
+                  mediaType={mediaType}
+                />
+              )}
               <button
                 type="button"
                 onClick={() => fileRef.current?.click()}
-                disabled={isVideo && !videoAcceptsRefs}
+                disabled={!canAddReferences}
                 title={
                   isVideo
                     ? "Add reference image for video"
@@ -519,7 +589,7 @@ export function PromptComposer() {
                   size="sm"
                   onClick={() => void handleGenerate()}
                   disabled={!canGenerate}
-                  aria-busy={isGenerating || generateClickLock}
+                  aria-busy={isViewingGeneration || generateClickLock}
                   aria-disabled={!canGenerate}
                   className={cn(
                     "h-9 min-w-[140px] gap-1.5 rounded-xl px-4 text-xs font-medium",
@@ -527,12 +597,12 @@ export function PromptComposer() {
                     isVideo && "bg-accent-cyan hover:bg-accent-cyan/90"
                   )}
                 >
-                  {isGenerating ? (
+                  {isViewingGeneration ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   ) : (
                     <Sparkles className="h-3.5 w-3.5" />
                   )}
-                  {isGenerating
+                  {isViewingGeneration
                     ? isVideo
                       ? "Generating video…"
                       : "Generating…"
@@ -543,15 +613,14 @@ export function PromptComposer() {
               </span>
             </Tooltip>
           </div>
-        </motion.div>
+        </div>
 
-        <p className="mt-2 text-center text-[10px] text-foreground-muted/70">
-          {isVideo
-            ? videoAcceptsRefs
-              ? `Attach avatar, location, or style refs (${referenceFormatHint("video")}) — all sent for consistency, not as start/end cards`
-              : "This model is prompt-only — pick Wan 2.7, Seedance, or Grok for consistency references"
-            : `Drop or paste images (${referenceFormatHint(mediaType)}) · one Inspire or Preserve mode for all uploads`}
-        </p>
+        {isVideo && !videoAcceptsRefs && (
+          <p className="mt-2 text-center text-[10px] text-accent-orange/90">
+            This model is prompt-only — pick Wan 2.7, Seedance, or Grok for
+            consistency references.
+          </p>
+        )}
       </div>
     </div>
   );

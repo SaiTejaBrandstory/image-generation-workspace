@@ -1,4 +1,4 @@
-import type { AspectRatio, PlatformPreset, StyleEngine } from "@/types";
+import type { AspectRatio, MediaType, PlatformPreset, StyleEngine } from "@/types";
 
 export const ASPECT_RATIOS: { value: AspectRatio; label: string }[] = [
   { value: "auto", label: "Auto" },
@@ -78,3 +78,29 @@ Soft spring animations.
 
 # Brand Personality
 Luxury futuristic minimalism.`;
+
+export const CHAT_EMPTY_STATE: Record<
+  MediaType,
+  { title: string; description: string; suggestions: string[] }
+> = {
+  image: {
+    title: "What are we creating today?",
+    description:
+      "Describe your creative vision, attach reference images, and generate 20 professional layout systems in a single pass.",
+    suggestions: [
+      "Porsche-inspired luxury watch ad",
+      "Nike energy sports campaign",
+      "SaaS dashboard product launch",
+    ],
+  },
+  video: {
+    title: "What video are we making?",
+    description:
+      "Describe the scene and motion, add consistency references for avatar or location, and generate a short clip.",
+    suggestions: [
+      "Creator walks through neon Tokyo at night, cinematic mood, shallow depth of field",
+      "Luxury watch hero on marble, slow orbit, soft studio lighting",
+      "Athlete sprinting on a beach at golden hour, energetic camera tracking",
+    ],
+  },
+};

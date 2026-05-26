@@ -3,20 +3,21 @@
 import { LayoutGrid, Menu, MessageSquare, Sparkles } from "lucide-react";
 import { motion } from "framer-motion";
 import { cn } from "@/lib/utils";
-import { useWorkspaceStore } from "@/store/workspace-store";
+import {
+  selectIsViewingActiveGeneration,
+  useWorkspaceStore,
+} from "@/store/workspace-store";
 import { DownloadAllButton } from "./download-all-button";
 import { ThemeToggle } from "./theme-toggle";
 
 export function MobileChrome() {
-  const {
-    mobilePanel,
-    setMobilePanel,
-    setMobileSidebarOpen,
-    variants,
-    isGenerating,
-    generationProgress,
-    mediaType,
-  } = useWorkspaceStore();
+  const mobilePanel = useWorkspaceStore((s) => s.mobilePanel);
+  const setMobilePanel = useWorkspaceStore((s) => s.setMobilePanel);
+  const setMobileSidebarOpen = useWorkspaceStore((s) => s.setMobileSidebarOpen);
+  const variants = useWorkspaceStore((s) => s.variants);
+  const generationProgress = useWorkspaceStore((s) => s.generationProgress);
+  const mediaType = useWorkspaceStore((s) => s.mediaType);
+  const isGenerating = useWorkspaceStore(selectIsViewingActiveGeneration);
 
   const isVideo = mediaType === "video";
   const displayVariants = variants.filter((v) =>
@@ -112,21 +113,11 @@ export function MobileChrome() {
       </div>
 
       <div className="flex shrink-0 items-center gap-1">
-        {isGenerating && (
-          <span
-            className={cn(
-              "flex h-10 items-center gap-1.5 rounded-xl px-2 text-[10px] font-medium tabular-nums",
-              isVideo
-                ? "bg-accent-cyan/10 text-accent-cyan"
-                : "bg-accent-violet/10 text-accent-violet"
-            )}
-          >
+        {/* Progress indicator — images only; video cards show their own bar */}
+        {isGenerating && !isVideo && (
+          <span className="flex h-10 items-center gap-1.5 rounded-xl bg-accent-violet/10 px-2 text-[10px] font-medium tabular-nums text-accent-violet">
             <Sparkles className="h-3.5 w-3.5 animate-pulse" />
-            {isVideo ? (
-              <>~{Math.round(generationProgress)}% est.</>
-            ) : (
-              <>{Math.round(generationProgress)}%</>
-            )}
+            {Math.round(generationProgress)}%
           </span>
         )}
         {mobilePanel === "layouts" && completeCount > 0 && !isGenerating && (

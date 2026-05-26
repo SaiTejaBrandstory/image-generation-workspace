@@ -2,16 +2,17 @@
 
 import { ArrowRight, LayoutGrid } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
-import { useWorkspaceStore } from "@/store/workspace-store";
+import {
+  selectIsViewingActiveGeneration,
+  useWorkspaceStore,
+} from "@/store/workspace-store";
 
 export function MobileLayoutsBanner() {
-  const {
-    mobilePanel,
-    setMobilePanel,
-    variants,
-    isGenerating,
-    mediaType,
-  } = useWorkspaceStore();
+  const mobilePanel = useWorkspaceStore((s) => s.mobilePanel);
+  const setMobilePanel = useWorkspaceStore((s) => s.setMobilePanel);
+  const variants = useWorkspaceStore((s) => s.variants);
+  const mediaType = useWorkspaceStore((s) => s.mediaType);
+  const isGenerating = useWorkspaceStore(selectIsViewingActiveGeneration);
 
   const isVideo = mediaType === "video";
   const displayVariants = variants.filter((v) =>

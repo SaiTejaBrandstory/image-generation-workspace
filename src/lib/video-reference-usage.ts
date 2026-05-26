@@ -1,7 +1,8 @@
+import { MAX_REFERENCES_VIDEO } from "@/lib/reference-limits";
 import { getVideoModelConfig } from "@/lib/openrouter-video-models";
 import type { ReferenceImagePayload, ReferenceUsageMode } from "@/types";
 
-const MAX_VIDEO_REFERENCES = 4;
+const MAX_VIDEO_REFERENCES = MAX_REFERENCES_VIDEO;
 
 export function buildVideoReferencePayloads(
   refs: ReferenceImagePayload[],

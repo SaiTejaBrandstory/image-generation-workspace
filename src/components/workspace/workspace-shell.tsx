@@ -44,7 +44,9 @@ export function WorkspaceShell({ user }: WorkspaceShellProps) {
                   >
                     <ChatThread />
                     <MobileLayoutsBanner />
-                    <PromptComposer />
+                    <div className="composer-panel min-h-0 shrink-0">
+                      <PromptComposer />
+                    </div>
                   </motion.main>
                 ) : (
                   <motion.div
@@ -62,9 +64,11 @@ export function WorkspaceShell({ user }: WorkspaceShellProps) {
             </div>
 
             {/* —— Desktop: side by side —— */}
-            <main className="hidden min-h-0 w-[min(38vw,420px)] max-w-[420px] shrink-0 flex-col border-r border-border lg:flex">
+            <main className="hidden min-h-0 w-[min(38vw,420px)] max-w-[420px] shrink-0 flex-col overflow-hidden border-r border-border lg:flex">
               <ChatThread />
-              <PromptComposer />
+              <div className="composer-panel min-h-0 shrink-0">
+                <PromptComposer />
+              </div>
             </main>
             <VisualPanel className="hidden min-h-0 min-w-0 flex-1 lg:flex" />
           </div>

@@ -1,7 +1,7 @@
 "use client";
 
 import { ChevronDown, Check } from "lucide-react";
-import { LAYOUT_SYSTEMS, DEFAULT_SELECTED_LAYOUTS } from "@/lib/layout-systems";
+import { LAYOUT_SYSTEMS } from "@/lib/layout-systems";
 import { useWorkspaceStore } from "@/store/workspace-store";
 import {
   DropdownMenu,
@@ -18,7 +18,7 @@ export function LayoutSelector() {
     selectedLayouts,
     toggleLayout,
     selectAllLayouts,
-    setSelectedLayouts,
+    clearLayouts,
   } = useWorkspaceStore();
 
   const allSelected = selectedLayouts.length === LAYOUT_SYSTEMS.length;
@@ -55,10 +55,15 @@ export function LayoutSelector() {
             </button>
             <button
               type="button"
-              onClick={() => setSelectedLayouts([...DEFAULT_SELECTED_LAYOUTS])}
-              className="flex-1 rounded-lg bg-surface-hover px-2 py-1.5 text-[11px] font-medium text-foreground-muted hover:text-foreground"
+              onClick={clearLayouts}
+              className={cn(
+                "flex-1 rounded-lg px-2 py-1.5 text-[11px] font-medium transition-colors",
+                selectedLayouts.length === 0
+                  ? "bg-accent-orange/15 text-accent-orange"
+                  : "bg-surface-hover text-foreground-muted hover:text-foreground"
+              )}
             >
-              Reset
+              Clear all
             </button>
           </div>
         </div>

@@ -16,6 +16,14 @@ import type {
   VideoMeta,
 } from "@/types";
 
+interface IncomingMessage {
+  id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  timestamp: number;
+  referenceIds?: string[];
+}
+
 interface CreateConversationBody {
   title?: string;
   prompt: string;
@@ -27,6 +35,7 @@ interface CreateConversationBody {
   videoModel?: string;
   params: GenerationParams;
   selectedLayouts: LayoutId[];
+  userMessage?: IncomingMessage;
   variants: Array<{
     id: string;
     layoutId: LayoutId;
@@ -116,6 +125,20 @@ export async function POST(request: NextRequest) {
     }
 
     const conversationId = conversation.id as string;
+
+    if (body.userMessage) {
+      const { error: msgError } = await supabase.from("chat_messages").insert({
+        id: body.userMessage.id,
+        conversation_id: conversationId,
+        user_id: user.id,
+        role: body.userMessage.role,
+        content: body.userMessage.content,
+        reference_ids: body.userMessage.referenceIds ?? null,
+        position: 0,
+        created_at: new Date(body.userMessage.timestamp).toISOString(),
+      });
+      if (msgError) console.error("[conversations POST] message insert:", msgError.message);
+    }
 
     if (body.variants?.length) {
       const rows = body.variants.map((v) => ({

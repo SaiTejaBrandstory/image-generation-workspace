@@ -6,6 +6,11 @@ import {
   retryDelayMs,
   sleepMs,
 } from "@/lib/openrouter-errors";
+import {
+  apiErrorMessageFromResponse,
+  parseApiJsonResponse,
+} from "@/lib/parse-api-response";
+import { maxReferencesForMedia } from "@/lib/reference-limits";
 import { runWithConcurrency, serializeReferences } from "@/lib/reference-utils";
 import { sourceImageToPreserveReference } from "@/lib/variation-utils";
 import type {
@@ -118,9 +123,11 @@ async function generateOneImage(options: {
   conversationId?: string;
   variant?: LayoutVariant;
 }): Promise<string> {
+  const maxRefs = maxReferencesForMedia("image");
+  const refsForRequest = options.references.slice(0, maxRefs);
   const serializedRefs =
     options.referenceOverrides ??
-    (await serializeReferences(options.references));
+    (await serializeReferences(refsForRequest));
 
   const res = await fetch("/api/generate/image", {
     method: "POST",
@@ -151,13 +158,25 @@ async function generateOneImage(options: {
     }),
   });
 
-  const data = await res.json();
+  const { data, raw, parseError } = await parseApiJsonResponse<{
+    error?: string;
+    imageUrl?: string;
+  }>(res);
 
-  if (!res.ok) {
-    throw new Error(data.error ?? `Generation failed (${res.status})`);
+  if (!res.ok || !data?.imageUrl) {
+    throw new Error(
+      data?.error
+        ? formatOpenRouterErrorForUser(data.error)
+        : apiErrorMessageFromResponse(
+            res,
+            raw,
+            parseError,
+            `Generation failed (${res.status})`
+          )
+    );
   }
 
-  return data.imageUrl as string;
+  return data.imageUrl;
 }
 
 function newVariantId(): string {

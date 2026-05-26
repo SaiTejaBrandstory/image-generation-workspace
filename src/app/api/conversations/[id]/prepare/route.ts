@@ -16,6 +16,14 @@ interface RouteParams {
   params: Promise<{ id: string }>;
 }
 
+interface IncomingMessage {
+  id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  timestamp: number;
+  referenceIds?: string[];
+}
+
 interface PrepareBody {
   prompt: string;
   style: StyleEngine;
@@ -26,6 +34,7 @@ interface PrepareBody {
   videoModel?: string;
   params: GenerationParams;
   selectedLayouts: LayoutId[];
+  userMessage?: IncomingMessage;
   variants: Array<{
     id: string;
     layoutId: LayoutId;
@@ -131,6 +140,31 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
         .insert(rows);
 
       if (variantsError) throw new Error(variantsError.message);
+    }
+
+    if (body.userMessage) {
+      // Find current max position so we append, not overwrite
+      const { data: lastMsg } = await supabase
+        .from("chat_messages")
+        .select("position")
+        .eq("conversation_id", conversationId)
+        .eq("user_id", user.id)
+        .order("position", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const nextPosition = (lastMsg?.position ?? -1) + 1;
+
+      const { error: msgError } = await supabase.from("chat_messages").upsert({
+        id: body.userMessage.id,
+        conversation_id: conversationId,
+        user_id: user.id,
+        role: body.userMessage.role,
+        content: body.userMessage.content,
+        reference_ids: body.userMessage.referenceIds ?? null,
+        position: nextPosition,
+        created_at: new Date(body.userMessage.timestamp).toISOString(),
+      });
+      if (msgError) console.error("[prepare POST] message upsert:", msgError.message);
     }
 
     return NextResponse.json({

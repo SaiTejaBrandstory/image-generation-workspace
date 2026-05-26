@@ -262,6 +262,21 @@ body {
   flex-shrink: 0;
 }
 
+/* Keep prompt + generate visible when references / warnings add height */
+.composer-panel {
+  max-height: min(58dvh, 520px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (min-width: 1024px) {
+  .composer-panel {
+    max-height: min(52dvh, 480px);
+  }
+}
+
 /* Consistent preview area for layout cards and skeletons */
 .layout-card-preview {
   aspect-ratio: 4 / 5;

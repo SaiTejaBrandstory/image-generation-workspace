@@ -73,6 +73,7 @@ export async function prepareConversationForGeneration(
     params: GenerationParams;
     selectedLayouts: LayoutId[];
     variants: LayoutVariant[];
+    userMessage?: ChatMessage;
   }
 ): Promise<PrepareGenerationResult> {
   const res = await fetch(`/api/conversations/${conversationId}/prepare`, {
@@ -89,6 +90,7 @@ export async function prepareConversationForGeneration(
       params: options.params,
       selectedLayouts: options.selectedLayouts,
       variants: variantsToApiPayload(options.variants, options.prompt),
+      ...(options.userMessage ? { userMessage: options.userMessage } : {}),
     }),
   });
   const data = await res.json();
@@ -111,6 +113,7 @@ export async function createConversationRecord(options: {
   params: GenerationParams;
   selectedLayouts: LayoutId[];
   variants: LayoutVariant[];
+  userMessage?: ChatMessage;
 }): Promise<string> {
   const res = await fetch("/api/conversations", {
     method: "POST",
@@ -126,6 +129,7 @@ export async function createConversationRecord(options: {
       params: options.params,
       selectedLayouts: options.selectedLayouts,
       variants: variantsToApiPayload(options.variants, options.prompt),
+      ...(options.userMessage ? { userMessage: options.userMessage } : {}),
     }),
   });
   const data = await res.json();
@@ -133,14 +137,24 @@ export async function createConversationRecord(options: {
   return data.conversationId as string;
 }
 
+/**
+ * Finalize a conversation after generation.
+ * - `assistantMessage`: append the AI reply. Omit when the server route already saved it (video success).
+ * - `title`: update the title (new conversations only).
+ */
 export async function finalizeConversation(
   id: string,
-  options: { title?: string; messages: ChatMessage[] }
+  options: { title?: string; assistantMessage?: ChatMessage }
 ): Promise<Conversation> {
   const res = await fetch(`/api/conversations/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(options),
+    body: JSON.stringify({
+      title: options.title,
+      ...(options.assistantMessage
+        ? { appendMessage: options.assistantMessage }
+        : {}),
+    }),
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? "Failed to save messages");
