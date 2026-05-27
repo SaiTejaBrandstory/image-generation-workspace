@@ -28,7 +28,10 @@ import {
   remainingVariationSlots,
   sourceImageToPreserveReference,
 } from "@/lib/variation-utils";
-import { DEFAULT_IMAGE_MODEL } from "@/lib/openrouter-models";
+import {
+  clampImageAspectRatioToModel,
+  DEFAULT_IMAGE_MODEL,
+} from "@/lib/openrouter-models";
 import {
   clampVideoSettingsToModel,
   DEFAULT_VIDEO_ASPECT,
@@ -50,8 +53,8 @@ import {
 } from "@/lib/layout-systems";
 import {
   maxReferencesForMedia,
-  MAX_REFERENCE_FILE_BYTES,
-  MAX_REFERENCES_TOTAL_BYTES,
+  maxReferenceFileBytesForMedia,
+  maxReferenceTotalBytesForMedia,
   totalReferenceBytes,
 } from "@/lib/reference-limits";
 import {
@@ -66,6 +69,7 @@ import type {
   Brand,
   ChatMessage,
   Conversation,
+  DesignElement,
   DesignTokens,
   GenerationParams,
   ImageGenerationMode,
@@ -96,6 +100,9 @@ interface WorkspaceState {
   aspectRatio: AspectRatio;
   platform: PlatformPreset;
   style: StyleEngine;
+  designElement: DesignElement;
+  colorPreferenceEnabled: boolean;
+  preferredColorHex: string;
   params: GenerationParams;
   references: ReferenceImage[];
   variants: LayoutVariant[];
@@ -149,6 +156,9 @@ interface WorkspaceState {
   setAspectRatio: (ratio: AspectRatio) => void;
   setPlatform: (platform: PlatformPreset) => void;
   setStyle: (style: StyleEngine) => void;
+  setDesignElement: (designElement: DesignElement) => void;
+  setColorPreferenceEnabled: (enabled: boolean) => void;
+  setPreferredColorHex: (hex: string) => void;
   setParam: <K extends keyof GenerationParams>(
     key: K,
     value: GenerationParams[K]
@@ -200,7 +210,8 @@ type WorkspaceSet = (
 function claimGenerationStart(set: WorkspaceSet): boolean {
   let claimed = false;
   set((s) => {
-    if (s.isGenerating || !promptWithinLimit(s.prompt, s.mediaType)) return s;
+    const modelId = s.mediaType === "image" ? s.imageModel : undefined;
+    if (s.isGenerating || !promptWithinLimit(s.prompt, s.mediaType, modelId)) return s;
     claimed = true;
     return {
       isGenerating: true,
@@ -669,6 +680,8 @@ async function runFreeStyleGeneration(
     prompt,
     freeStyleCount,
     platform,
+    colorPreferenceEnabled,
+    preferredColorHex,
     aspectRatio,
     params,
     references,
@@ -803,6 +816,8 @@ async function runFreeStyleGeneration(
       layoutIds: pendingWithRound.map(() => "free" as const),
       style: state.style,
       platform,
+      designElement: state.designElement,
+      preferredColorHex: colorPreferenceEnabled ? preferredColorHex : undefined,
       aspectRatio,
       params,
       references,
@@ -885,7 +900,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   selectedLayouts: [...DEFAULT_SELECTED_LAYOUTS],
   aspectRatio: "auto",
   platform: "instagram-post",
-  style: "luxury",
+  style: "none",
+  designElement: "none",
+  colorPreferenceEnabled: false,
+  preferredColorHex: "#7c3aed",
   params: { ...DEFAULT_PARAMS },
   references: [],
   variants: [],
@@ -982,7 +1000,15 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }
   },
 
-  setImageModel: (model) => set({ imageModel: model }),
+  setImageModel: (model) =>
+    set((state) => {
+      // If the currently selected aspect ratio isn't supported by the new
+      // model, fall back to "auto" so we never send an invalid ratio.
+      return {
+        imageModel: model,
+        aspectRatio: clampImageAspectRatioToModel(model, state.aspectRatio),
+      };
+    }),
   setImageGenerationMode: (mode) => set({ imageGenerationMode: mode }),
   setFreeStyleCount: (count) => set({ freeStyleCount: Math.max(1, Math.min(10, count)) }),
   setMediaType: (type) =>
@@ -1025,19 +1051,23 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   setAspectRatio: (ratio) => set({ aspectRatio: ratio }),
   setPlatform: (platform) => set({ platform }),
   setStyle: (style) => set({ style }),
+  setDesignElement: (designElement) => set({ designElement }),
+  setColorPreferenceEnabled: (enabled) => set({ colorPreferenceEnabled: enabled }),
+  setPreferredColorHex: (hex) =>
+    set({ preferredColorHex: /^#[0-9a-fA-F]{6}$/.test(hex) ? hex : "#7c3aed" }),
 
   setParam: (key, value) =>
     set((s) => ({ params: { ...s.params, [key]: value } })),
 
   addReference: (file, usageMode = "inspire") => {
     const state = get();
-    const max = maxReferencesForMedia(state.mediaType);
+    const modelId = state.mediaType === "image" ? state.imageModel : undefined;
+    const max = maxReferencesForMedia(state.mediaType, modelId);
+    const maxFileBytes = maxReferenceFileBytesForMedia(state.mediaType, modelId);
+    const maxTotalBytes = maxReferenceTotalBytesForMedia(state.mediaType, modelId);
     if (state.references.length >= max) return;
-    if (file.size > MAX_REFERENCE_FILE_BYTES) return;
-    if (
-      totalReferenceBytes(state.references) + file.size >
-      MAX_REFERENCES_TOTAL_BYTES
-    ) {
+    if (file.size > maxFileBytes) return;
+    if (totalReferenceBytes(state.references) + file.size > maxTotalBytes) {
       return;
     }
     const mode = state.mediaType === "video" ? "inspire" : usageMode;
@@ -1243,11 +1273,14 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   generate: async () => {
     const pre = get();
     if (!pre.prompt.trim()) return;
-    if (pre.prompt.length > maxPromptCharsForMedia(pre.mediaType)) {
+    const imageModelId =
+      pre.mediaType === "image" ? pre.imageModel : undefined;
+    if (pre.prompt.length > maxPromptCharsForMedia(pre.mediaType, imageModelId)) {
       set({
         generationError: promptOverLimitMessage(
           pre.prompt.length,
-          pre.mediaType
+          pre.mediaType,
+          imageModelId
         ),
       });
       return;
@@ -1271,6 +1304,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       selectedLayouts,
       style,
       platform,
+      designElement,
+      colorPreferenceEnabled,
+      preferredColorHex,
       aspectRatio,
       params,
       references,
@@ -1443,6 +1479,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         layoutIds,
         style,
         platform,
+        designElement,
+        preferredColorHex: colorPreferenceEnabled ? preferredColorHex : undefined,
         aspectRatio,
         params,
         references,
@@ -1607,6 +1645,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         layoutId: variant.layoutId,
         style: state.style,
         platform: state.platform,
+        designElement: state.designElement,
+        preferredColorHex: state.colorPreferenceEnabled
+          ? state.preferredColorHex
+          : undefined,
         aspectRatio: state.aspectRatio,
         params: state.params,
         references: state.references,
@@ -1811,6 +1853,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         pendingVariations,
         style: state.style,
         platform: state.platform,
+        designElement: state.designElement,
+        preferredColorHex: state.colorPreferenceEnabled
+          ? state.preferredColorHex
+          : undefined,
         aspectRatio: state.aspectRatio,
         params: state.params,
         imageModel: state.imageModel,

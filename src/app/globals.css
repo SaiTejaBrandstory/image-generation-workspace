@@ -262,6 +262,10 @@ body {
   flex-shrink: 0;
 }
 
+.composer-toolbar > .basis-full {
+  flex-shrink: 1;
+}
+
 /* Keep prompt + generate visible when references / warnings add height */
 .composer-panel {
   max-height: min(58dvh, 520px);

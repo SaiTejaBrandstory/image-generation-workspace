@@ -1,9 +1,23 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
-import type { ReferenceUsageMode } from "@/types";
-import { Loader2, Plus, Sparkles, SlidersHorizontal, X } from "lucide-react";
-import { ASPECT_RATIOS, PLATFORM_PRESETS } from "@/lib/constants";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type {
+  AspectRatio,
+  DesignElement,
+  ReferenceUsageMode,
+  StyleEngine,
+} from "@/types";
+import {
+  Loader2,
+  Plus,
+  Sparkles,
+  SlidersHorizontal,
+  Settings2,
+  X,
+  ChevronDown,
+  Check,
+} from "lucide-react";
+import { DESIGN_ELEMENTS, STYLE_ENGINES } from "@/lib/constants";
 import {
   getVideoModelConfig,
   videoModelAcceptsReferences,
@@ -21,7 +35,12 @@ import { ModelSelector } from "./model-selector";
 import { VideoModelSelector } from "./video-model-selector";
 import { VideoOptionsSelects } from "./video-options-selects";
 import { MediaTypeToggle } from "./media-type-toggle";
-import { getModelConfig } from "@/lib/openrouter-models";
+import {
+  clampImageAspectRatioToModel,
+  getAspectRatiosForModel,
+  getModelConfig,
+} from "@/lib/openrouter-models";
+import { ASPECT_RATIOS as ALL_ASPECT_RATIOS } from "@/lib/constants";
 import {
   dimensionsMeetMinimum,
   getFileImageDimensions,
@@ -45,53 +64,240 @@ import {
   maxPromptCharsForMedia,
   promptOverLimitMessage,
   promptWithinLimit,
+  formatPromptCountLabel,
 } from "@/lib/prompt-limits";
 import { cn } from "@/lib/utils";
 import { PromptCountBadge } from "./prompt-count-badge";
 import { ReferenceCountBadge } from "./reference-count-badge";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  COMPOSER_MENU_CONTENT,
+  COMPOSER_MENU_ITEM,
+  COMPOSER_MENU_SCROLL,
+  COMPOSER_MENU_TRIGGER_BTN,
+} from "./composer-menu-styles";
 
-function AspectPlatformSelects({ mobile }: { mobile?: boolean }) {
-  const { aspectRatio, setAspectRatio, platform, setPlatform } =
-    useWorkspaceStore();
+const ASPECT_LABEL_SEP = " — ";
 
-  const selectClass = mobile
-    ? "w-full rounded-xl bg-surface-elevated px-3 py-2.5 text-sm text-foreground border-0 outline-none cursor-pointer"
-    : "shrink-0 rounded-xl bg-surface-elevated px-2.5 py-1.5 text-xs text-foreground-muted border-0 outline-none cursor-pointer";
+function splitAspectOptionLabel(full: string): { ratio: string; hint: string } {
+  const i = full.indexOf(ASPECT_LABEL_SEP);
+  if (i === -1) return { ratio: full.trim(), hint: "" };
+  return {
+    ratio: full.slice(0, i).trim(),
+    hint: full.slice(i + ASPECT_LABEL_SEP.length).trim(),
+  };
+}
 
-  const selects = (
-    <>
-      <select
-        value={aspectRatio}
-        onChange={(e) => setAspectRatio(e.target.value as typeof aspectRatio)}
-        className={selectClass}
-        aria-label="Aspect ratio"
-      >
-        {ASPECT_RATIOS.map((a) => (
-          <option key={a.value} value={a.value}>
-            {a.label}
-          </option>
-        ))}
-      </select>
-      <select
-        value={platform}
-        onChange={(e) => setPlatform(e.target.value as typeof platform)}
-        className={cn(selectClass, !mobile && "max-w-[120px]")}
-        aria-label="Platform"
-      >
-        {PLATFORM_PRESETS.map((p) => (
-          <option key={p.value} value={p.value}>
-            {p.label}
-          </option>
-        ))}
-      </select>
-    </>
+/** Custom menu so ratio + description columns align (native <option> text cannot). */
+function AspectRatioComposerSelect({
+  options,
+  value,
+  onChange,
+}: {
+  options: { value: AspectRatio; label: string }[];
+  value: AspectRatio;
+  onChange: (v: AspectRatio) => void;
+}) {
+  const current = options.find((o) => o.value === value);
+  const currentLabel = current?.label ?? String(value);
+
+  return (
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger asChild>
+        <button type="button" aria-label="Aspect ratio" className={COMPOSER_MENU_TRIGGER_BTN}>
+          <span className="min-w-0 flex-1 truncate">{currentLabel}</span>
+          <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 shrink-0 text-foreground-muted/55" aria-hidden />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className={COMPOSER_MENU_CONTENT}>
+        <div className={COMPOSER_MENU_SCROLL}>
+          {options.map((o) => {
+            const selected = o.value === value;
+            const { ratio, hint } = splitAspectOptionLabel(o.label);
+            return (
+              <DropdownMenuItem
+                key={o.value}
+                onSelect={() => {
+                  onChange(o.value);
+                }}
+                className={cn(
+                  COMPOSER_MENU_ITEM,
+                  selected &&
+                    "bg-accent-violet/12 data-[highlighted]:bg-accent-violet/18"
+                )}
+              >
+                <div className="flex w-full min-w-0 items-start gap-2">
+                  <span className="mt-px flex h-4 w-4 shrink-0 items-center justify-center">
+                    {selected ? (
+                      <Check className="h-3.5 w-3.5 text-accent-violet" aria-hidden strokeWidth={2.5} />
+                    ) : null}
+                  </span>
+                  <div className="grid min-w-0 flex-1 grid-cols-[3rem_minmax(0,1fr)] gap-x-2 text-left leading-snug">
+                    <span className="shrink-0 pt-px text-left font-mono text-[11px] font-semibold tabular-nums text-foreground tracking-tight">
+                      {ratio}
+                    </span>
+                    {hint ? (
+                      <span className="min-w-0 text-[11px] text-foreground-muted">
+                        {hint}
+                      </span>
+                    ) : (
+                      <span />
+                    )}
+                  </div>
+                </div>
+              </DropdownMenuItem>
+            );
+          })}
+        </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/** Same menu shell as aspect ratio; one left-aligned label column (existing copy only). */
+function ComposerLabeledPickMenu<T extends string>({
+  ariaLabel,
+  options,
+  value,
+  onChange,
+}: {
+  ariaLabel: string;
+  options: { value: T; label: string }[];
+  value: T;
+  onChange: (v: T) => void;
+}) {
+  const current = options.find((o) => o.value === value);
+  const currentLabel = current?.label ?? String(value);
+
+  return (
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger asChild>
+        <button type="button" aria-label={ariaLabel} className={COMPOSER_MENU_TRIGGER_BTN}>
+          <span className="min-w-0 flex-1 truncate">{currentLabel}</span>
+          <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 shrink-0 text-foreground-muted/55" aria-hidden />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className={COMPOSER_MENU_CONTENT}>
+        <div className={COMPOSER_MENU_SCROLL}>
+          {options.map((o) => {
+            const selected = o.value === value;
+            return (
+              <DropdownMenuItem
+                key={o.value}
+                onSelect={() => onChange(o.value)}
+                className={cn(
+                  COMPOSER_MENU_ITEM,
+                  selected &&
+                    "bg-accent-violet/12 data-[highlighted]:bg-accent-violet/18"
+                )}
+              >
+                <div className="flex w-full min-w-0 items-start gap-2">
+                  <span className="mt-px flex h-4 w-4 shrink-0 items-center justify-center">
+                    {selected ? (
+                      <Check className="h-3.5 w-3.5 text-accent-violet" aria-hidden strokeWidth={2.5} />
+                    ) : null}
+                  </span>
+                  <span className="min-w-0 flex-1 text-left text-[11px] font-medium leading-snug text-foreground">
+                    {o.label}
+                  </span>
+                </div>
+              </DropdownMenuItem>
+            );
+          })}
+        </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function ComposerField({
+  label,
+  className,
+  children,
+}: {
+  label: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={cn("min-w-0 space-y-1.5", className)}>
+      <span className="block text-[10px] font-semibold uppercase tracking-wider text-foreground-muted">
+        {label}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+function ImageGenerationSelects() {
+  const {
+    aspectRatio,
+    setAspectRatio,
+    designElement,
+    setDesignElement,
+    style,
+    setStyle,
+    imageModel,
+  } = useWorkspaceStore();
+
+  // Derive the aspect ratios supported by the currently selected model.
+  // Fall back to the full list if the model is unknown.
+  const modelAspectRatios = useMemo(() => {
+    const supported = getAspectRatiosForModel(imageModel);
+    return ALL_ASPECT_RATIOS.filter((a) => supported.includes(a.value));
+  }, [imageModel]);
+
+  // Keep store aspect in sync when the model's supported list changes.
+  useEffect(() => {
+    const clamped = clampImageAspectRatioToModel(imageModel, aspectRatio);
+    if (clamped !== aspectRatio) setAspectRatio(clamped);
+  }, [imageModel, aspectRatio, setAspectRatio]);
+
+  const modelAndAspectRow = (
+    <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
+      <ModelSelector showLabel />
+      <ComposerField label="Aspect ratio">
+        <AspectRatioComposerSelect
+          options={modelAspectRatios}
+          value={aspectRatio}
+          onChange={(v) => setAspectRatio(v)}
+        />
+      </ComposerField>
+    </div>
   );
 
-  if (mobile) {
-    return <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">{selects}</div>;
-  }
+  const styleAndDesignRow = (
+    <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
+      <ComposerField label="Design element">
+        <ComposerLabeledPickMenu<DesignElement>
+          ariaLabel="Design element"
+          options={DESIGN_ELEMENTS}
+          value={designElement}
+          onChange={setDesignElement}
+        />
+      </ComposerField>
+      <ComposerField label="Style">
+        <ComposerLabeledPickMenu<StyleEngine>
+          ariaLabel="Style"
+          options={STYLE_ENGINES}
+          value={style}
+          onChange={setStyle}
+        />
+      </ComposerField>
+    </div>
+  );
 
-  return <>{selects}</>;
+  return (
+    <div className="flex min-w-0 w-full flex-col gap-3">
+      {modelAndAspectRow}
+      {styleAndDesignRow}
+    </div>
+  );
 }
 
 export function PromptComposer() {
@@ -115,6 +321,10 @@ export function PromptComposer() {
     references,
     imageModel,
     videoModel,
+    colorPreferenceEnabled,
+    preferredColorHex,
+    setColorPreferenceEnabled,
+    setPreferredColorHex,
   } = useWorkspaceStore();
 
   const isGenerating = useWorkspaceStore((s) => s.isGenerating);
@@ -130,13 +340,16 @@ export function PromptComposer() {
   const refsAttachedButIgnored =
     isVideo && references.length > 0 && !videoAcceptsRefs;
 
+  // Pass imageModel so limits are model-specific for image mode.
+  const imageModelId = isVideo ? undefined : imageModel;
   const referenceSlotsLeft = remainingReferenceSlots(
     references.length,
-    mediaType
+    mediaType,
+    imageModelId
   );
   const atReferenceLimit = referenceSlotsLeft === 0;
   const canAddReferences =
-    (!isVideo || videoAcceptsRefs) && !atReferenceLimit;
+    (!isVideo || videoAcceptsRefs) && !atReferenceLimit && modelConfig.maxReferenceImages > 0;
 
   const invalidAttachedRefs = useMemo(() => {
     if (!isVideo || references.length === 0) return [];
@@ -151,21 +364,21 @@ export function PromptComposer() {
 
   const [generateClickLock, setGenerateClickLock] = useState(false);
 
-  const maxPromptChars = maxPromptCharsForMedia(mediaType);
+  const maxPromptChars = maxPromptCharsForMedia(mediaType, imageModelId);
   const promptCharCount = prompt.length;
   const promptTooLong = promptCharCount > maxPromptChars;
 
   const canGenerate =
-    promptWithinLimit(prompt, mediaType) &&
+    promptWithinLimit(prompt, mediaType, imageModelId) &&
     !isGenerating &&
     !generateClickLock &&
     invalidAttachedRefs.length === 0;
 
   const handlePromptChange = useCallback(
     (value: string) => {
-      setPrompt(clampPromptText(value, mediaType));
+      setPrompt(clampPromptText(value, mediaType, imageModelId));
     },
-    [setPrompt, mediaType]
+    [setPrompt, mediaType, imageModelId]
   );
 
   const handleGenerate = useCallback(async () => {
@@ -180,7 +393,7 @@ export function PromptComposer() {
   const generateTooltip = isViewingGeneration
     ? "Generation in progress…"
     : promptTooLong
-      ? promptOverLimitMessage(promptCharCount, mediaType)
+      ? promptOverLimitMessage(promptCharCount, mediaType, imageModelId)
       : !prompt.trim()
         ? "Enter a prompt to generate"
         : isVideo
@@ -209,7 +422,8 @@ export function PromptComposer() {
         formatOk,
         baseCount,
         baseBytes,
-        mediaType
+        mediaType,
+        imageModelId
       );
       const warnings = [
         ...(formatRejected.length > 0
@@ -263,7 +477,7 @@ export function PromptComposer() {
       if (!canAddReferences) {
         if (atReferenceLimit) {
           setReferenceUploadWarning(
-            `Maximum references reached (${formatReferenceLimitHint(mediaType)}).`
+            `Maximum references reached (${formatReferenceLimitHint(mediaType, imageModelId)}).`
           );
         }
         return;
@@ -445,8 +659,8 @@ export function PromptComposer() {
           </div>
         )}
 
-        <div className="rounded-[20px] border border-border bg-surface shadow-cinematic overflow-hidden">
-          <div className="relative">
+        <div className="rounded-[22px] border border-border/90 bg-surface shadow-cinematic ring-1 ring-black/[0.04] dark:ring-white/[0.06] overflow-hidden">
+          <div className="relative bg-gradient-to-b from-background/80 to-surface-hover/15">
             <textarea
               value={prompt}
               onChange={(e) => handlePromptChange(e.target.value)}
@@ -460,7 +674,7 @@ export function PromptComposer() {
               rows={3}
               aria-describedby="prompt-char-count"
               className={cn(
-                "w-full resize-none bg-transparent pl-14 pr-16 py-4 text-[15px] leading-relaxed text-foreground placeholder:text-foreground-muted outline-none min-h-[96px]",
+                "w-full resize-none bg-transparent pl-14 pr-16 py-4 text-[15px] leading-relaxed text-foreground placeholder:text-foreground-muted/65 outline-none min-h-[96px] transition-colors",
                 promptTooLong && "text-accent-orange"
               )}
               onInput={(e) => {
@@ -474,18 +688,20 @@ export function PromptComposer() {
               id="prompt-char-count"
               className="pointer-events-none absolute right-3 top-3"
             >
-              <PromptCountBadge length={promptCharCount} mediaType={mediaType} />
+              <PromptCountBadge length={promptCharCount} mediaType={mediaType} imageModelId={imageModelId} />
             </div>
 
             <Tooltip
               content={
                 !canAddReferences
-                  ? atReferenceLimit
-                    ? `Maximum references attached (${formatReferenceLimitHint(mediaType)})`
+                  ? atReferenceLimit || modelConfig.maxReferenceImages === 0
+                    ? modelConfig.maxReferenceImages === 0 && !isVideo
+                      ? `${modelConfig.label} is text-to-image only — no reference images`
+                      : `Maximum references attached (${formatReferenceLimitHint(mediaType, imageModelId)})`
                     : `${videoConfig.label} does not accept reference images — prompt only`
                   : isVideo
                     ? `Add consistency reference (${formatReferenceLimitHint("video")})`
-                    : `Add reference image (${formatReferenceLimitHint("image")})`
+                    : `Add reference image (${formatReferenceLimitHint(mediaType, imageModelId)})`
               }
             >
               <span className="absolute left-3 bottom-3 inline-flex items-center gap-1.5">
@@ -493,6 +709,7 @@ export function PromptComposer() {
                 <ReferenceCountBadge
                   count={references.length}
                   mediaType={mediaType}
+                  imageModelId={imageModelId}
                 />
               )}
               <button
@@ -510,10 +727,10 @@ export function PromptComposer() {
                     : "Add reference image"
                 }
                 className={cn(
-                  "flex h-9 w-9 items-center justify-center rounded-xl border border-border bg-surface-elevated text-foreground-muted transition-colors hover:bg-surface-hover hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40",
+                  "flex h-9 w-9 items-center justify-center rounded-xl border border-border/90 bg-background text-foreground-muted shadow-sm transition-colors hover:bg-surface-hover hover:text-foreground hover:border-foreground/15 disabled:cursor-not-allowed disabled:opacity-40",
                   isVideo
-                    ? "hover:border-accent-cyan/40"
-                    : "hover:border-accent-violet/40"
+                    ? "hover:border-accent-cyan/35"
+                    : "hover:border-accent-violet/35"
                 )}
               >
                 <Plus className="h-5 w-5" strokeWidth={2} />
@@ -535,13 +752,16 @@ export function PromptComposer() {
           />
 
           {!isVideo ? (
-            <div className="composer-toolbar hidden flex-wrap items-center gap-2 border-t border-border px-3 py-2.5 lg:flex">
-              <LayoutSelector />
-              <ModelSelector />
-              <AspectPlatformSelects />
+            <div className="composer-toolbar hidden min-w-0 flex-col gap-0 border-t border-border/80 bg-surface-hover/20 px-4 py-3 dark:bg-white/[0.025] lg:flex">
+              <div className="flex min-w-0 flex-wrap items-center gap-2 border-b border-border/50 pb-3">
+                <LayoutSelector />
+              </div>
+              <div className="pt-3">
+                <ImageGenerationSelects />
+              </div>
             </div>
           ) : (
-            <div className="composer-toolbar hidden flex-wrap items-center gap-2 border-t border-border px-3 py-2.5 lg:flex">
+            <div className="composer-toolbar hidden flex-wrap items-center gap-2 border-t border-border/80 bg-surface-hover/20 px-4 py-3 dark:bg-white/[0.025] lg:flex">
               <VideoModelSelector />
               <VideoOptionsSelects />
             </div>
@@ -550,7 +770,7 @@ export function PromptComposer() {
           <button
             type="button"
             onClick={() => setShowOptions(!showOptions)}
-            className="flex w-full items-center justify-between border-t border-border px-3 py-2.5 text-xs text-foreground-muted lg:hidden"
+            className="flex w-full items-center justify-between border-t border-border/80 bg-surface-hover/10 px-4 py-2.5 text-xs text-foreground-muted lg:hidden"
           >
             <span className="font-medium">Generation options</span>
             <SlidersHorizontal
@@ -562,14 +782,13 @@ export function PromptComposer() {
           </button>
 
           {showOptions && (
-            <div className="space-y-3 border-t border-border px-3 py-3 lg:hidden">
+            <div className="space-y-3 border-t border-border/80 bg-surface-hover/15 px-4 py-4 lg:hidden">
               {!isVideo ? (
                 <>
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="flex flex-wrap gap-2">
                     <LayoutSelector />
-                    <ModelSelector />
                   </div>
-                  <AspectPlatformSelects mobile />
+                  <ImageGenerationSelects />
                 </>
               ) : (
                 <>
@@ -580,7 +799,78 @@ export function PromptComposer() {
             </div>
           )}
 
-          <div className="flex justify-end border-t border-border px-3 py-2">
+          <div className="flex items-center justify-between border-t border-border/80 bg-surface-hover/15 px-4 py-3">
+            {!isVideo ? (
+              <DropdownMenu modal={false}>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-border/90 bg-background text-foreground-muted shadow-sm transition-colors hover:border-foreground/15 hover:bg-surface-hover hover:text-foreground"
+                    aria-label="Color prompt settings"
+                    title="Color prompt settings"
+                  >
+                    <Settings2 className="h-4 w-4" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="w-[260px] p-2.5">
+                  <div className="space-y-2">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-foreground-muted">
+                      Prompt color
+                    </p>
+                    <label className="flex items-center justify-between rounded-lg border border-border/70 bg-background px-2.5 py-2 text-xs text-foreground">
+                      <span>Enable color</span>
+                      <button
+                        type="button"
+                        role="switch"
+                        aria-checked={colorPreferenceEnabled}
+                        onClick={() =>
+                          setColorPreferenceEnabled(!colorPreferenceEnabled)
+                        }
+                        className={cn(
+                          "relative h-5 w-9 rounded-full transition-colors",
+                          colorPreferenceEnabled
+                            ? "bg-accent-violet"
+                            : "bg-foreground/20"
+                        )}
+                      >
+                        <span
+                          className={cn(
+                            "absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-white transition-transform",
+                            colorPreferenceEnabled
+                              ? "translate-x-4"
+                              : "translate-x-0"
+                          )}
+                        />
+                      </button>
+                    </label>
+                    {colorPreferenceEnabled && (
+                      <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-background px-2.5 py-2">
+                        <input
+                          type="color"
+                          value={preferredColorHex}
+                          onChange={(e) => setPreferredColorHex(e.target.value)}
+                          className="h-7 w-8 cursor-pointer rounded border border-border bg-transparent p-0"
+                          aria-label="Pick prompt color"
+                        />
+                        <input
+                          type="text"
+                          value={preferredColorHex}
+                          onChange={(e) => setPreferredColorHex(e.target.value)}
+                          className="h-7 flex-1 rounded border border-border bg-surface-elevated px-2 text-[11px] font-mono uppercase text-foreground outline-none focus:border-accent-violet/45"
+                          aria-label="Prompt color hex"
+                          placeholder="#7C3AED"
+                        />
+                      </div>
+                    )}
+                    <p className="text-[10px] leading-snug text-foreground-muted">
+                      Adds your selected color as a generation hint in the prompt.
+                    </p>
+                  </div>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : (
+              <span />
+            )}
             <Tooltip content={generateTooltip}>
               <span className="inline-flex">
                 <Button
@@ -592,7 +882,7 @@ export function PromptComposer() {
                   aria-busy={isViewingGeneration || generateClickLock}
                   aria-disabled={!canGenerate}
                   className={cn(
-                    "h-9 min-w-[140px] gap-1.5 rounded-xl px-4 text-xs font-medium",
+                    "h-10 min-w-[160px] gap-2 rounded-xl px-5 text-sm font-medium shadow-sm",
                     canGenerate && "hover:brightness-110 active:scale-[0.98]",
                     isVideo && "bg-accent-cyan hover:bg-accent-cyan/90"
                   )}

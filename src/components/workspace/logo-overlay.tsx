@@ -5,6 +5,9 @@ import { cn } from "@/lib/utils";
 
 export interface LogoState {
   dataUrl: string;
+  /** Original uploaded logo dimensions in pixels (used for quality-safe sizing). */
+  sourceWidth?: number;
+  sourceHeight?: number;
   /** top-left corner as % of container width/height */
   x: number;
   y: number;
@@ -38,10 +41,17 @@ export function getPresetPosition(
 interface LogoOverlayProps {
   logo: LogoState;
   containerRef: React.RefObject<HTMLDivElement | null>;
+  /** Prefer the actual rendered image element for bounds (fixes letterboxing). */
+  boundsRef?: React.RefObject<HTMLElement | null>;
   onChange: (patch: Partial<LogoState>) => void;
 }
 
-export function LogoOverlay({ logo, containerRef, onChange }: LogoOverlayProps) {
+export function LogoOverlay({
+  logo,
+  containerRef,
+  boundsRef,
+  onChange,
+}: LogoOverlayProps) {
   const dragging = useRef(false);
   const dragOrigin = useRef({ mx: 0, my: 0, ox: 0, oy: 0 });
 
@@ -58,16 +68,21 @@ export function LogoOverlay({ logo, containerRef, onChange }: LogoOverlayProps) 
 
   const onPointerMove = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
-      if (!dragging.current || !containerRef.current) return;
-      const rect = containerRef.current.getBoundingClientRect();
+      if (!dragging.current) return;
+      const boundsEl = boundsRef?.current ?? containerRef.current;
+      if (!boundsEl) return;
+      const rect = boundsEl.getBoundingClientRect();
+      const logoRect = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+      const logoWidthPct = (logoRect.width / rect.width) * 100;
+      const logoHeightPct = (logoRect.height / rect.height) * 100;
       const dx = ((e.clientX - dragOrigin.current.mx) / rect.width) * 100;
       const dy = ((e.clientY - dragOrigin.current.my) / rect.height) * 100;
       onChange({
-        x: Math.max(0, Math.min(100 - logo.size, dragOrigin.current.ox + dx)),
-        y: Math.max(0, Math.min(100 - logo.size, dragOrigin.current.oy + dy)),
+        x: Math.max(0, Math.min(100 - logoWidthPct, dragOrigin.current.ox + dx)),
+        y: Math.max(0, Math.min(100 - logoHeightPct, dragOrigin.current.oy + dy)),
       });
     },
-    [containerRef, logo.size, onChange]
+    [boundsRef, containerRef, onChange]
   );
 
   const onPointerUp = useCallback(() => {
@@ -151,7 +166,22 @@ export async function compositeLogoOnImage(
   const logoX = (logo.x / 100) * img.naturalWidth;
   const logoY = (logo.y / 100) * img.naturalHeight;
 
-  ctx.drawImage(logoImg, logoX, logoY, logoW, logoH);
+  // Use high-quality interpolation to avoid jagged logo edges.
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  // Avoid upscaling low-res logos on export (upscale causes blurry text/edges).
+  // If requested draw size exceeds source pixels, cap to native logo resolution.
+  const upscale = Math.max(
+    logoW / Math.max(1, logoImg.naturalWidth),
+    logoH / Math.max(1, logoImg.naturalHeight)
+  );
+  const drawScale = upscale > 1 ? 1 / upscale : 1;
+  // Snap destination rect to whole pixels to avoid subpixel softening.
+  const drawW = Math.max(1, Math.round(logoW * drawScale));
+  const drawH = Math.max(1, Math.round(logoH * drawScale));
+  const drawX = Math.round(logoX);
+  const drawY = Math.round(logoY);
+  ctx.drawImage(logoImg, drawX, drawY, drawW, drawH);
 
   // Revoke object URLs only after canvas has finished drawing
   if (!imageSrc.startsWith("data:")) URL.revokeObjectURL(imgObjectUrl);

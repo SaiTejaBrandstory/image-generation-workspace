@@ -6,11 +6,13 @@ import {
   sleepMs,
 } from "@/lib/openrouter-errors";
 import {
+  clampImageAspectRatioToModel,
   getModalities,
   getModelConfig,
 } from "@/lib/openrouter-models";
 import type {
   AspectRatio,
+  DesignElement,
   DesignTokens,
   GenerationParams,
   LayoutId,
@@ -130,6 +132,8 @@ export async function generateImageWithOpenRouter(options: {
   layoutId: LayoutId;
   style: StyleEngine;
   platform: PlatformPreset;
+  designElement?: DesignElement;
+  preferredColorHex?: string;
   aspectRatio: AspectRatio;
   params: GenerationParams;
   model?: string;
@@ -139,17 +143,24 @@ export async function generateImageWithOpenRouter(options: {
   const apiKey = getApiKey();
   const model = resolveModel(options.model);
   const config = getModelConfig(model);
-  const aspect = mapAspectRatio(options.aspectRatio);
+  const aspectRatio = clampImageAspectRatioToModel(model, options.aspectRatio);
 
-  const textPrompt = buildLayoutImagePrompt({
+  let textPrompt = buildLayoutImagePrompt({
     userPrompt: options.userPrompt,
     layoutId: options.layoutId,
     style: options.style,
     platform: options.platform,
+    designElement: options.designElement ?? "none",
+    preferredColorHex: options.preferredColorHex,
     params: options.params,
     designTokens: options.designTokens,
     references: options.references,
   });
+
+  // Models without image_config still honor aspect via prompt hint.
+  if (!config.supportsAspectConfig && aspectRatio !== "auto") {
+    textPrompt = `${textPrompt}\n\nCompose the image in ${mapAspectRatio(aspectRatio)} aspect ratio.`;
+  }
 
   const body: Record<string, unknown> = {
     model,
@@ -168,7 +179,7 @@ export async function generateImageWithOpenRouter(options: {
 
   if (config.supportsAspectConfig) {
     body.image_config = {
-      aspect_ratio: aspect,
+      aspect_ratio: mapAspectRatio(aspectRatio),
       image_size: "1K",
     };
   }

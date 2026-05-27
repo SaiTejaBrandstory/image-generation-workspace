@@ -15,6 +15,7 @@ import { runWithConcurrency, serializeReferences } from "@/lib/reference-utils";
 import { sourceImageToPreserveReference } from "@/lib/variation-utils";
 import type {
   AspectRatio,
+  DesignElement,
   DesignTokens,
   GenerationParams,
   LayoutId,
@@ -114,6 +115,8 @@ async function generateOneImage(options: {
   layoutId: LayoutId;
   style: StyleEngine;
   platform: PlatformPreset;
+  designElement?: DesignElement;
+  preferredColorHex?: string;
   aspectRatio: AspectRatio;
   params: GenerationParams;
   imageModel: string;
@@ -137,6 +140,8 @@ async function generateOneImage(options: {
       layoutId: options.layoutId,
       style: options.style,
       platform: options.platform,
+      designElement: options.designElement ?? "none",
+      preferredColorHex: options.preferredColorHex,
       aspectRatio: options.aspectRatio,
       params: options.params,
       designTokens: options.designTokens,
@@ -240,6 +245,8 @@ export async function generateLayoutVariants(options: {
   layoutIds: LayoutId[];
   style: StyleEngine;
   platform: PlatformPreset;
+  designElement?: DesignElement;
+  preferredColorHex?: string;
   aspectRatio: AspectRatio;
   params: GenerationParams;
   references: ReferenceImage[];
@@ -254,6 +261,8 @@ export async function generateLayoutVariants(options: {
     layoutIds,
     style,
     platform,
+    designElement = "none",
+    preferredColorHex,
     aspectRatio,
     params,
     references,
@@ -276,8 +285,25 @@ export async function generateLayoutVariants(options: {
   onProgress?.(0, [...variants]);
 
   let completed = 0;
+  let started = 0;
+  const total = variants.length;
   const concurrency =
     references.length > 0 ? CONCURRENCY_WITH_REFS : CONCURRENCY_DEFAULT;
+
+  /**
+   * Progress formula: each slot contributes 100/total points.
+   * - When a variant starts generating it earns 30% of its slot.
+   * - When it finishes (complete or error) it earns the remaining 70%.
+   * This means the bar immediately moves as the first batch starts,
+   * rather than staying at 0% until the first image finishes.
+   */
+  function calcProgress(): number {
+    if (total === 0) return 0;
+    return Math.min(
+      ((started * 0.3 + completed * 0.7) / total) * 100,
+      99 // never reach 100% until explicitly set at the end
+    );
+  }
 
   await runWithConcurrency(
     variants,
@@ -288,7 +314,8 @@ export async function generateLayoutVariants(options: {
         status: "generating",
         errorMessage: undefined,
       };
-      onProgress?.((completed / variants.length) * 100, [...variants]);
+      started++;
+      onProgress?.(calcProgress(), [...variants]);
 
       try {
         const imageUrl = await generateOneImageWithRetry({
@@ -296,6 +323,8 @@ export async function generateLayoutVariants(options: {
           layoutId: variant.layoutId,
           style,
           platform,
+          designElement,
+          preferredColorHex,
           aspectRatio,
           params,
           imageModel,
@@ -324,7 +353,7 @@ export async function generateLayoutVariants(options: {
       }
 
       completed++;
-      onProgress?.((completed / variants.length) * 100, [...variants]);
+      onProgress?.(calcProgress(), [...variants]);
     }
   );
 
@@ -340,6 +369,8 @@ export async function generateSingleVariant(options: {
   layoutId: LayoutId;
   style: StyleEngine;
   platform: PlatformPreset;
+  designElement?: DesignElement;
+  preferredColorHex?: string;
   aspectRatio: AspectRatio;
   params: GenerationParams;
   references: ReferenceImage[];
@@ -360,6 +391,8 @@ export async function generateSingleVariant(options: {
     layoutId: options.layoutId,
     style: options.style,
     platform: options.platform,
+    designElement: options.designElement ?? "none",
+    preferredColorHex: options.preferredColorHex,
     aspectRatio: options.aspectRatio,
     params: options.params,
     imageModel: options.imageModel,
@@ -398,6 +431,8 @@ export async function generateVariantVariations(options: {
   pendingVariations: LayoutVariant[];
   style: StyleEngine;
   platform: PlatformPreset;
+  designElement?: DesignElement;
+  preferredColorHex?: string;
   aspectRatio: AspectRatio;
   params: GenerationParams;
   imageModel: string;
@@ -430,6 +465,8 @@ export async function generateVariantVariations(options: {
           layoutId: variant.layoutId,
           style: options.style,
           platform: options.platform,
+          designElement: options.designElement ?? "none",
+          preferredColorHex: options.preferredColorHex,
           aspectRatio: options.aspectRatio,
           params: options.params,
           imageModel: options.imageModel,

@@ -7,13 +7,15 @@ import type { MediaType } from "@/types";
 export function PromptCountBadge({
   length,
   mediaType,
+  imageModelId,
   className,
 }: {
   length: number;
   mediaType: MediaType;
+  imageModelId?: string;
   className?: string;
 }) {
-  const max = maxPromptCharsForMedia(mediaType);
+  const max = maxPromptCharsForMedia(mediaType, imageModelId);
   const over = length > max;
   const isVideo = mediaType === "video";
 
@@ -29,9 +31,9 @@ export function PromptCountBadge({
         className
       )}
       aria-live="polite"
-      title={`${length} of ${max} characters`}
+      title={`${length} of ${max.toLocaleString()} characters`}
     >
-      {formatPromptCountLabel(length, mediaType)}
+      {formatPromptCountLabel(length, mediaType, imageModelId)}
     </span>
   );
 }

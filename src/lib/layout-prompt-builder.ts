@@ -2,6 +2,7 @@ import { colorForImagePrompt, NO_SPEC_TEXT_IN_IMAGE } from "@/lib/color-for-prom
 import { LAYOUT_MAP } from "@/lib/layout-systems";
 import type {
   AspectRatio,
+  DesignElement,
   DesignTokens,
   GenerationParams,
   LayoutId,
@@ -14,25 +15,86 @@ const ASPECT_MAP: Record<AspectRatio, string> = {
   auto: "1:1",
   "1:1": "1:1",
   "4:5": "4:5",
+  "5:4": "5:4",
   "16:9": "16:9",
   "9:16": "9:16",
   "3:4": "3:4",
   "4:3": "4:3",
+  "2:3": "2:3",
+  "3:2": "3:2",
+  "21:9": "21:9",
+  "1:4": "1:4",
+  "4:1": "4:1",
+  "1:8": "1:8",
+  "8:1": "8:1",
 };
 
-const STYLE_HINTS: Record<StyleEngine, string> = {
-  luxury: "luxury cinematic lighting, premium materials, refined minimalism",
-  tech: "futuristic tech aesthetic, clean UI, subtle glow, innovation",
-  fashion: "high-fashion editorial, elegant poses, runway quality",
-  cyberpunk: "neon cyberpunk, high contrast, dystopian futurism",
-  minimal: "ultra-minimal, generous whitespace, restrained palette",
-  brutalist: "bold brutalist typography, raw geometry, high contrast",
-  editorial: "magazine editorial, sophisticated typography, art direction",
-  futuristic: "futuristic visionary, sleek forms, atmospheric depth",
-  "product-ad": "commercial product advertising, sharp focus, hero product",
-  "apple-inspired": "Apple-style minimal product hero, soft gradients, precision",
-  "nike-inspired": "Nike energy, dynamic motion, bold athletic power",
-  "porsche-inspired": "Porsche luxury automotive, precision engineering, dark elegance",
+export const STYLE_HINTS: Record<StyleEngine, string> = {
+  none: "",
+  cinematic:
+    "Cinematic style: film-grade lighting, dramatic depth, moody color grading, widescreen composition",
+  "creative-studio":
+    "Creative studio style: art-directed sets, playful props, polished campaign photography",
+  "luxury-editorial":
+    "Luxury editorial style: high-end fashion lighting, refined typography zones, premium materials",
+  "minimal-modern":
+    "Minimal modern style: clean lines, generous whitespace, restrained palette, product clarity",
+  "futuristic-tech":
+    "Futuristic tech style: sleek interfaces, subtle glow, innovation cues, precision geometry",
+  "ugc-social-native":
+    "UGC social native style: authentic handheld feel, natural light, relatable creator energy",
+  "bold-commercial":
+    "Bold commercial style: high contrast, punchy color, clear hero focus, conversion-ready CTA zones",
+  "experimental-artistic":
+    "Experimental artistic style: unconventional composition, mixed media, gallery-worthy expression",
+};
+
+const LEGACY_STYLE_MAP: Record<string, StyleEngine> = {
+  luxury: "luxury-editorial",
+  tech: "futuristic-tech",
+  fashion: "luxury-editorial",
+  cyberpunk: "experimental-artistic",
+  minimal: "minimal-modern",
+  brutalist: "bold-commercial",
+  editorial: "luxury-editorial",
+  futuristic: "futuristic-tech",
+  "product-ad": "bold-commercial",
+  "apple-inspired": "minimal-modern",
+  "nike-inspired": "bold-commercial",
+  "porsche-inspired": "luxury-editorial",
+};
+
+const STYLE_ENGINE_VALUES = new Set<string>(Object.keys(STYLE_HINTS));
+
+/** Maps stored conversation values (including legacy engines) to current presets. */
+export function normalizeStyleEngine(style: string | undefined | null): StyleEngine {
+  if (!style) return "none";
+  if (STYLE_ENGINE_VALUES.has(style)) return style as StyleEngine;
+  return LEGACY_STYLE_MAP[style] ?? "none";
+}
+
+export const DESIGN_ELEMENT_HINTS: Record<DesignElement, string> = {
+  none: "",
+  geometric:
+    "Geometric design: bold shapes, grids, symmetry, structured composition, clean angles",
+  isometric:
+    "Isometric design: 3D isometric perspective, dimensional illustration, technical clarity",
+  minimal:
+    "Minimal design: generous whitespace, restrained palette, essential elements only",
+  "editorial-magazine":
+    "Editorial magazine design: sophisticated typography hierarchy, art-directed layouts, print-quality polish",
+  glassmorphism:
+    "Glassmorphism: frosted glass panels, blur, transparency, soft depth, layered UI surfaces",
+  brutalist:
+    "Brutalist design: raw concrete textures, heavy typography, stark geometry, high contrast",
+  "collage-scrapbook":
+    "Collage scrapbook design: mixed media layers, torn edges, eclectic textures, handmade feel",
+  "cyberpunk-futuristic":
+    "Cyberpunk futuristic design: neon accents, dystopian atmosphere, high-tech grit, cinematic glow",
+  "organic-fluid":
+    "Organic fluid design: flowing curves, natural forms, soft gradients, biomorphic shapes",
+  "typography-centric":
+    "Typography-centric design: type as hero, expressive letterforms, strong hierarchy, minimal imagery",
 };
 
 const PLATFORM_HINTS: Record<PlatformPreset, string> = {
@@ -50,15 +112,37 @@ export function mapAspectRatio(ratio: AspectRatio): string {
   return ASPECT_MAP[ratio] ?? "1:1";
 }
 
+function designElementPromptLine(designElement: DesignElement): string {
+  const hint = DESIGN_ELEMENT_HINTS[designElement];
+  if (!hint) return "";
+  return `Design element direction: ${hint}.`;
+}
+
+function stylePromptLine(style: StyleEngine): string {
+  const hint = STYLE_HINTS[style];
+  if (!hint) return "";
+  return `Style direction: ${hint}.`;
+}
+
 export function buildLayoutImagePrompt(options: {
   userPrompt: string;
   layoutId: LayoutId;
   style: StyleEngine;
   platform: PlatformPreset;
+  designElement?: DesignElement;
+  preferredColorHex?: string;
   params: GenerationParams;
   designTokens?: DesignTokens;
   references?: ReferenceImagePayload[];
 }): string {
+  const style = normalizeStyleEngine(options.style);
+  const designElement = options.designElement ?? "none";
+  const styleLine = stylePromptLine(style);
+  const designLine = designElementPromptLine(designElement);
+  const colorLine = options.preferredColorHex
+    ? `Color direction: prioritize ${options.preferredColorHex} as the dominant accent color.`
+    : "";
+
   // Free-style: pass the prompt straight through with only minimal quality hints
   if (options.layoutId === "free") {
     const { userPrompt, references } = options;
@@ -67,12 +151,11 @@ export function buildLayoutImagePrompt(options: {
     const refNotes: string[] = [];
     if (inspireRefs.length > 0) refNotes.push(`INSPIRE (${inspireRefs.length} image(s)): Use for visual direction only — mood, palette, and styling.`);
     if (preserveRefs.length > 0) refNotes.push(`PRESERVE (${preserveRefs.length} image(s)): The attached asset(s) must appear in the output with their exact subject, colors, and fine details.`);
-    return [userPrompt, ...refNotes, "Output a single polished, production-ready image. No text watermarks."].filter(Boolean).join(" ");
+    return [userPrompt, styleLine, designLine, colorLine, ...refNotes, "Output a single polished, production-ready image. No text watermarks."].filter(Boolean).join(" ");
   }
 
   const layout = LAYOUT_MAP[options.layoutId];
-  const { userPrompt, style, platform, params, designTokens, references } =
-    options;
+  const { userPrompt, platform, params, designTokens, references } = options;
 
   const inspireRefs =
     references?.filter((r) => r.usageMode !== "preserve") ?? [];
@@ -114,7 +197,9 @@ export function buildLayoutImagePrompt(options: {
     `Create a professional advertising visual using the "${layout?.name}" layout system.`,
     `Layout rules: ${layout?.description}. Design principles: ${layout?.principles.join(", ")}.`,
     `Creative brief: ${userPrompt}`,
-    `Style direction: ${STYLE_HINTS[style]}.`,
+    styleLine,
+    designLine,
+    colorLine,
     `Platform: ${PLATFORM_HINTS[platform]}.`,
     `Visual parameters — creativity ${params.creativity}%, typography strength ${params.typographyStrength}%, density ${params.visualDensity}%, motion energy ${params.motionEnergy}%, depth ${params.depthIntensity}%, contrast ${params.contrast}%, UI presence ${params.uiPresence}%.`,
     brandNote,

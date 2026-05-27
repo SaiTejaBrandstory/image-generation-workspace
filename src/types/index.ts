@@ -35,10 +35,19 @@ export type AspectRatio =
   | "auto"
   | "1:1"
   | "4:5"
+  | "5:4"
   | "16:9"
   | "9:16"
   | "3:4"
-  | "4:3";
+  | "4:3"
+  | "2:3"
+  | "3:2"
+  | "21:9"
+  /** Gemini 3.1 Flash Image only (OpenRouter extended) */
+  | "1:4"
+  | "4:1"
+  | "1:8"
+  | "8:1";
 
 export type PlatformPreset =
   | "instagram-post"
@@ -65,19 +74,31 @@ export interface VideoMeta {
   model?: string;
 }
 
+/** Visual style preset — prompt hint only (separate from design element). */
 export type StyleEngine =
-  | "luxury"
-  | "tech"
-  | "fashion"
-  | "cyberpunk"
+  | "none"
+  | "cinematic"
+  | "creative-studio"
+  | "luxury-editorial"
+  | "minimal-modern"
+  | "futuristic-tech"
+  | "ugc-social-native"
+  | "bold-commercial"
+  | "experimental-artistic";
+
+/** Visual design language — injected into the image prompt (not an API parameter). */
+export type DesignElement =
+  | "none"
+  | "geometric"
+  | "isometric"
   | "minimal"
+  | "editorial-magazine"
+  | "glassmorphism"
   | "brutalist"
-  | "editorial"
-  | "futuristic"
-  | "product-ad"
-  | "apple-inspired"
-  | "nike-inspired"
-  | "porsche-inspired";
+  | "collage-scrapbook"
+  | "cyberpunk-futuristic"
+  | "organic-fluid"
+  | "typography-centric";
 
 export interface LayoutSystem {
   id: LayoutId;

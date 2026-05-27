@@ -4,10 +4,12 @@ import {
   maxPromptCharsForMedia,
   promptOverLimitMessage,
 } from "@/lib/prompt-limits";
+import { clampImageAspectRatioToModel } from "@/lib/openrouter-models";
 import { generateImageWithOpenRouter } from "@/lib/openrouter-image";
 import { createClient } from "@/lib/supabase/server";
 import type {
   AspectRatio,
+  DesignElement,
   DesignTokens,
   GenerationParams,
   LayoutId,
@@ -23,6 +25,8 @@ interface GenerateImageBody {
   layoutId: LayoutId;
   style: StyleEngine;
   platform: PlatformPreset;
+  designElement?: DesignElement;
+  preferredColorHex?: string;
   aspectRatio: AspectRatio;
   params: GenerationParams;
   designTokens?: DesignTokens;
@@ -76,12 +80,13 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (body.userPrompt.length > maxPromptCharsForMedia("image")) {
+    if (body.userPrompt.length > maxPromptCharsForMedia("image", body.model)) {
       return NextResponse.json(
         {
           error: promptOverLimitMessage(
             body.userPrompt.length,
-            "image"
+            "image",
+            body.model
           ),
         },
         { status: 400 }
@@ -96,12 +101,19 @@ export async function POST(request: NextRequest) {
     }
     // "free" is a valid pseudo-layout that bypasses the layout system prompt
 
+    const aspectRatio = clampImageAspectRatioToModel(
+      body.model ?? "google/gemini-2.5-flash-image",
+      body.aspectRatio ?? "auto"
+    );
+
     const result = await generateImageWithOpenRouter({
       userPrompt: body.userPrompt,
       layoutId: body.layoutId,
-      style: body.style ?? "luxury",
+      style: body.style ?? "none",
       platform: body.platform ?? "instagram-post",
-      aspectRatio: body.aspectRatio ?? "auto",
+      designElement: body.designElement ?? "none",
+      preferredColorHex: body.preferredColorHex,
+      aspectRatio,
       params: body.params,
       designTokens: body.designTokens,
       references: body.references,

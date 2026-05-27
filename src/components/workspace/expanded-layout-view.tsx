@@ -97,7 +97,15 @@ export function ExpandedLayoutView() {
   // ── Logo overlay state ────────────────────────────────────────────────────
   const [logo, setLogo] = useState<LogoState | null>(null);
   const canvasContainerRef = useRef<HTMLDivElement>(null);
+  const canvasImageRef = useRef<HTMLImageElement>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
+
+  const maxQualitySafeLogoSize = (() => {
+    if (!logo?.sourceWidth) return 50;
+    const baseWidth = canvasImageRef.current?.naturalWidth ?? 0;
+    if (!baseWidth) return 50;
+    return Math.max(5, Math.min(50, (logo.sourceWidth / baseWidth) * 100));
+  })();
 
   const handleLogoUpload = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -106,7 +114,17 @@ export function ExpandedLayoutView() {
       const reader = new FileReader();
       reader.onload = (ev) => {
         const dataUrl = ev.target?.result as string;
-        setLogo({ dataUrl, ...getPresetPosition("br", 20), size: 20 });
+        const img = new Image();
+        img.onload = () => {
+          setLogo({
+            dataUrl,
+            sourceWidth: img.naturalWidth,
+            sourceHeight: img.naturalHeight,
+            ...getPresetPosition("br", 20),
+            size: 20,
+          });
+        };
+        img.src = dataUrl;
       };
       reader.readAsDataURL(file);
       e.target.value = "";
@@ -115,8 +133,24 @@ export function ExpandedLayoutView() {
   );
 
   const updateLogo = useCallback((patch: Partial<LogoState>) => {
-    setLogo((prev) => (prev ? { ...prev, ...patch } : null));
-  }, []);
+    setLogo((prev) => {
+      if (!prev) return null;
+      const next = { ...prev, ...patch };
+      // Keep within quality-safe upper bound to avoid export upscaling blur.
+      if (typeof next.size === "number") {
+        next.size = Math.max(5, Math.min(maxQualitySafeLogoSize, next.size));
+      }
+      return next;
+    });
+  }, [maxQualitySafeLogoSize]);
+
+  useEffect(() => {
+    setLogo((prev) => {
+      if (!prev) return null;
+      const clamped = Math.max(5, Math.min(maxQualitySafeLogoSize, prev.size));
+      return clamped === prev.size ? prev : { ...prev, size: clamped };
+    });
+  }, [maxQualitySafeLogoSize]);
 
   useEffect(() => {
     setPreviewVariationId(null);
@@ -457,16 +491,24 @@ export function ExpandedLayoutView() {
               className="max-h-[85vh] max-w-full rounded-2xl shadow-2xl"
             />
           ) : canvasHasImage && canvasVariant.imageUrl ? (
-            <div ref={canvasContainerRef} className="relative max-h-[85vh] max-w-full">
-              <GeneratedImage
+            <div ref={canvasContainerRef} className="relative max-w-full">
+              {/* Render img directly so logo drag bounds match the visible image box. */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                ref={canvasImageRef}
                 src={canvasVariant.imageUrl}
-                alt={previewVariationLabel ?? (isFreeVariant ? "Free Style" : layout?.name) ?? "Layout"}
-                variant="expanded"
+                alt={
+                  previewVariationLabel ??
+                  (isFreeVariant ? "Free Style" : layout?.name) ??
+                  "Layout"
+                }
+                className="block max-h-[85vh] max-w-[min(100%,calc(100vw-2rem))] h-auto w-auto rounded-[24px] object-contain shadow-cinematic lg:max-w-[min(100%,calc(100vw-28rem))]"
               />
               {logo && (
                 <LogoOverlay
                   logo={logo}
                   containerRef={canvasContainerRef}
+                  boundsRef={canvasImageRef}
                   onChange={updateLogo}
                 />
               )}
@@ -513,7 +555,7 @@ export function ExpandedLayoutView() {
                 <input
                   type="range"
                   min={5}
-                  max={50}
+                  max={Math.max(5, Math.floor(maxQualitySafeLogoSize))}
                   step={1}
                   value={logo.size}
                   onChange={(e) =>
@@ -521,6 +563,11 @@ export function ExpandedLayoutView() {
                   }
                   className="w-full accent-accent-violet"
                 />
+                {logo.sourceWidth && (
+                  <p className="text-[10px] leading-snug text-foreground-muted">
+                    Quality-safe max: {Math.floor(maxQualitySafeLogoSize)}% for this logo on this image.
+                  </p>
+                )}
               </div>
 
             </div>

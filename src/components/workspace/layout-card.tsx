@@ -97,10 +97,11 @@ export function LayoutCard({
         a.download = `video-${index + 1}.mp4`;
         a.click();
         URL.revokeObjectURL(url);
-      } else if (layout) {
+      } else {
+        const baseName = layout?.name ?? variant.layoutId;
         await downloadImage(
           src,
-          buildImageFilename(layout.name, variant.layoutId, index)
+          buildImageFilename(baseName, variant.layoutId, index)
         );
       }
     } catch (err) {

@@ -87,9 +87,9 @@ export function VisualPanel({ className }: { className?: string }) {
           {/* Progress bar only for images — video cards show their own time-based bar */}
           {isGenerating && !isVideo && (
             <div className="flex items-center gap-2">
-              <div className="h-1.5 w-24 overflow-hidden rounded-full bg-surface-elevated">
+              <div className="h-1.5 w-24 overflow-hidden rounded-full bg-foreground/15 ring-1 ring-inset ring-border">
                 <motion.div
-                  className="h-full bg-accent-violet"
+                  className="h-full rounded-full bg-accent-violet"
                   animate={{ width: `${generationProgress}%` }}
                   transition={{ duration: 0.2 }}
                 />
