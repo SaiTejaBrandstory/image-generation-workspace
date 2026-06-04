@@ -719,8 +719,8 @@ export function ExpandedLayoutView() {
                   className="w-full accent-accent-violet"
                 />
                 <p className="text-[10px] leading-snug text-foreground-muted">
-                  Size is in pixels at full image resolution — downloads stay sharp
-                  (preview may look softer when scaled down).
+                  Size is in pixels on the full image. Downloads use lossless PNG with
+                  2× text rendering for sharper edges (preview may look softer).
                 </p>
               </div>
 

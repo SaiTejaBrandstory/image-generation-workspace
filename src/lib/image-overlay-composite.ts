@@ -52,8 +52,25 @@ export interface ImageOverlayOptions {
   text?: TextOverlayState;
 }
 
+/** 2× internal render for sharper text; capped on very large images (memory). */
+function getOverlayRenderScale(width: number, height: number): number {
+  const maxDim = Math.max(width, height);
+  if (maxDim > 3200) return 1;
+  return 2;
+}
+
+function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+  return new Promise<Blob>((resolve, reject) =>
+    canvas.toBlob(
+      (b) => (b ? resolve(b) : reject(new Error("Canvas toBlob failed"))),
+      "image/png"
+    )
+  );
+}
+
 /**
- * Composite optional logo and/or text onto imageSrc and return a PNG blob.
+ * Composite optional logo and/or text onto imageSrc and return a lossless PNG blob.
+ * Text is rasterized at 2× resolution when possible, then downscaled for sharper edges.
  */
 export async function compositeOverlaysOnImage(
   imageSrc: string,
@@ -69,23 +86,34 @@ export async function compositeOverlaysOnImage(
     logoImg = await loadImage(logoObjectUrl);
   }
 
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
+  const scale = getOverlayRenderScale(w, h);
+
   if (overlays.text) {
-    await ensureTextFontLoaded(
-      overlays.text,
-      Math.max(8, Math.round(overlays.text.fontSize))
-    );
+    const fontPx = Math.max(8, Math.round(overlays.text.fontSize));
+    await ensureTextFontLoaded(overlays.text, fontPx);
+    if (scale > 1) {
+      await ensureTextFontLoaded(overlays.text, fontPx * scale);
+    }
   }
 
-  const canvas = document.createElement("canvas");
-  canvas.width = img.naturalWidth;
-  canvas.height = img.naturalHeight;
-  const ctx = canvas.getContext("2d");
+  const work = document.createElement("canvas");
+  work.width = w * scale;
+  work.height = h * scale;
+  const ctx = work.getContext("2d");
   if (!ctx) throw new Error("Canvas 2D context unavailable");
+
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  if (scale > 1) {
+    ctx.scale(scale, scale);
+  }
 
   ctx.drawImage(img, 0, 0);
 
   if (overlays.text) {
-    drawTextOnCanvas(ctx, img.naturalWidth, img.naturalHeight, overlays.text);
+    drawTextOnCanvas(ctx, w, h, overlays.text);
   }
 
   if (overlays.logo && logoImg) {
@@ -97,12 +125,20 @@ export async function compositeOverlaysOnImage(
     URL.revokeObjectURL(logoObjectUrl);
   }
 
-  return new Promise<Blob>((resolve, reject) =>
-    canvas.toBlob(
-      (b) => (b ? resolve(b) : reject(new Error("Canvas toBlob failed"))),
-      "image/png"
-    )
-  );
+  if (scale === 1) {
+    return canvasToPngBlob(work);
+  }
+
+  const output = document.createElement("canvas");
+  output.width = w;
+  output.height = h;
+  const outCtx = output.getContext("2d");
+  if (!outCtx) throw new Error("Canvas 2D context unavailable");
+  outCtx.imageSmoothingEnabled = true;
+  outCtx.imageSmoothingQuality = "high";
+  outCtx.drawImage(work, 0, 0, w, h);
+
+  return canvasToPngBlob(output);
 }
 
 export async function compositeLogoOnImage(
