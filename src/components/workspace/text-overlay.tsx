@@ -10,28 +10,19 @@ import {
 import { cn } from "@/lib/utils";
 import type { CornerPreset } from "./logo-overlay";
 export { TEXT_FONT_GROUPS, TEXT_FONT_OPTIONS } from "@/lib/overlay-fonts";
-
-export type TextFontWeight = "400" | "600" | "700";
-export type TextFontStyle = "normal" | "italic";
-export type TextAlign = "left" | "center" | "right";
-
-export interface TextOverlayState {
-  content: string;
-  /**
-   * Horizontal anchor on the image in % (see textAlign).
-   * left → left edge; center → horizontal center; right → right edge.
-   */
-  x: number;
-  /** Top edge of text block in % of image height. */
-  y: number;
-  /** Font size in px at full image resolution (export size). */
-  fontSize: number;
-  fontFamily: string;
-  fontWeight: TextFontWeight;
-  fontStyle: TextFontStyle;
-  color: string;
-  textAlign: TextAlign;
-}
+export type {
+  TextAlign,
+  TextBoundsPct,
+  TextFontStyle,
+  TextFontWeight,
+  TextOverlayState,
+} from "@/lib/text-overlay-types";
+import type {
+  TextAlign,
+  TextBoundsPct,
+  TextFontWeight,
+  TextOverlayState,
+} from "@/lib/text-overlay-types";
 
 export const DEFAULT_TEXT_OVERLAY: TextOverlayState = {
   content: "Your text",
@@ -50,11 +41,6 @@ export const TEXT_WEIGHT_OPTIONS: { value: TextFontWeight; label: string }[] = [
   { value: "600", label: "Semibold" },
   { value: "700", label: "Bold" },
 ];
-
-export interface TextBoundsPct {
-  widthPct: number;
-  heightPct: number;
-}
 
 /** Convert anchor x when alignment changes so the text block stays in place. */
 export function convertAnchorOnAlignChange(
@@ -149,64 +135,6 @@ export function getTextPresetPosition(
         y: Math.max(pad, 50 - h / 2),
       };
   }
-}
-
-export function buildCanvasFont(
-  text: TextOverlayState,
-  fontPx: number
-): string {
-  return `${text.fontStyle} ${text.fontWeight} ${fontPx}px ${text.fontFamily}`;
-}
-
-export async function ensureTextFontLoaded(
-  text: TextOverlayState,
-  fontPx: number
-): Promise<void> {
-  if (typeof document === "undefined" || !document.fonts?.load) return;
-  const font = buildCanvasFont(text, fontPx);
-  try {
-    await document.fonts.load(font);
-    await document.fonts.ready;
-  } catch {
-    /* fall back to system fonts */
-  }
-}
-
-/**
- * Renders text at full image pixel dimensions (not screen preview size).
- * Uses integer pixel positions and a hard shadow + crisp fill for sharp exports.
- */
-export function drawTextOnCanvas(
-  ctx: CanvasRenderingContext2D,
-  imgWidth: number,
-  imgHeight: number,
-  text: TextOverlayState
-) {
-  const content = text.content.trim();
-  if (!content) return;
-
-  const fontPx = Math.max(8, Math.round(text.fontSize));
-  const anchorX = Math.round((text.x / 100) * imgWidth);
-  const baseY = Math.round((text.y / 100) * imgHeight);
-  const lineHeight = Math.round(fontPx * 1.2);
-  const shadowOffset = Math.max(1, Math.round(fontPx * 0.05));
-
-  ctx.save();
-  ctx.font = buildCanvasFont(text, fontPx);
-  ctx.textAlign = text.textAlign;
-  ctx.textBaseline = "top";
-
-  const lines = content.split("\n");
-
-  lines.forEach((line, i) => {
-    const lineY = baseY + i * lineHeight;
-    // Hard offset shadow (no blur) keeps letter edges sharp on PNG export.
-    ctx.fillStyle = "rgba(0,0,0,0.5)";
-    ctx.fillText(line, anchorX + shadowOffset, lineY + shadowOffset);
-    ctx.fillStyle = text.color;
-    ctx.fillText(line, anchorX, lineY);
-  });
-  ctx.restore();
 }
 
 function buildTextOverlayPositionStyle(

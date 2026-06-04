@@ -2,8 +2,8 @@ import type { LogoState } from "@/components/workspace/logo-overlay";
 import {
   drawTextOnCanvas,
   ensureTextFontLoaded,
-  type TextOverlayState,
-} from "@/components/workspace/text-overlay";
+} from "@/lib/text-overlay-canvas";
+import type { TextOverlayState } from "@/lib/text-overlay-types";
 
 async function fetchAsObjectUrl(src: string): Promise<string> {
   if (src.startsWith("data:")) return src;
