@@ -3,8 +3,29 @@ import type {
   DesignElement,
   MediaType,
   PlatformPreset,
+  PromptColorPalette,
   StyleEngine,
 } from "@/types";
+
+export const DEFAULT_PROMPT_COLORS: PromptColorPalette = {
+  primary: "#7c3aed",
+  secondary: "#06b6d4",
+};
+
+export const PROMPT_COLOR_SLOTS: {
+  key: keyof PromptColorPalette;
+  label: string;
+}[] = [
+  { key: "primary", label: "Primary" },
+  { key: "secondary", label: "Secondary" },
+];
+
+export function normalizePromptColorHex(hex: string, fallback: string): string {
+  const trimmed = hex.trim();
+  if (/^#[0-9a-fA-F]{6}$/i.test(trimmed)) return trimmed.toLowerCase();
+  if (/^[0-9a-fA-F]{6}$/i.test(trimmed)) return `#${trimmed.toLowerCase()}`;
+  return fallback;
+}
 
 /** Full list — used only as a fallback. UI uses getAspectRatiosForModel() instead. */
 export const ASPECT_RATIOS: { value: AspectRatio; label: string }[] = [

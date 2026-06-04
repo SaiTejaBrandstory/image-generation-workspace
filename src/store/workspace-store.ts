@@ -1,7 +1,11 @@
 "use client";
 
 import { create } from "zustand";
-import { DEFAULT_PARAMS } from "@/lib/constants";
+import {
+  DEFAULT_PARAMS,
+  DEFAULT_PROMPT_COLORS,
+  normalizePromptColorHex,
+} from "@/lib/constants";
 import { parseDesignMd } from "@/lib/design-md-parser";
 import {
   createConversationRecord,
@@ -77,6 +81,7 @@ import type {
   LayoutVariant,
   MediaType,
   PlatformPreset,
+  PromptColorPalette,
   ReferenceImage,
   ReferenceImagePayload,
   ReferenceUsageMode,
@@ -102,7 +107,7 @@ interface WorkspaceState {
   style: StyleEngine;
   designElement: DesignElement;
   colorPreferenceEnabled: boolean;
-  preferredColorHex: string;
+  promptColors: PromptColorPalette;
   params: GenerationParams;
   references: ReferenceImage[];
   variants: LayoutVariant[];
@@ -158,7 +163,7 @@ interface WorkspaceState {
   setStyle: (style: StyleEngine) => void;
   setDesignElement: (designElement: DesignElement) => void;
   setColorPreferenceEnabled: (enabled: boolean) => void;
-  setPreferredColorHex: (hex: string) => void;
+  setPromptColor: (key: keyof PromptColorPalette, hex: string) => void;
   setParam: <K extends keyof GenerationParams>(
     key: K,
     value: GenerationParams[K]
@@ -681,7 +686,7 @@ async function runFreeStyleGeneration(
     freeStyleCount,
     platform,
     colorPreferenceEnabled,
-    preferredColorHex,
+    promptColors,
     aspectRatio,
     params,
     references,
@@ -817,7 +822,7 @@ async function runFreeStyleGeneration(
       style: state.style,
       platform,
       designElement: state.designElement,
-      preferredColorHex: colorPreferenceEnabled ? preferredColorHex : undefined,
+      promptColors: colorPreferenceEnabled ? promptColors : undefined,
       aspectRatio,
       params,
       references,
@@ -903,7 +908,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   style: "none",
   designElement: "none",
   colorPreferenceEnabled: false,
-  preferredColorHex: "#7c3aed",
+  promptColors: { ...DEFAULT_PROMPT_COLORS },
   params: { ...DEFAULT_PARAMS },
   references: [],
   variants: [],
@@ -1053,8 +1058,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   setStyle: (style) => set({ style }),
   setDesignElement: (designElement) => set({ designElement }),
   setColorPreferenceEnabled: (enabled) => set({ colorPreferenceEnabled: enabled }),
-  setPreferredColorHex: (hex) =>
-    set({ preferredColorHex: /^#[0-9a-fA-F]{6}$/.test(hex) ? hex : "#7c3aed" }),
+  setPromptColor: (key, hex) =>
+    set((s) => ({
+      promptColors: {
+        ...s.promptColors,
+        [key]: normalizePromptColorHex(hex, s.promptColors[key]),
+      },
+    })),
 
   setParam: (key, value) =>
     set((s) => ({ params: { ...s.params, [key]: value } })),
@@ -1306,7 +1316,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       platform,
       designElement,
       colorPreferenceEnabled,
-      preferredColorHex,
+      promptColors,
       aspectRatio,
       params,
       references,
@@ -1480,7 +1490,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         style,
         platform,
         designElement,
-        preferredColorHex: colorPreferenceEnabled ? preferredColorHex : undefined,
+        promptColors: colorPreferenceEnabled ? promptColors : undefined,
         aspectRatio,
         params,
         references,
@@ -1646,8 +1656,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         style: state.style,
         platform: state.platform,
         designElement: state.designElement,
-        preferredColorHex: state.colorPreferenceEnabled
-          ? state.preferredColorHex
+        promptColors: state.colorPreferenceEnabled
+          ? state.promptColors
           : undefined,
         aspectRatio: state.aspectRatio,
         params: state.params,
@@ -1854,8 +1864,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         style: state.style,
         platform: state.platform,
         designElement: state.designElement,
-        preferredColorHex: state.colorPreferenceEnabled
-          ? state.preferredColorHex
+        promptColors: state.colorPreferenceEnabled
+          ? state.promptColors
           : undefined,
         aspectRatio: state.aspectRatio,
         params: state.params,

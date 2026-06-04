@@ -97,101 +97,13 @@ export function LogoOverlay({
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
     >
-      {/* drag-handle ring */}
-      <div className="absolute inset-0 rounded-sm ring-2 ring-white/50 ring-offset-1 ring-offset-black/30 pointer-events-none" />
       <img
         src={logo.dataUrl}
         alt="Logo overlay"
-        className="w-full h-auto pointer-events-none block"
+        className="block h-auto w-full pointer-events-none"
         draggable={false}
       />
     </div>
-  );
-}
-
-// ── Canvas compositing utility ──────────────────────────────────────────────
-
-/**
- * Fetch any URL (including signed Supabase URLs which block cross-origin canvas
- * reads) as a blob and convert it to a local object URL so canvas can draw it.
- */
-async function fetchAsObjectUrl(src: string): Promise<string> {
-  // data: URLs are already local — no fetch needed
-  if (src.startsWith("data:")) return src;
-  const res = await fetch(src);
-  if (!res.ok) throw new Error(`Failed to fetch image (${res.status})`);
-  const blob = await res.blob();
-  return URL.createObjectURL(blob);
-}
-
-function loadImage(src: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = reject;
-    img.src = src;
-  });
-}
-
-/**
- * Composite logo on top of imageSrc and return a PNG Blob.
- * Fetches the image via fetch() first to bypass canvas CORS restrictions on
- * signed Supabase storage URLs.
- */
-export async function compositeLogoOnImage(
-  imageSrc: string,
-  logo: LogoState
-): Promise<Blob> {
-  // Fetch both resources as local object URLs to avoid canvas taint
-  const [imgObjectUrl, logoObjectUrl] = await Promise.all([
-    fetchAsObjectUrl(imageSrc),
-    fetchAsObjectUrl(logo.dataUrl),
-  ]);
-
-  const [img, logoImg] = await Promise.all([
-    loadImage(imgObjectUrl),
-    loadImage(logoObjectUrl),
-  ]);
-
-  const canvas = document.createElement("canvas");
-  canvas.width = img.naturalWidth;
-  canvas.height = img.naturalHeight;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Canvas 2D context unavailable");
-
-  ctx.drawImage(img, 0, 0);
-
-  const logoW = (logo.size / 100) * img.naturalWidth;
-  const logoH = (logoImg.naturalHeight / logoImg.naturalWidth) * logoW;
-  const logoX = (logo.x / 100) * img.naturalWidth;
-  const logoY = (logo.y / 100) * img.naturalHeight;
-
-  // Use high-quality interpolation to avoid jagged logo edges.
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = "high";
-  // Avoid upscaling low-res logos on export (upscale causes blurry text/edges).
-  // If requested draw size exceeds source pixels, cap to native logo resolution.
-  const upscale = Math.max(
-    logoW / Math.max(1, logoImg.naturalWidth),
-    logoH / Math.max(1, logoImg.naturalHeight)
-  );
-  const drawScale = upscale > 1 ? 1 / upscale : 1;
-  // Snap destination rect to whole pixels to avoid subpixel softening.
-  const drawW = Math.max(1, Math.round(logoW * drawScale));
-  const drawH = Math.max(1, Math.round(logoH * drawScale));
-  const drawX = Math.round(logoX);
-  const drawY = Math.round(logoY);
-  ctx.drawImage(logoImg, drawX, drawY, drawW, drawH);
-
-  // Revoke object URLs only after canvas has finished drawing
-  if (!imageSrc.startsWith("data:")) URL.revokeObjectURL(imgObjectUrl);
-  if (!logo.dataUrl.startsWith("data:")) URL.revokeObjectURL(logoObjectUrl);
-
-  return new Promise<Blob>((resolve, reject) =>
-    canvas.toBlob(
-      (b) => (b ? resolve(b) : reject(new Error("Canvas toBlob failed"))),
-      "image/png"
-    )
   );
 }
 

@@ -7,6 +7,7 @@ import type {
   GenerationParams,
   LayoutId,
   PlatformPreset,
+  PromptColorPalette,
   ReferenceImagePayload,
   StyleEngine,
 } from "@/types";
@@ -124,13 +125,28 @@ function stylePromptLine(style: StyleEngine): string {
   return `Style direction: ${hint}.`;
 }
 
+function buildColorPromptLine(
+  colors?: Partial<PromptColorPalette> | null
+): string {
+  if (!colors) return "";
+  const parts: string[] = [];
+  if (colors.primary?.trim()) {
+    parts.push(`primary ${colors.primary.trim()}`);
+  }
+  if (colors.secondary?.trim()) {
+    parts.push(`secondary ${colors.secondary.trim()}`);
+  }
+  if (parts.length === 0) return "";
+  return `Color palette direction: use ${parts.join(", ")} as the brand color system.`;
+}
+
 export function buildLayoutImagePrompt(options: {
   userPrompt: string;
   layoutId: LayoutId;
   style: StyleEngine;
   platform: PlatformPreset;
   designElement?: DesignElement;
-  preferredColorHex?: string;
+  promptColors?: Partial<PromptColorPalette> | null;
   params: GenerationParams;
   designTokens?: DesignTokens;
   references?: ReferenceImagePayload[];
@@ -139,9 +155,7 @@ export function buildLayoutImagePrompt(options: {
   const designElement = options.designElement ?? "none";
   const styleLine = stylePromptLine(style);
   const designLine = designElementPromptLine(designElement);
-  const colorLine = options.preferredColorHex
-    ? `Color direction: prioritize ${options.preferredColorHex} as the dominant accent color.`
-    : "";
+  const colorLine = buildColorPromptLine(options.promptColors);
 
   // Free-style: pass the prompt straight through with only minimal quality hints
   if (options.layoutId === "free") {

@@ -17,7 +17,11 @@ import {
   ChevronDown,
   Check,
 } from "lucide-react";
-import { DESIGN_ELEMENTS, STYLE_ENGINES } from "@/lib/constants";
+import {
+  DESIGN_ELEMENTS,
+  PROMPT_COLOR_SLOTS,
+  STYLE_ENGINES,
+} from "@/lib/constants";
 import {
   getVideoModelConfig,
   videoModelAcceptsReferences,
@@ -300,6 +304,38 @@ function ImageGenerationSelects() {
   );
 }
 
+function PromptColorSlotRow({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (hex: string) => void;
+}) {
+  return (
+    <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-background px-2.5 py-1.5">
+      <span className="w-[4.75rem] shrink-0 text-[11px] font-medium text-foreground">
+        {label}
+      </span>
+      <input
+        type="color"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-7 w-8 shrink-0 cursor-pointer rounded border border-border bg-transparent p-0"
+        aria-label={`Pick ${label} color`}
+      />
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-7 min-w-0 flex-1 rounded border border-border bg-surface-elevated px-2 text-[11px] font-mono uppercase text-foreground outline-none focus:border-accent-violet/45"
+        aria-label={`${label} color hex`}
+      />
+    </div>
+  );
+}
+
 export function PromptComposer() {
   const [showOptions, setShowOptions] = useState(false);
   const [pendingPreviewUrls, setPendingPreviewUrls] = useState<string[]>([]);
@@ -322,9 +358,9 @@ export function PromptComposer() {
     imageModel,
     videoModel,
     colorPreferenceEnabled,
-    preferredColorHex,
+    promptColors,
     setColorPreferenceEnabled,
-    setPreferredColorHex,
+    setPromptColor,
   } = useWorkspaceStore();
 
   const isGenerating = useWorkspaceStore((s) => s.isGenerating);
@@ -812,7 +848,7 @@ export function PromptComposer() {
                     <Settings2 className="h-4 w-4" />
                   </button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" className="w-[260px] p-2.5">
+                <DropdownMenuContent align="start" className="w-[300px] p-2.5">
                   <div className="space-y-2">
                     <p className="text-[10px] font-semibold uppercase tracking-wider text-foreground-muted">
                       Prompt color
@@ -844,26 +880,20 @@ export function PromptComposer() {
                       </button>
                     </label>
                     {colorPreferenceEnabled && (
-                      <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-background px-2.5 py-2">
-                        <input
-                          type="color"
-                          value={preferredColorHex}
-                          onChange={(e) => setPreferredColorHex(e.target.value)}
-                          className="h-7 w-8 cursor-pointer rounded border border-border bg-transparent p-0"
-                          aria-label="Pick prompt color"
-                        />
-                        <input
-                          type="text"
-                          value={preferredColorHex}
-                          onChange={(e) => setPreferredColorHex(e.target.value)}
-                          className="h-7 flex-1 rounded border border-border bg-surface-elevated px-2 text-[11px] font-mono uppercase text-foreground outline-none focus:border-accent-violet/45"
-                          aria-label="Prompt color hex"
-                          placeholder="#7C3AED"
-                        />
+                      <div className="space-y-1.5">
+                        {PROMPT_COLOR_SLOTS.map(({ key, label }) => (
+                          <PromptColorSlotRow
+                            key={key}
+                            label={label}
+                            value={promptColors[key]}
+                            onChange={(hex) => setPromptColor(key, hex)}
+                          />
+                        ))}
                       </div>
                     )}
                     <p className="text-[10px] leading-snug text-foreground-muted">
-                      Adds your selected color as a generation hint in the prompt.
+                      Adds primary and secondary colors as palette hints in the
+                      prompt.
                     </p>
                   </div>
                 </DropdownMenuContent>

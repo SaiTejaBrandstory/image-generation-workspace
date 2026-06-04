@@ -11,6 +11,7 @@ import {
   ArrowLeft,
   ImagePlus,
   Trash2,
+  Type,
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
@@ -23,6 +24,7 @@ import {
 import { VariationCountStepper } from "./variation-count-stepper";
 import { LAYOUT_MAP } from "@/lib/layout-systems";
 import { buildImageFilename, downloadImage } from "@/lib/download-utils";
+import { compositeOverlaysOnImage } from "@/lib/image-overlay-composite";
 import { useWorkspaceStore } from "@/store/workspace-store";
 import { GeneratedImage } from "./generated-image";
 import { cn } from "@/lib/utils";
@@ -31,9 +33,18 @@ import {
   type LogoState,
   LogoOverlay,
   CornerPresetButtons,
-  compositeLogoOnImage,
   getPresetPosition,
 } from "./logo-overlay";
+import {
+  type TextOverlayState,
+  TextOverlay,
+  TextAlignButtons,
+  TextPositionButtons,
+  getTextHorizontalAlignPosition,
+  DEFAULT_TEXT_OVERLAY,
+  TEXT_FONT_GROUPS,
+  TEXT_WEIGHT_OPTIONS,
+} from "./text-overlay";
 
 function isRealImage(url?: string) {
   return (
@@ -94,8 +105,10 @@ export function ExpandedLayoutView() {
   );
   const editSessionRef = useRef<string | null>(null);
 
-  // ── Logo overlay state ────────────────────────────────────────────────────
+  // ── Logo & text overlay state ─────────────────────────────────────────────
   const [logo, setLogo] = useState<LogoState | null>(null);
+  const [textOverlay, setTextOverlay] = useState<TextOverlayState | null>(null);
+  const [textBounds, setTextBounds] = useState({ widthPct: 25, heightPct: 8 });
   const canvasContainerRef = useRef<HTMLDivElement>(null);
   const canvasImageRef = useRef<HTMLImageElement>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
@@ -132,6 +145,10 @@ export function ExpandedLayoutView() {
     []
   );
 
+  const updateTextOverlay = useCallback((patch: Partial<TextOverlayState>) => {
+    setTextOverlay((prev) => (prev ? { ...prev, ...patch } : null));
+  }, []);
+
   const updateLogo = useCallback((patch: Partial<LogoState>) => {
     setLogo((prev) => {
       if (!prev) return null;
@@ -155,10 +172,12 @@ export function ExpandedLayoutView() {
   useEffect(() => {
     setPreviewVariationId(null);
     setLogo(null);
+    setTextOverlay(null);
   }, [expandedVariantId]);
 
   useEffect(() => {
     setLogo(null);
+    setTextOverlay(null);
   }, [previewVariationId]);
 
   useEffect(() => {
@@ -341,13 +360,16 @@ export function ExpandedLayoutView() {
           variant.layoutId
         );
 
-        if (logo) {
-          // Composite logo onto image via Canvas, then download as PNG
-          const blob = await compositeLogoOnImage(imageSrc, logo);
+        if (logo || textOverlay) {
+          const blob = await compositeOverlaysOnImage(imageSrc, {
+            logo: logo ?? undefined,
+            text: textOverlay ?? undefined,
+          });
           const url = URL.createObjectURL(blob);
           const a = document.createElement("a");
           a.href = url;
-          a.download = filename.replace(/\.\w+$/, "") + "-with-logo.png";
+          a.download =
+            filename.replace(/\.\w+$/, "") + "-with-overlays.png";
           a.click();
           URL.revokeObjectURL(url);
         } else {
@@ -366,17 +388,17 @@ export function ExpandedLayoutView() {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex bg-black/90 backdrop-blur-md"
+      className="fixed inset-0 z-50 flex min-h-0 flex-col bg-black/90 backdrop-blur-md"
       onClick={() => setExpandedVariant(null)}
     >
       <motion.div
         initial={{ opacity: 0, y: 16 }}
         animate={{ opacity: 1, y: 0 }}
-        className="flex h-full w-full flex-col lg:flex-row"
+        className="flex h-full min-h-0 w-full flex-col lg:flex-row"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-auto p-6 lg:p-10">
-          <div className="absolute left-4 top-4 z-20 lg:left-8 lg:top-8">
+        <div className="relative flex min-h-[38dvh] flex-1 flex-col overflow-hidden lg:min-h-0">
+          <div className="absolute left-3 top-3 z-20 sm:left-4 sm:top-4 lg:left-8 lg:top-8">
             {showBack && (
               <button
                 type="button"
@@ -388,8 +410,8 @@ export function ExpandedLayoutView() {
               </button>
             )}
           </div>
-          <div className="absolute right-4 top-4 z-20 flex items-center gap-2 lg:right-8 lg:top-8">
-            {/* Add / remove logo — images only */}
+          <div className="absolute right-3 top-3 z-20 flex max-w-[calc(100%-5rem)] flex-wrap items-center justify-end gap-1.5 sm:right-4 sm:top-4 sm:gap-2 lg:right-8 lg:top-8">
+            {/* Add / remove logo & text — images only */}
             {canvasHasImage && (
               <>
                 <input
@@ -420,6 +442,29 @@ export function ExpandedLayoutView() {
                     Add logo
                   </button>
                 )}
+                {textOverlay ? (
+                  <button
+                    type="button"
+                    onClick={() => setTextOverlay(null)}
+                    title="Remove text"
+                    className="flex h-10 items-center gap-1.5 rounded-full bg-accent-orange/15 px-3 text-xs font-medium text-accent-orange hover:bg-accent-orange/25"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Remove text
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setTextOverlay({ ...DEFAULT_TEXT_OVERLAY })
+                    }
+                    title="Add text overlay"
+                    className="flex h-10 items-center gap-1.5 rounded-full bg-surface-elevated px-3 text-xs font-medium text-foreground-muted hover:bg-surface-hover hover:text-foreground"
+                  >
+                    <Type className="h-4 w-4" />
+                    Add text
+                  </button>
+                )}
               </>
             )}
             {(canvasHasImage || canvasHasVideo) && (
@@ -427,7 +472,9 @@ export function ExpandedLayoutView() {
                 type="button"
                 onClick={() => void handleDownload()}
                 disabled={downloading}
-                title={logo ? "Download with logo" : "Download"}
+                title={
+                  logo || textOverlay ? "Download with overlays" : "Download"
+                }
                 className="flex h-10 w-10 items-center justify-center rounded-full bg-surface-elevated hover:bg-surface-hover disabled:opacity-50"
               >
                 {downloading ? (
@@ -470,12 +517,13 @@ export function ExpandedLayoutView() {
               >
                 <ChevronRight className="h-6 w-6" />
               </button>
-              <p className="pointer-events-none absolute bottom-4 left-1/2 z-20 -translate-x-1/2 rounded-full bg-black/45 px-3 py-1 text-[11px] font-medium tabular-nums text-white/90 backdrop-blur-sm">
+              <p className="pointer-events-none absolute bottom-3 left-1/2 z-20 -translate-x-1/2 rounded-full bg-black/45 px-3 py-1 text-[11px] font-medium tabular-nums text-white/90 backdrop-blur-sm sm:bottom-4">
                 {currentNavIndex + 1} / {navigableRoots.length}
               </p>
             </>
           )}
 
+          <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto px-3 pb-3 pt-14 sm:px-6 sm:pt-16 lg:p-10 lg:pt-10">
           {canvasRegenerating ? (
             <div className="flex flex-col items-center gap-3 text-foreground-muted">
               <Loader2 className="h-10 w-10 animate-spin text-accent-violet" />
@@ -488,10 +536,13 @@ export function ExpandedLayoutView() {
               autoPlay
               loop
               playsInline
-              className="max-h-[85vh] max-w-full rounded-2xl shadow-2xl"
+              className="max-h-full max-w-full rounded-2xl shadow-2xl lg:max-h-[85vh]"
             />
           ) : canvasHasImage && canvasVariant.imageUrl ? (
-            <div ref={canvasContainerRef} className="relative max-w-full">
+            <div
+              ref={canvasContainerRef}
+              className="relative w-fit max-w-full overflow-hidden rounded-[24px]"
+            >
               {/* Render img directly so logo drag bounds match the visible image box. */}
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
@@ -502,8 +553,17 @@ export function ExpandedLayoutView() {
                   (isFreeVariant ? "Free Style" : layout?.name) ??
                   "Layout"
                 }
-                className="block max-h-[85vh] max-w-[min(100%,calc(100vw-2rem))] h-auto w-auto rounded-[24px] object-contain shadow-cinematic lg:max-w-[min(100%,calc(100vw-28rem))]"
+                className="block h-auto max-h-full w-auto max-w-[min(100%,calc(100vw-1.5rem))] rounded-[24px] object-contain shadow-cinematic lg:max-h-[85vh] lg:max-w-[min(100%,calc(100vw-28rem))]"
               />
+              {textOverlay && (
+                <TextOverlay
+                  text={textOverlay}
+                  containerRef={canvasContainerRef}
+                  boundsRef={canvasImageRef}
+                  onChange={updateTextOverlay}
+                  onBoundsChange={setTextBounds}
+                />
+              )}
               {logo && (
                 <LogoOverlay
                   logo={logo}
@@ -521,9 +581,181 @@ export function ExpandedLayoutView() {
               )}
             />
           )}
+          </div>
         </div>
 
-        <aside className="w-full shrink-0 overflow-y-auto border-t border-border bg-surface p-6 lg:w-[420px] lg:border-l lg:border-t-0 lg:p-8 space-y-5">
+        <aside className="w-full max-h-[min(50dvh,520px)] shrink-0 overflow-y-auto border-t border-border bg-surface p-4 sm:p-6 lg:max-h-none lg:h-full lg:w-[420px] lg:border-l lg:border-t-0 lg:p-8 space-y-5">
+          {/* Text overlay controls */}
+          {textOverlay && canvasHasImage && (
+            <div className="rounded-2xl border border-border bg-surface-elevated p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-[10px] font-medium uppercase tracking-widest text-foreground-muted">
+                  Text overlay
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setTextOverlay(null)}
+                  className="text-[10px] text-foreground-muted hover:text-accent-orange transition-colors"
+                >
+                  Remove
+                </button>
+              </div>
+
+              <textarea
+                value={textOverlay.content}
+                onChange={(e) => updateTextOverlay({ content: e.target.value })}
+                rows={2}
+                placeholder="Enter text…"
+                className="w-full resize-none rounded-md border border-border bg-background px-3 py-2 text-sm outline-none focus:border-accent-violet/45"
+              />
+
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <label className="text-[10px] text-foreground-muted">
+                    Font family
+                  </label>
+                  <select
+                    value={textOverlay.fontFamily}
+                    onChange={(e) =>
+                      updateTextOverlay({ fontFamily: e.target.value })
+                    }
+                    className="h-9 w-full rounded-lg border border-border bg-background px-2 text-xs outline-none focus:border-accent-violet/45"
+                  >
+                    {TEXT_FONT_GROUPS.map((group) => (
+                      <optgroup key={group.label} label={group.label}>
+                        {group.fonts.map((f) => (
+                          <option key={f.value} value={f.value}>
+                            {f.label}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] text-foreground-muted">
+                    Weight
+                  </label>
+                  <select
+                    value={textOverlay.fontWeight}
+                    onChange={(e) =>
+                      updateTextOverlay({
+                        fontWeight: e.target.value as TextOverlayState["fontWeight"],
+                      })
+                    }
+                    className="h-9 w-full rounded-lg border border-border bg-background px-2 text-xs outline-none focus:border-accent-violet/45"
+                  >
+                    {TEXT_WEIGHT_OPTIONS.map((w) => (
+                      <option key={w.value} value={w.value}>
+                        {w.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <label className="text-[10px] text-foreground-muted">
+                    Style
+                  </label>
+                  <select
+                    value={textOverlay.fontStyle}
+                    onChange={(e) =>
+                      updateTextOverlay({
+                        fontStyle: e.target.value as TextOverlayState["fontStyle"],
+                      })
+                    }
+                    className="h-9 w-full rounded-lg border border-border bg-background px-2 text-xs outline-none focus:border-accent-violet/45"
+                  >
+                    <option value="normal">Normal</option>
+                    <option value="italic">Italic</option>
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] text-foreground-muted">
+                    Color
+                  </label>
+                  <div className="flex h-9 items-center gap-2 rounded-lg border border-border bg-background px-2">
+                    <input
+                      type="color"
+                      value={textOverlay.color}
+                      onChange={(e) =>
+                        updateTextOverlay({ color: e.target.value })
+                      }
+                      className="h-6 w-7 cursor-pointer rounded border-0 bg-transparent p-0"
+                      aria-label="Text color"
+                    />
+                    <input
+                      type="text"
+                      value={textOverlay.color}
+                      onChange={(e) =>
+                        updateTextOverlay({ color: e.target.value })
+                      }
+                      className="min-w-0 flex-1 bg-transparent text-[10px] font-mono uppercase outline-none"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] text-foreground-muted">
+                    Font size
+                  </label>
+                  <span className="text-[10px] tabular-nums text-foreground-muted">
+                    {Math.round(textOverlay.fontSize)} px
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={10}
+                  max={120}
+                  step={1}
+                  value={textOverlay.fontSize}
+                  onChange={(e) =>
+                    updateTextOverlay({ fontSize: Number(e.target.value) })
+                  }
+                  className="w-full accent-accent-violet"
+                />
+                <p className="text-[10px] leading-snug text-foreground-muted">
+                  Size is in pixels at full image resolution — downloads stay sharp
+                  (preview may look softer when scaled down).
+                </p>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] text-foreground-muted">
+                  Alignment
+                </label>
+                <TextAlignButtons
+                  value={textOverlay.textAlign}
+                  onChange={(textAlign) =>
+                    updateTextOverlay({
+                      textAlign,
+                      ...getTextHorizontalAlignPosition(
+                        textAlign,
+                        textBounds,
+                        textOverlay.y
+                      ),
+                    })
+                  }
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] text-foreground-muted">
+                  Position
+                </label>
+                <TextPositionButtons
+                  bounds={textBounds}
+                  align={textOverlay.textAlign}
+                  onSelect={(pos) => updateTextOverlay(pos)}
+                />
+              </div>
+            </div>
+          )}
+
           {/* Logo controls — images only */}
           {logo && canvasHasImage && (
             <div className="rounded-2xl border border-border bg-surface-elevated p-4 space-y-3">
@@ -540,13 +772,11 @@ export function ExpandedLayoutView() {
                 </button>
               </div>
 
-              {/* Corner snap presets */}
               <CornerPresetButtons
                 size={logo.size}
                 onSelect={(pos) => updateLogo(pos)}
               />
 
-              {/* Logo size slider */}
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
                   <label className="text-[10px] text-foreground-muted">Size</label>
@@ -674,7 +904,7 @@ export function ExpandedLayoutView() {
                 )}
                 {actionIsVariation
                   ? `Regenerate ${actionVariationLabel}`
-                  : "Regenerate (same composer prompt)"}
+                  : "Regenerate"}
               </button>
               )}
 

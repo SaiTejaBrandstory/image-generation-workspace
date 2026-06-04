@@ -133,6 +133,12 @@ export interface ReferenceImagePayload {
   usageMode: ReferenceUsageMode;
 }
 
+/** Brand palette slots sent as prompt hints when color preference is enabled. */
+export interface PromptColorPalette {
+  primary: string;
+  secondary: string;
+}
+
 export interface GenerationParams {
   creativity: number;
   typographyStrength: number;

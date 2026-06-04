@@ -14,6 +14,7 @@ import type {
   GenerationParams,
   LayoutId,
   PlatformPreset,
+  PromptColorPalette,
   ReferenceImagePayload,
   StyleEngine,
 } from "@/types";
@@ -26,7 +27,7 @@ interface GenerateImageBody {
   style: StyleEngine;
   platform: PlatformPreset;
   designElement?: DesignElement;
-  preferredColorHex?: string;
+  promptColors?: PromptColorPalette;
   aspectRatio: AspectRatio;
   params: GenerationParams;
   designTokens?: DesignTokens;
@@ -112,7 +113,7 @@ export async function POST(request: NextRequest) {
       style: body.style ?? "none",
       platform: body.platform ?? "instagram-post",
       designElement: body.designElement ?? "none",
-      preferredColorHex: body.preferredColorHex,
+      promptColors: body.promptColors,
       aspectRatio,
       params: body.params,
       designTokens: body.designTokens,

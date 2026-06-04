@@ -17,6 +17,7 @@ import type {
   GenerationParams,
   LayoutId,
   PlatformPreset,
+  PromptColorPalette,
   ReferenceImagePayload,
   StyleEngine,
 } from "@/types";
@@ -133,7 +134,7 @@ export async function generateImageWithOpenRouter(options: {
   style: StyleEngine;
   platform: PlatformPreset;
   designElement?: DesignElement;
-  preferredColorHex?: string;
+  promptColors?: Partial<PromptColorPalette>;
   aspectRatio: AspectRatio;
   params: GenerationParams;
   model?: string;
@@ -151,7 +152,7 @@ export async function generateImageWithOpenRouter(options: {
     style: options.style,
     platform: options.platform,
     designElement: options.designElement ?? "none",
-    preferredColorHex: options.preferredColorHex,
+    promptColors: options.promptColors,
     params: options.params,
     designTokens: options.designTokens,
     references: options.references,

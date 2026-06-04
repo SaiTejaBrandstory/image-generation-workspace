@@ -21,6 +21,7 @@ import type {
   LayoutId,
   LayoutVariant,
   PlatformPreset,
+  PromptColorPalette,
   ReferenceImage,
   ReferenceImagePayload,
   StyleEngine,
@@ -116,7 +117,7 @@ async function generateOneImage(options: {
   style: StyleEngine;
   platform: PlatformPreset;
   designElement?: DesignElement;
-  preferredColorHex?: string;
+  promptColors?: Partial<PromptColorPalette>;
   aspectRatio: AspectRatio;
   params: GenerationParams;
   imageModel: string;
@@ -141,7 +142,7 @@ async function generateOneImage(options: {
       style: options.style,
       platform: options.platform,
       designElement: options.designElement ?? "none",
-      preferredColorHex: options.preferredColorHex,
+      promptColors: options.promptColors,
       aspectRatio: options.aspectRatio,
       params: options.params,
       designTokens: options.designTokens,
@@ -229,7 +230,7 @@ export function buildFreeStyleVariants(options: {
     layoutId: "free" as const,
     userPrompt: prompt,
     prompt,
-    rationale: `Free-style generation — your prompt was sent directly to the model.`,
+    rationale: `Free-style generation - your prompt was sent directly to the model.`,
     visualPsychology: "Direct generation without layout constraints.",
     bestUse: "Any use case",
     suggestedPlatform: suggestPlatform(prompt),
@@ -246,7 +247,7 @@ export async function generateLayoutVariants(options: {
   style: StyleEngine;
   platform: PlatformPreset;
   designElement?: DesignElement;
-  preferredColorHex?: string;
+  promptColors?: Partial<PromptColorPalette>;
   aspectRatio: AspectRatio;
   params: GenerationParams;
   references: ReferenceImage[];
@@ -262,7 +263,7 @@ export async function generateLayoutVariants(options: {
     style,
     platform,
     designElement = "none",
-    preferredColorHex,
+    promptColors,
     aspectRatio,
     params,
     references,
@@ -324,7 +325,7 @@ export async function generateLayoutVariants(options: {
           style,
           platform,
           designElement,
-          preferredColorHex,
+          promptColors,
           aspectRatio,
           params,
           imageModel,
@@ -370,7 +371,7 @@ export async function generateSingleVariant(options: {
   style: StyleEngine;
   platform: PlatformPreset;
   designElement?: DesignElement;
-  preferredColorHex?: string;
+  promptColors?: Partial<PromptColorPalette>;
   aspectRatio: AspectRatio;
   params: GenerationParams;
   references: ReferenceImage[];
@@ -392,7 +393,7 @@ export async function generateSingleVariant(options: {
     style: options.style,
     platform: options.platform,
     designElement: options.designElement ?? "none",
-    preferredColorHex: options.preferredColorHex,
+    promptColors: options.promptColors,
     aspectRatio: options.aspectRatio,
     params: options.params,
     imageModel: options.imageModel,
@@ -432,7 +433,7 @@ export async function generateVariantVariations(options: {
   style: StyleEngine;
   platform: PlatformPreset;
   designElement?: DesignElement;
-  preferredColorHex?: string;
+  promptColors?: Partial<PromptColorPalette>;
   aspectRatio: AspectRatio;
   params: GenerationParams;
   imageModel: string;
@@ -466,7 +467,7 @@ export async function generateVariantVariations(options: {
           style: options.style,
           platform: options.platform,
           designElement: options.designElement ?? "none",
-          preferredColorHex: options.preferredColorHex,
+          promptColors: options.promptColors,
           aspectRatio: options.aspectRatio,
           params: options.params,
           imageModel: options.imageModel,

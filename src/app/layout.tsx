@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import { ThemeProvider } from "@/components/theme-provider";
+import { OVERLAY_GOOGLE_FONTS_HREF } from "@/lib/overlay-fonts";
 import { themeInitScript } from "@/lib/theme";
 import "./globals.css";
 
@@ -31,6 +32,7 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${inter.variable} h-full`} suppressHydrationWarning>
       <head>
+        <link rel="stylesheet" href={OVERLAY_GOOGLE_FONTS_HREF} />
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
       </head>
       <body className="h-full overflow-hidden antialiased">
