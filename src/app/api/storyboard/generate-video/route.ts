@@ -24,8 +24,8 @@ import type {
   StoryboardScene,
 } from "@/types/storyboard";
 
-/** Full video with 4 refs — 15 min route ceiling (raise on self-hosted if needed). */
-export const maxDuration = 900;
+/** Vercel Hobby cap is 300s — poll window must finish within this. */
+export const maxDuration = 300;
 
 interface GenerateStoryboardVideoBody {
   projectId?: string;

@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import { StoryboardVideoPlayer } from "@/components/storyboard/storyboard-video-player";
 import { Button } from "@/components/ui/button";
-import { exportProjectJson, exportScenesCsv } from "@/lib/storyboard/export";
+import { exportStoryboardPdf } from "@/lib/storyboard/export";
 import { SCENE_TRANSITIONS } from "@/lib/storyboard/constants";
 import { isPendingVideoForConversation } from "@/lib/storyboard/pending-video";
 import { useStoryboardStore } from "@/store/storyboard-store";
@@ -95,6 +95,8 @@ export function StepStoryboardViewer() {
   const [expandedDetailsId, setExpandedDetailsId] = useState<string | null>(null);
   const [expandedPromptId, setExpandedPromptId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
+  const [exportPdfError, setExportPdfError] = useState<string | null>(null);
   const videoSectionRef = useRef<HTMLDivElement>(null);
   const stitchedVideoSectionRef = useRef<HTMLDivElement>(null);
 
@@ -128,6 +130,20 @@ export function StepStoryboardViewer() {
     if (anyFrameGenerating) return;
     const ids = selectedIds.size ? [...selectedIds] : undefined;
     void regenerateFrames(ids);
+  };
+
+  const handleExportPdf = async () => {
+    setExportPdfError(null);
+    setIsExportingPdf(true);
+    try {
+      await exportStoryboardPdf(script, settings, scenes);
+    } catch (err) {
+      setExportPdfError(
+        err instanceof Error ? err.message : "Failed to export storyboard PDF"
+      );
+    } finally {
+      setIsExportingPdf(false);
+    }
   };
 
   const presentationScene = scenes[presentationIndex];
@@ -607,23 +623,24 @@ export function StepStoryboardViewer() {
             </Button>
           )}
         </div>
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
-            onClick={() => exportScenesCsv(script, settings, scenes)}
+            onClick={() => void handleExportPdf()}
+            disabled={isExportingPdf || !scenes.length}
+            title="PDF with script and scene table including frame images"
           >
-            <Download className="h-4 w-4" />
-            CSV
+            {isExportingPdf ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Download className="h-4 w-4" />
+            )}
+            Download PDF
           </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => exportProjectJson(script, settings, scenes)}
-          >
-            <Download className="h-4 w-4" />
-            JSON
-          </Button>
+          {exportPdfError && (
+            <span className="text-xs text-accent-orange">{exportPdfError}</span>
+          )}
         </div>
       </div>
 

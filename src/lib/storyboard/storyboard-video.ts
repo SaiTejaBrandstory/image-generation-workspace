@@ -13,12 +13,18 @@ export const STORYBOARD_VIDEO_MODEL = "bytedance/seedance-2.0";
 /** Per-clip generation — shorter jobs, fits 300s route limit. */
 export const STORYBOARD_CLIP_MAX_POLL_MS = 270_000;
 
-/** Full storyboard video (4 frame refs + long prompt) — Seedance often needs 6–15 min. */
-export const STORYBOARD_FULL_VIDEO_MAX_POLL_MS = 900_000;
+/**
+ * Full storyboard video poll window — must stay under route maxDuration (300s on Vercel Hobby).
+ * Leave ~30s for submit, download, and upload.
+ */
+export const STORYBOARD_FULL_VIDEO_MAX_POLL_MS = 270_000;
+
+/** Hard cap aligned with Vercel Hobby serverless limit. */
+export const STORYBOARD_VIDEO_POLL_CAP_MS = 270_000;
 
 /**
  * Poll window for full storyboard video. Env override:
- * - `STORYBOARD_VIDEO_MAX_POLL_MS=900000` — 15 minutes (default)
+ * - default: 270000 (4.5 min, fits Vercel 300s routes)
  * - `STORYBOARD_VIDEO_MAX_POLL_MS=unlimited` or `0` — no poll cap (route maxDuration still applies)
  */
 export function getStoryboardFullVideoMaxPollMs(): number {
@@ -26,7 +32,9 @@ export function getStoryboardFullVideoMaxPollMs(): number {
   if (!raw) return STORYBOARD_FULL_VIDEO_MAX_POLL_MS;
   if (raw === "0" || raw.toLowerCase() === "unlimited") return 0;
   const parsed = Number.parseInt(raw, 10);
-  if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  if (Number.isFinite(parsed) && parsed >= 0) {
+    return Math.min(parsed, STORYBOARD_VIDEO_POLL_CAP_MS);
+  }
   return STORYBOARD_FULL_VIDEO_MAX_POLL_MS;
 }
 
