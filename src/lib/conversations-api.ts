@@ -185,6 +185,27 @@ export async function deleteConversation(id: string): Promise<void> {
   if (!res.ok) throw new Error(data.error ?? "Failed to delete conversation");
 }
 
+export async function markLayoutVariantError(
+  conversationId: string,
+  variantId: string,
+  errorMessage: string
+): Promise<void> {
+  const res = await fetch(
+    `/api/conversations/${conversationId}/variants/${variantId}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "error", errorMessage }),
+    }
+  );
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(
+      (data as { error?: string }).error ?? "Failed to mark variant as failed"
+    );
+  }
+}
+
 export async function prepareVariationsForParent(
   conversationId: string,
   parentVariantId: string,
@@ -200,6 +221,8 @@ export async function prepareVariationsForParent(
         variants: variants.map((v) => ({
           id: v.id,
           layoutId: v.layoutId,
+          mediaType: v.mediaType ?? "image",
+          videoMeta: v.videoMeta,
           parentVariantId: v.parentVariantId!,
           variationIndex: v.variationIndex ?? 0,
           userPrompt: v.userPrompt,

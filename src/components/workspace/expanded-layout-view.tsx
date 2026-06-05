@@ -24,6 +24,10 @@ import {
 import { VariationCountStepper } from "./variation-count-stepper";
 import { LAYOUT_MAP } from "@/lib/layout-systems";
 import { buildImageFilename, downloadImage } from "@/lib/download-utils";
+import {
+  formatPromptCountLabel,
+  promptWithinLimit,
+} from "@/lib/prompt-limits";
 import { compositeOverlaysOnImage } from "@/lib/image-overlay-composite";
 import { useWorkspaceStore } from "@/store/workspace-store";
 import { GeneratedImage } from "./generated-image";
@@ -31,9 +35,13 @@ import { cn } from "@/lib/utils";
 import type { LayoutVariant } from "@/types";
 import {
   type LogoState,
+  type LogoHorizontalAlign,
   LogoOverlay,
-  CornerPresetButtons,
-  getPresetPosition,
+  LogoAlignButtons,
+  LogoPositionButtons,
+  estimateLogoBounds,
+  getLogoHorizontalAlignPosition,
+  getLogoPresetPosition,
 } from "./logo-overlay";
 import {
   type TextOverlayState,
@@ -89,11 +97,13 @@ export function ExpandedLayoutView() {
     expandedReturnTo,
     variants,
     regenerateVariant,
+    retryFailedVariant,
     generateVariations,
     generatingVariationsParentId,
     variationBatchSize,
     setVariationBatchSize,
     prompt: composerPrompt,
+    generationProgress,
   } = useWorkspaceStore();
 
   const variant = variants.find((v) => v.id === expandedVariantId);
@@ -109,6 +119,8 @@ export function ExpandedLayoutView() {
   const [logo, setLogo] = useState<LogoState | null>(null);
   const [textOverlay, setTextOverlay] = useState<TextOverlayState | null>(null);
   const [textBounds, setTextBounds] = useState({ widthPct: 25, heightPct: 8 });
+  const [logoBounds, setLogoBounds] = useState({ widthPct: 20, heightPct: 10 });
+  const [logoAlign, setLogoAlign] = useState<LogoHorizontalAlign>("right");
   const canvasContainerRef = useRef<HTMLDivElement>(null);
   const canvasImageRef = useRef<HTMLImageElement>(null);
   const logoInputRef = useRef<HTMLInputElement>(null);
@@ -129,12 +141,21 @@ export function ExpandedLayoutView() {
         const dataUrl = ev.target?.result as string;
         const img = new Image();
         img.onload = () => {
-          setLogo({
+          const size = 20;
+          const draft: LogoState = {
             dataUrl,
             sourceWidth: img.naturalWidth,
             sourceHeight: img.naturalHeight,
-            ...getPresetPosition("br", 20),
-            size: 20,
+            x: 0,
+            y: 0,
+            size,
+          };
+          const bounds = estimateLogoBounds(draft);
+          setLogoBounds(bounds);
+          setLogoAlign("right");
+          setLogo({
+            ...draft,
+            ...getLogoPresetPosition("br", bounds),
           });
         };
         img.src = dataUrl;
@@ -184,8 +205,10 @@ export function ExpandedLayoutView() {
     if (!expandedVariantId) return;
     const root = variants.find((v) => v.id === expandedVariantId);
     if (!root || root.parentVariantId) return;
-    const left = remainingVariationSlots(
-      getChildVariations(variants, root.id)
+    const maxAllowed = root.mediaType === "video" ? 1 : MAX_VARIATIONS;
+    const left = Math.max(
+      0,
+      maxAllowed - getChildVariations(variants, root.id).length
     );
     if (left > 0 && variationBatchSize > left) {
       setVariationBatchSize(left);
@@ -261,12 +284,17 @@ export function ExpandedLayoutView() {
   const isFreeVariant = variant.layoutId === "free";
   const layout = isFreeVariant ? null : LAYOUT_MAP[variant.layoutId];
   const hasImage = isRealImage(variant.imageUrl);
+  const hasVideo = isRealVideo(variant.videoUrl);
+  const maxAllowedVariations =
+    variant.mediaType === "video" ? 1 : MAX_VARIATIONS;
   const isRoot = !variant.parentVariantId && variant.variantKind !== "variation";
   const childVariations = isRoot
     ? getChildVariations(variants, variant.id)
     : [];
   const variationCount = childVariations.length;
-  const slotsLeft = isRoot ? remainingVariationSlots(childVariations) : 0;
+  const slotsLeft = isRoot
+    ? Math.max(0, maxAllowedVariations - childVariations.length)
+    : 0;
   const variationsBusy =
     generatingVariationsParentId === variant.id ||
     childVariations.some(
@@ -274,8 +302,9 @@ export function ExpandedLayoutView() {
     );
   const hasVariations = variationCount > 0;
   const canGenerateMore =
-    isRoot && hasImage && slotsLeft > 0 && !variationsBusy;
-  const effectiveBatchMax = slotsLeft > 0 ? slotsLeft : MAX_VARIATIONS;
+    isRoot && (hasImage || hasVideo) && slotsLeft > 0 && !variationsBusy;
+  const effectiveBatchMax =
+    slotsLeft > 0 ? slotsLeft : maxAllowedVariations;
   const inFlightCount = childVariations.filter(
     (v) => v.status === "pending" || v.status === "generating"
   ).length;
@@ -317,15 +346,33 @@ export function ExpandedLayoutView() {
   const canGoNext =
     canNavigateGallery && currentNavIndex < navigableRoots.length - 1;
 
+  const actionPromptText =
+    actionVariant.userPrompt?.trim() || actionVariant.prompt?.trim() || "";
+  const actionVideoPromptOverLimit =
+    isVideoLayout &&
+    actionPromptText.length > 0 &&
+    !promptWithinLimit(actionPromptText, "video");
+
   const handleRemix = () => {
+    if (actionVideoPromptOverLimit) return;
+    if (actionVariant.status === "error") {
+      void retryFailedVariant(actionVariant.id);
+      return;
+    }
     void regenerateVariant(actionVariant.id);
   };
+
+  const actionFailed = actionVariant.status === "error";
 
   const handleEditRegenerate = () => {
     const trimmed = editPrompt.trim();
     if (!trimmed) return;
+    if (isVideoLayout && !promptWithinLimit(trimmed, "video")) return;
     void regenerateVariant(actionVariant.id, trimmed);
   };
+
+  const videoPromptOverLimit =
+    isVideoLayout && !promptWithinLimit(editPrompt, "video");
 
   const openEditMode = () => {
     editSessionRef.current = null;
@@ -525,9 +572,26 @@ export function ExpandedLayoutView() {
 
           <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto px-3 pb-3 pt-14 sm:px-6 sm:pt-16 lg:p-10 lg:pt-10">
           {canvasRegenerating ? (
-            <div className="flex flex-col items-center gap-3 text-foreground-muted">
+            <div className="flex max-w-sm flex-col items-center gap-4 px-6 text-center text-foreground-muted">
               <Loader2 className="h-10 w-10 animate-spin text-accent-violet" />
-              <p className="text-sm">Regenerating with your prompt…</p>
+              <p className="text-sm">
+                {isVideoLayout
+                  ? "Generating video… this usually takes a few minutes."
+                  : "Regenerating with your prompt…"}
+              </p>
+              {isVideoLayout && (
+                <div className="w-full space-y-2">
+                  <div className="h-2 w-full overflow-hidden rounded-full bg-surface-elevated">
+                    <div
+                      className="h-full rounded-full bg-accent-violet transition-[width] duration-1000 ease-linear"
+                      style={{ width: `${generationProgress}%` }}
+                    />
+                  </div>
+                  <p className="text-[11px] tabular-nums text-foreground-muted">
+                    ~{Math.round(generationProgress)}% estimated
+                  </p>
+                </div>
+              )}
             </div>
           ) : canvasHasVideo && canvasVariant.videoUrl ? (
             <video
@@ -570,8 +634,37 @@ export function ExpandedLayoutView() {
                   containerRef={canvasContainerRef}
                   boundsRef={canvasImageRef}
                   onChange={updateLogo}
+                  onBoundsChange={setLogoBounds}
                 />
               )}
+            </div>
+          ) : canvasVariant.status === "error" ? (
+            <div className="flex max-w-md flex-col items-center gap-4 rounded-[32px] border border-accent-orange/30 bg-surface-elevated px-8 py-10 text-center">
+              <p className="text-sm font-medium text-foreground">
+                Generation failed
+              </p>
+              <p className="text-sm leading-relaxed text-foreground-muted">
+                {canvasVariant.errorMessage ??
+                  "Something went wrong. Try again with the same settings."}
+              </p>
+              <button
+                type="button"
+                onClick={() => void retryFailedVariant(canvasVariant.id)}
+                disabled={
+                  actionsLocked ||
+                  (isVideoLayout &&
+                    !promptWithinLimit(
+                      canvasVariant.userPrompt?.trim() ||
+                        canvasVariant.prompt?.trim() ||
+                        "",
+                      "video"
+                    ))
+                }
+                className="flex items-center justify-center gap-2 rounded-2xl bg-[#0B0B0B] px-5 py-2.5 text-sm font-medium text-white hover:bg-[#1A1A1A] disabled:opacity-50"
+              >
+                <RefreshCw className="h-4 w-4" />
+                Try again
+              </button>
             </div>
           ) : (
             <div
@@ -772,10 +865,38 @@ export function ExpandedLayoutView() {
                 </button>
               </div>
 
-              <CornerPresetButtons
-                size={logo.size}
-                onSelect={(pos) => updateLogo(pos)}
-              />
+              <div className="space-y-1.5">
+                <label className="text-[10px] text-foreground-muted">
+                  Alignment
+                </label>
+                <LogoAlignButtons
+                  value={logoAlign}
+                  onChange={(align) => {
+                    setLogoAlign(align);
+                    updateLogo(
+                      getLogoHorizontalAlignPosition(align, logoBounds, logo.y)
+                    );
+                  }}
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] text-foreground-muted">
+                  Position
+                </label>
+                <LogoPositionButtons
+                  bounds={logoBounds}
+                  onSelect={(pos) => {
+                    updateLogo(pos);
+                    const pad = 5;
+                    const centerX = 50 - logoBounds.widthPct / 2;
+                    const rightX = 100 - pad - logoBounds.widthPct;
+                    if (Math.abs(pos.x - pad) < 2) setLogoAlign("left");
+                    else if (Math.abs(pos.x - centerX) < 2) setLogoAlign("center");
+                    else if (Math.abs(pos.x - rightX) < 2) setLogoAlign("right");
+                  }}
+                />
+              </div>
 
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between">
@@ -831,7 +952,7 @@ export function ExpandedLayoutView() {
                 htmlFor="edit-layout-prompt"
                 className="block text-[10px] font-medium uppercase tracking-widest text-foreground-muted"
               >
-                Prompt for this layout
+                {isVideoLayout ? "Prompt for this video" : "Prompt for this layout"}
               </label>
               <textarea
                 id="edit-layout-prompt"
@@ -840,16 +961,38 @@ export function ExpandedLayoutView() {
                 rows={5}
                 disabled={actionsLocked}
                 className="w-full resize-none rounded-2xl border border-border bg-surface-elevated px-4 py-3 text-sm leading-relaxed outline-none focus:border-accent-violet/50 disabled:opacity-50"
-                placeholder="Describe what this layout should show…"
+                placeholder={
+                  isVideoLayout
+                    ? "Describe what this video should show…"
+                    : "Describe what this layout should show…"
+                }
               />
-              <p className="text-[11px] text-foreground-muted">
-                Only this text is sent as your creative brief. Style, model, and
-                references still come from the composer.
-              </p>
+              {isVideoLayout ? (
+                <p
+                  className={cn(
+                    "text-[11px]",
+                    videoPromptOverLimit
+                      ? "text-accent-orange"
+                      : "text-foreground-muted"
+                  )}
+                >
+                  {formatPromptCountLabel(editPrompt.length, "video")}
+                  {videoPromptOverLimit
+                    ? " — shorten the prompt to continue."
+                    : " · Video model and settings stay the same."}
+                </p>
+              ) : (
+                <p className="text-[11px] text-foreground-muted">
+                  Only this text is sent as your creative brief. Style, model, and
+                  references still come from the composer.
+                </p>
+              )}
               <button
                 type="button"
                 onClick={handleEditRegenerate}
-                disabled={actionsLocked || !editPrompt.trim()}
+                disabled={
+                  actionsLocked || !editPrompt.trim() || videoPromptOverLimit
+                }
                 className="flex w-full items-center justify-center gap-2 rounded-2xl bg-[#0B0B0B] text-white py-3 text-sm font-medium hover:bg-[#1A1A1A] glow-subtle disabled:opacity-50"
               >
                 {isRegenerating ? (
@@ -861,7 +1004,9 @@ export function ExpandedLayoutView() {
                 )}
                 {actionIsVariation
                   ? `Regenerate ${actionVariationLabel}`
-                  : "Regenerate this layout"}
+                  : isVideoLayout
+                    ? "Regenerate this video"
+                    : "Regenerate this layout"}
               </button>
             </div>
           ) : (
@@ -878,37 +1023,74 @@ export function ExpandedLayoutView() {
                 </p>
               </Block>
 
-              {actionIsVariation && (
+              {actionIsVariation && !actionFailed && (
                 <p className="text-[11px] text-foreground-muted leading-relaxed">
                   Changes only update {actionVariationLabel}. Other variations
                   and the original layout stay the same.
                 </p>
               )}
 
-              {!isVideoLayout && (
+              {actionFailed && (
+                <div className="rounded-2xl border border-accent-orange/30 bg-accent-orange/5 px-4 py-3">
+                  <p className="text-sm font-medium text-accent-orange">
+                    Generation failed
+                  </p>
+                  <p className="mt-1 text-sm leading-relaxed text-foreground-muted">
+                    {actionVariant.errorMessage ??
+                      "Tap Try again to rerun with the same settings."}
+                  </p>
+                  {(actionVideoPromptOverLimit ||
+                    actionVariant.errorMessage
+                      ?.toLowerCase()
+                      .includes("prompt is too long")) && (
+                    <button
+                      type="button"
+                      onClick={openEditMode}
+                      disabled={actionsLocked}
+                      className="mt-3 text-sm font-medium text-accent-orange hover:underline disabled:opacity-50"
+                    >
+                      Edit prompt to shorten it
+                    </button>
+                  )}
+                </div>
+              )}
+
               <button
                 type="button"
                 onClick={handleRemix}
-                disabled={actionsLocked}
+                disabled={actionsLocked || actionVideoPromptOverLimit}
                 title={
-                  actionIsVariation
-                    ? "Regenerate this variation only"
-                    : "Regenerate with the main composer prompt"
+                  actionVideoPromptOverLimit
+                    ? "Edit the prompt to fit the 1,500 character video limit"
+                    : actionFailed
+                    ? "Retry with the same settings and prompt"
+                    : actionIsVariation
+                      ? "Regenerate this variation only"
+                      : isVideoLayout
+                        ? "Regenerate with the same video settings and prompt"
+                        : "Regenerate with the main composer prompt"
                 }
-                className="flex w-full items-center justify-center gap-2 rounded-2xl bg-[#0B0B0B] text-white py-3 text-sm font-medium hover:bg-[#1A1A1A] glow-subtle disabled:opacity-50"
+                className={cn(
+                  "flex w-full items-center justify-center gap-2 rounded-2xl py-3 text-sm font-medium disabled:opacity-50",
+                  actionFailed
+                    ? "bg-accent-orange text-white hover:bg-accent-orange/90"
+                    : "bg-[#0B0B0B] text-white hover:bg-[#1A1A1A] glow-subtle"
+                )}
               >
                 {isRegenerating ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
                   <RefreshCw className="h-4 w-4" />
                 )}
-                {actionIsVariation
-                  ? `Regenerate ${actionVariationLabel}`
-                  : "Regenerate"}
+                {actionFailed
+                  ? actionVideoPromptOverLimit
+                    ? "Edit prompt first"
+                    : "Try again"
+                  : actionIsVariation
+                    ? `Regenerate ${actionVariationLabel}`
+                    : "Regenerate"}
               </button>
-              )}
 
-              {!isVideoLayout && (
               <button
                 type="button"
                 onClick={openEditMode}
@@ -916,15 +1098,16 @@ export function ExpandedLayoutView() {
                 title={
                   variationsBusy
                     ? "Wait for variations to finish generating"
-                    : undefined
+                    : isVideoLayout
+                      ? "Edit the video prompt before regenerating"
+                      : undefined
                 }
                 className="flex w-full items-center justify-center rounded-2xl border border-border py-3 text-sm text-foreground-muted hover:bg-surface-elevated hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Edit prompt…
               </button>
-              )}
 
-              {isRoot && variant.mediaType !== "video" && (
+              {isRoot && (
                 <div className="space-y-3">
                   {(hasVariations || canGenerateMore) && (
                     <div className="space-y-3">
@@ -940,6 +1123,7 @@ export function ExpandedLayoutView() {
                         <ExpandedVariationThumb
                           label="Original"
                           imageUrl={variant.imageUrl}
+                          videoUrl={variant.videoUrl}
                           isSelected={!previewVariationId}
                           isDimmed={Boolean(previewVariationId)}
                           onSelect={() => setPreviewVariationId(null)}
@@ -958,6 +1142,20 @@ export function ExpandedLayoutView() {
                               setPreviewVariationId((current) =>
                                 current === child.id ? null : child.id
                               )
+                            }
+                            onRetry={
+                              child.status === "error" &&
+                              !(
+                                child.mediaType === "video" &&
+                                !promptWithinLimit(
+                                  child.userPrompt?.trim() ||
+                                    child.prompt?.trim() ||
+                                    "",
+                                  "video"
+                                )
+                              )
+                                ? () => void retryFailedVariant(child.id)
+                                : undefined
                             }
                           />
                         ))}
@@ -980,36 +1178,54 @@ export function ExpandedLayoutView() {
                         title={
                           hasVariations
                             ? `Generate ${Math.min(variationBatchSize, slotsLeft)} more variation(s)`
-                            : `Generate ${Math.min(variationBatchSize, slotsLeft)} variation(s) from this image`
+                            : `Generate ${Math.min(variationBatchSize, slotsLeft)} variation(s) from this ${hasVideo ? "video" : "image"}`
                         }
                         className="flex w-full items-center justify-center gap-2 rounded-2xl border border-accent-violet/30 bg-accent-violet/10 py-3 text-sm font-medium text-accent-violet hover:bg-accent-violet/15 disabled:opacity-50"
                       >
                         <Layers className="h-4 w-4" />
                         {hasVariations ? "Generate more variations" : "Generate variations"}
                       </button>
-                      {slotsLeft < MAX_VARIATIONS && (
+                      {slotsLeft < maxAllowedVariations && (
                         <p className="text-center text-[11px] text-foreground-muted">
                           {slotsLeft} slot{slotsLeft === 1 ? "" : "s"} left (max{" "}
-                          {MAX_VARIATIONS})
+                          {maxAllowedVariations})
                         </p>
                       )}
                     </>
                   )}
 
                   {variationsBusy && (
-                    <p className="flex items-center justify-center gap-2 py-2 text-sm text-accent-violet">
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      Generating{" "}
-                      {inFlightCount > 0
-                        ? `${inFlightCount} variation${inFlightCount === 1 ? "" : "s"}`
-                        : "variations"}
-                      …
-                    </p>
+                    <div className="space-y-2 py-2">
+                      <p className="flex items-center justify-center gap-2 text-sm text-accent-violet">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Generating{" "}
+                        {inFlightCount > 0
+                          ? `${inFlightCount} variation${inFlightCount === 1 ? "" : "s"}`
+                          : "variations"}
+                        …
+                      </p>
+                      {hasVideo && (
+                        <div className="space-y-1.5 px-1">
+                          <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-elevated">
+                            <div
+                              className="h-full rounded-full bg-accent-violet transition-[width] duration-1000 ease-linear"
+                              style={{ width: `${generationProgress}%` }}
+                            />
+                          </div>
+                          <p className="text-center text-[10px] tabular-nums text-foreground-muted">
+                            ~{Math.round(generationProgress)}% estimated
+                          </p>
+                        </div>
+                      )}
+                    </div>
                   )}
 
-                  {!canGenerateMore && slotsLeft === 0 && hasImage && (
+                  {!canGenerateMore &&
+                    slotsLeft === 0 &&
+                    (hasImage || hasVideo) && (
                     <p className="text-center text-[11px] text-foreground-muted">
-                      Maximum of {MAX_VARIATIONS} variations reached.
+                      Maximum of {maxAllowedVariations} variation
+                      {maxAllowedVariations === 1 ? "" : "s"} reached.
                     </p>
                   )}
                 </div>
@@ -1042,71 +1258,120 @@ function Block({
 function ExpandedVariationThumb({
   label,
   imageUrl,
+  videoUrl,
   variation,
   index = 0,
   isSelected,
   isDimmed,
   onSelect,
+  onRetry,
 }: {
   label?: string;
   imageUrl?: string;
+  videoUrl?: string;
   variation?: LayoutVariant;
   index?: number;
   isSelected: boolean;
   isDimmed: boolean;
   onSelect: () => void;
+  onRetry?: () => void;
 }) {
   const thumbLabel =
     label ?? `Variation ${(variation?.variationIndex ?? index) + 1}`;
-  const src = imageUrl ?? variation?.imageUrl;
-  const hasImage = isRealImage(src);
+  const imageSrc = imageUrl ?? variation?.imageUrl;
+  const videoSrc = videoUrl ?? variation?.videoUrl;
+  const hasImage = isRealImage(imageSrc);
+  const hasVideo = isRealVideo(videoSrc);
   const loading =
     variation?.status === "pending" || variation?.status === "generating";
+  const failed = variation?.status === "error";
+  const hasPreview = hasImage || hasVideo;
+  const selectable = hasPreview || loading || failed;
 
   return (
-    <button
-      type="button"
-      onClick={onSelect}
-      disabled={!hasImage && !loading}
+    <div
       className={cn(
-        "group flex flex-col gap-1.5 text-left transition-opacity disabled:cursor-default",
+        "group flex flex-col gap-1.5 text-left transition-opacity",
         isDimmed && "opacity-40 hover:opacity-55",
         isSelected && "opacity-100"
       )}
     >
+      <button
+        type="button"
+        onClick={onSelect}
+        disabled={!selectable}
+        className={cn(
+          "text-left disabled:cursor-default",
+          !selectable && "cursor-default"
+        )}
+      >
       <div
         className={cn(
           "relative aspect-[4/5] w-full overflow-hidden rounded-lg bg-surface-elevated ring-1 transition-all",
           isSelected
-            ? "ring-2 ring-accent-violet"
-            : "ring-border group-hover:ring-accent-violet/40"
+            ? failed
+              ? "ring-2 ring-accent-orange"
+              : "ring-2 ring-accent-violet"
+            : failed
+              ? "ring-accent-orange/40 group-hover:ring-accent-orange/60"
+              : "ring-border group-hover:ring-accent-violet/40"
         )}
       >
         {loading ? (
           <div className="flex h-full items-center justify-center">
             <Loader2 className="h-5 w-5 animate-spin text-accent-violet" />
           </div>
-        ) : hasImage && src ? (
+        ) : hasVideo && videoSrc ? (
+          <video
+            src={videoSrc}
+            className="h-full w-full object-cover object-center"
+            muted
+            playsInline
+            loop
+            preload="metadata"
+          />
+        ) : hasImage && imageSrc ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={src}
+            src={imageSrc}
             alt={thumbLabel}
             className="h-full w-full object-cover object-center"
           />
         ) : (
-          <div className="flex h-full items-center justify-center px-1 text-center text-[9px] text-foreground-muted">
-            {variation?.errorMessage ?? "Failed"}
+          <div className="flex h-full flex-col items-center justify-center gap-1 px-1 text-center">
+            <span className="text-[9px] font-medium text-accent-orange">
+              Failed
+            </span>
+            <span className="line-clamp-3 text-[8px] text-foreground-muted">
+              {variation?.errorMessage ?? "Generation failed"}
+            </span>
           </div>
         )}
       </div>
+      </button>
       <span
         className={cn(
           "truncate text-center text-[10px] font-medium",
-          isSelected ? "text-accent-violet" : "text-foreground-muted group-hover:text-foreground"
+          isSelected
+            ? failed
+              ? "text-accent-orange"
+              : "text-accent-violet"
+            : failed
+              ? "text-accent-orange/80"
+              : "text-foreground-muted group-hover:text-foreground"
         )}
       >
         {thumbLabel}
       </span>
-    </button>
+      {failed && onRetry && (
+        <button
+          type="button"
+          onClick={onRetry}
+          className="text-center text-[10px] font-medium text-accent-orange hover:underline"
+        >
+          Try again
+        </button>
+      )}
+    </div>
   );
 }

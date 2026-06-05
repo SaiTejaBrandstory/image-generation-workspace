@@ -11,7 +11,8 @@ import type { ReferenceImagePayload } from "@/types";
 
 const OPENROUTER_VIDEOS_URL = "https://openrouter.ai/api/v1/videos";
 const POLL_INTERVAL_MS = 12_000;
-const MAX_POLL_MS = 8 * 60 * 1000;
+/** Keep below Next.js route maxDuration (300s) to allow submit + download + persist */
+const MAX_POLL_MS = 4 * 60 * 1000;
 
 export type VideoJobStatus =
   | "pending"

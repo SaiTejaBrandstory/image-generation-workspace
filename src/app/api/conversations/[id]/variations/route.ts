@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { formatSupabaseSetupError } from "@/lib/supabase/setup-errors";
-import type { LayoutVariant } from "@/types";
+import type { LayoutVariant, MediaType, VideoMeta } from "@/types";
 
 interface RouteParams {
   params: Promise<{ id: string }>;
@@ -12,6 +12,8 @@ interface VariationsBody {
   variants: Array<{
     id: string;
     layoutId: string;
+    mediaType?: MediaType;
+    videoMeta?: VideoMeta;
     parentVariantId: string;
     variationIndex: number;
     userPrompt?: string;
@@ -73,6 +75,8 @@ export async function POST(request: NextRequest, { params }: RouteParams) {
       conversation_id: conversationId,
       user_id: user.id,
       layout_id: v.layoutId,
+      media_type: v.mediaType ?? "image",
+      video_meta: v.videoMeta ?? null,
       parent_variant_id: body.parentVariantId,
       variant_kind: "variation",
       variation_index: v.variationIndex,

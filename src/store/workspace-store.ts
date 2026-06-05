@@ -24,6 +24,7 @@ import {
 } from "@/lib/generation-engine";
 import {
   buildPendingVariations,
+  buildPendingVideoVariations,
   clampVariationBatch,
   DEFAULT_VARIATION_BATCH,
   getChildVariations,
@@ -46,6 +47,7 @@ import {
 import {
   buildPendingVideoVariant,
   generateVideoVariant,
+  generateVideoVariantVariations,
 } from "@/lib/video-generation";
 import {
   estimateVideoGenerationMs,
@@ -67,6 +69,7 @@ import {
   promptOverLimitMessage,
   promptWithinLimit,
 } from "@/lib/prompt-limits";
+import { videoUrlToPreserveReference } from "@/lib/video-frame-reference";
 import { uid } from "@/lib/utils";
 import type {
   AspectRatio,
@@ -201,7 +204,7 @@ interface WorkspaceState {
   selectConversation: (id: string) => Promise<void>;
   generate: () => Promise<void>;
   remixVariant: (variantId: string) => Promise<void>;
-  retryVideoVariant: (variantId: string) => Promise<void>;
+  retryVideoVariant: (variantId: string, customPrompt?: string) => Promise<void>;
   retryFailedVariant: (variantId: string) => Promise<void>;
 }
 
@@ -1612,7 +1615,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     if (!variant) return;
 
     if (variant.mediaType === "video") {
-      await get().retryVideoVariant(variantId);
+      await get().retryVideoVariant(variantId, customPrompt);
       return;
     }
 
@@ -1701,21 +1704,37 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     await get().regenerateVariant(variantId);
   },
 
-  retryVideoVariant: async (variantId) => {
+  retryVideoVariant: async (variantId, customPrompt) => {
     const state = get();
     const variant = state.variants.find((v) => v.id === variantId);
     if (!variant || variant.mediaType !== "video") return;
 
-    const promptText = (
-      variant.userPrompt?.trim() ||
-      variant.prompt?.trim() ||
-      state.prompt.trim() ||
-      ""
-    ).trim();
-    if (!promptText) {
+    const rawPrompt =
+      customPrompt !== undefined
+        ? customPrompt.trim()
+        : (
+            variant.userPrompt?.trim() ||
+            variant.prompt?.trim() ||
+            state.prompt.trim() ||
+            ""
+          ).trim();
+    if (!rawPrompt) {
       set({ generationError: "Enter a prompt to retry video generation." });
       return;
     }
+    if (!promptWithinLimit(rawPrompt, "video")) {
+      const message = promptOverLimitMessage(rawPrompt.length, "video");
+      set((s) => ({
+        generationError: message,
+        variants: s.variants.map((v) =>
+          v.id === variantId
+            ? { ...v, status: "error" as const, errorMessage: message }
+            : v
+        ),
+      }));
+      return;
+    }
+    const promptText = rawPrompt;
 
     const conversationId = state.activeConversationId;
     if (!conversationId) {
@@ -1731,14 +1750,31 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       model: state.videoModel,
     };
 
+    let referencePayloads: ReferenceImagePayload[] | undefined;
+    if (variant.parentVariantId) {
+      const parent = state.variants.find(
+        (v) => v.id === variant.parentVariantId
+      );
+      if (parent?.videoUrl) {
+        const frame = await videoUrlToPreserveReference(parent.videoUrl);
+        if (frame) referencePayloads = [frame];
+      }
+    }
+
     set((s) => ({
       generationError: null,
+      generationProgress: 8,
       variants: s.variants.map((v) =>
         v.id === variantId
           ? { ...v, status: "generating" as const, errorMessage: undefined }
           : v
       ),
     }));
+
+    const stopProgress = startEstimatedVideoProgress(
+      estimateVideoGenerationMs(meta.duration ?? state.videoDuration),
+      (percent) => set({ generationProgress: percent })
+    );
 
     try {
       const updated = await generateVideoVariant({
@@ -1748,7 +1784,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         resolution: meta.resolution ?? state.videoResolution,
         aspectRatio: meta.aspectRatio ?? state.videoAspectRatio,
         generateAudio: meta.generateAudio ?? state.videoGenerateAudio,
-        references: state.references,
+        references: variant.parentVariantId ? [] : state.references,
+        referencePayloads,
         conversationId,
         variant: { ...variant, status: "generating" },
       });
@@ -1759,6 +1796,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         );
         return {
           variants: nextVariants,
+          generationProgress: 100,
           conversations: s.conversations.map((c) =>
             c.id === conversationId
               ? { ...c, variants: nextVariants }
@@ -1776,7 +1814,15 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             : v
         ),
         generationError: message,
+        generationProgress: 0,
       }));
+    } finally {
+      stopProgress();
+      set((s) =>
+        s.generationProgress > 0 && s.generationProgress < 100
+          ? { generationProgress: 0 }
+          : {}
+      );
     }
   },
 
@@ -1792,10 +1838,15 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   generateVariations: async (parentVariantId) => {
     const state = get();
     const parent = state.variants.find((v) => v.id === parentVariantId);
-    if (!parent?.imageUrl || parent.status !== "complete") {
+    const isVideoParent = parent?.mediaType === "video";
+    const parentReady =
+      parent?.status === "complete" &&
+      (isVideoParent ? Boolean(parent.videoUrl) : Boolean(parent.imageUrl));
+    if (!parentReady) {
       set({
-        generationError:
-          "Wait for this layout image to finish before creating variations.",
+        generationError: isVideoParent
+          ? "Wait for this video to finish before creating variations."
+          : "Wait for this layout image to finish before creating variations.",
       });
       return;
     }
@@ -1806,16 +1857,17 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     );
     if (busy) return;
 
-    const slotsLeft = remainingVariationSlots(existing);
+    const maxAllowed = isVideoParent ? 1 : MAX_VARIATIONS;
+    const slotsLeft = Math.max(0, maxAllowed - existing.length);
     if (slotsLeft <= 0) {
       set({
-        generationError: `This layout already has the maximum of ${MAX_VARIATIONS} variations.`,
+        generationError: `This layout already has the maximum of ${maxAllowed} variation${maxAllowed === 1 ? "" : "s"}.`,
       });
       return;
     }
 
     const batchCount = Math.min(
-      clampVariationBatch(state.variationBatchSize),
+      isVideoParent ? 1 : clampVariationBatch(state.variationBatchSize),
       slotsLeft
     );
     const startIndex = getNextVariationStartIndex(existing);
@@ -1828,12 +1880,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       return;
     }
 
-    const pendingVariations = buildPendingVariations(
-      parent,
-      state.style,
-      batchCount,
-      startIndex
-    );
+    const pendingVariations = isVideoParent
+      ? buildPendingVideoVariations(parent, batchCount, startIndex)
+      : buildPendingVariations(parent, state.style, batchCount, startIndex);
     set({
       generationError: null,
       generatingVariationsParentId: parentVariantId,
@@ -1857,31 +1906,64 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const withPending = [...state.variants, ...pendingVariations];
     set({ variants: withPending });
 
-    try {
-      const completed = await generateVariantVariations({
-        parent,
-        pendingVariations,
-        style: state.style,
-        platform: state.platform,
-        designElement: state.designElement,
-        promptColors: state.colorPreferenceEnabled
-          ? state.promptColors
-          : undefined,
-        aspectRatio: state.aspectRatio,
-        params: state.params,
-        imageModel: state.imageModel,
-        designTokens: state.designTokens ?? undefined,
-        conversationId,
-        onProgress: (partial) => {
-          set((s) => ({
-            variants: s.variants.map((v) => {
-              const updated = partial.find((p) => p.id === v.id);
-              return updated ?? v;
-            }),
-          }));
-        },
-      });
+    const stopVideoVariationProgress = isVideoParent
+      ? startEstimatedVideoProgress(
+          estimateVideoGenerationMs(
+            parent.videoMeta?.duration ?? state.videoDuration
+          ),
+          (percent) => set({ generationProgress: percent })
+        )
+      : null;
+    if (isVideoParent) {
+      set({ generationProgress: 8 });
+    }
 
+    try {
+      const completed = isVideoParent
+        ? await generateVideoVariantVariations({
+            parent,
+            pendingVariations,
+            conversationId,
+            videoModel: state.videoModel,
+            duration: state.videoDuration,
+            resolution: state.videoResolution,
+            aspectRatio: state.videoAspectRatio,
+            generateAudio: state.videoGenerateAudio,
+            onProgress: (partial) => {
+              set((s) => ({
+                variants: s.variants.map((v) => {
+                  const updated = partial.find((p) => p.id === v.id);
+                  return updated ?? v;
+                }),
+              }));
+            },
+          })
+        : await generateVariantVariations({
+            parent,
+            pendingVariations,
+            style: state.style,
+            platform: state.platform,
+            designElement: state.designElement,
+            promptColors: state.colorPreferenceEnabled
+              ? state.promptColors
+              : undefined,
+            aspectRatio: state.aspectRatio,
+            params: state.params,
+            imageModel: state.imageModel,
+            designTokens: state.designTokens ?? undefined,
+            conversationId,
+            onProgress: (partial) => {
+              set((s) => ({
+                variants: s.variants.map((v) => {
+                  const updated = partial.find((p) => p.id === v.id);
+                  return updated ?? v;
+                }),
+              }));
+            },
+          });
+
+      const firstError = completed.find((v) => v.status === "error");
+      const videoDone = isVideoParent && !firstError;
       set((s) => {
         const nextVariants = s.variants.map((v) => {
           const updated = completed.find((c) => c.id === v.id);
@@ -1890,6 +1972,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         return {
           variants: nextVariants,
           generatingVariationsParentId: null,
+          generationError: firstError?.errorMessage ?? null,
+          generationProgress: videoDone ? 100 : 0,
           conversations: s.activeConversationId
             ? s.conversations.map((c) =>
                 c.id === s.activeConversationId
@@ -1912,11 +1996,37 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         /* keep local */
       }
     } catch (err) {
-      set({
-        generatingVariationsParentId: null,
-        generationError:
-          err instanceof Error ? err.message : "Variation generation failed",
+      const message =
+        err instanceof Error ? err.message : "Variation generation failed";
+      const pendingIds = new Set(pendingVariations.map((v) => v.id));
+      set((s) => {
+        const nextVariants = s.variants.map((v) => {
+          if (!pendingIds.has(v.id)) return v;
+          if (v.status !== "pending" && v.status !== "generating") return v;
+          return { ...v, status: "error" as const, errorMessage: message };
+        });
+        return {
+          variants: nextVariants,
+          generatingVariationsParentId: null,
+          generationError: message,
+          conversations: s.activeConversationId
+            ? s.conversations.map((c) =>
+                c.id === s.activeConversationId
+                  ? { ...c, variants: nextVariants }
+                  : c
+              )
+            : s.conversations,
+        };
       });
+    } finally {
+      stopVideoVariationProgress?.();
+      set((s) => ({
+        generatingVariationsParentId: null,
+        generationProgress:
+          s.generationProgress > 0 && s.generationProgress < 100
+            ? 0
+            : s.generationProgress,
+      }));
     }
   },
 }));

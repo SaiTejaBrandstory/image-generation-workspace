@@ -186,7 +186,7 @@ export function LayoutCard({
               onClick={handleAction(() =>
                 setExpandedVariant(variant.id, "view")
               )}
-              title="Expand to preview video"
+              title="Expand to view, regenerate, or preview"
               className="absolute bottom-2 right-2 z-20 flex items-center gap-1 rounded-lg bg-black/60 px-2.5 py-1.5 text-[11px] font-medium text-white backdrop-blur-md transition-colors hover:bg-black/80"
             >
               <Expand className="h-3.5 w-3.5 shrink-0" />
