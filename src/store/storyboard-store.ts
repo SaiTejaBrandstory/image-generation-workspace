@@ -13,6 +13,12 @@ import {
   fetchStoryboard,
   patchStoryboardOutputs,
 } from "@/lib/storyboard-api";
+import {
+  clearPendingVideo,
+  getPendingVideo,
+  isPendingVideoForConversation,
+  markPendingVideo,
+} from "@/lib/storyboard/pending-video";
 import { createEmptyScene, renumberScenes } from "@/lib/storyboard/scene-engine";
 import { normalizeSceneFields } from "@/lib/storyboard/scene-fields";
 import { useWorkspaceStore } from "@/store/workspace-store";
@@ -66,6 +72,8 @@ interface StoryboardState {
   stitchedVideoStoragePath: string | null;
   /** Bumps per scene — stale API responses are ignored when epoch mismatches. */
   frameGenerationEpoch: Record<string, number>;
+  videoGenerationEpoch: number;
+  stitchedVideoGenerationEpoch: number;
   error: string | null;
   history: StoryboardScene[][];
   historyIndex: number;
@@ -93,12 +101,16 @@ interface StoryboardState {
   generateAllFrames: (onlyMissing?: boolean) => Promise<void>;
   regenerateFrames: (sceneIds?: string[]) => Promise<void>;
   generateFrame: (sceneId: string) => Promise<void>;
-  generateStoryboardVideo: () => Promise<void>;
-  generateStoryboardStitchedVideo: () => Promise<void>;
+  generateStoryboardVideo: (options?: { replace?: boolean }) => Promise<void>;
+  generateStoryboardStitchedVideo: (options?: {
+    replace?: boolean;
+  }) => Promise<void>;
+  checkPendingStoryboardVideo: () => Promise<void>;
   isFrameBusy: (sceneId: string) => boolean;
   isAnyVideoGenerating: () => boolean;
   resetStoryboard: () => void;
   loadStoryboardConversation: (id: string) => Promise<void>;
+  refreshStoryboardVideos: () => Promise<void>;
   loadDraft: () => void;
   saveDraft: () => void;
 }
@@ -229,6 +241,8 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
   singleVideoStoragePath: null,
   stitchedVideoStoragePath: null,
   frameGenerationEpoch: {},
+  videoGenerationEpoch: 0,
+  stitchedVideoGenerationEpoch: 0,
   error: null,
   history: [[]],
   historyIndex: 0,
@@ -558,7 +572,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
   isAnyVideoGenerating: () =>
     get().isGeneratingVideo || get().isGeneratingStitchedVideo,
 
-  generateStoryboardVideo: async () => {
+  generateStoryboardVideo: async (options) => {
     const {
       scenes,
       script,
@@ -566,10 +580,33 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
       continuity,
       storyboardProjectId,
       conversationId,
-      isGeneratingVideo,
       isGeneratingFrames,
+      storyboardVideoUrl,
+      singleVideoStoragePath,
     } = get();
     if (get().isAnyVideoGenerating() || isGeneratingFrames) return;
+
+    if (
+      isPendingVideoForConversation(conversationId, "single") &&
+      !storyboardVideoUrl
+    ) {
+      set({
+        error:
+          "Video generation may still be running. Wait a few minutes or use Check for video — do not start again or you may be charged twice.",
+      });
+      return;
+    }
+
+    if (
+      !options?.replace &&
+      (storyboardVideoUrl || singleVideoStoragePath)
+    ) {
+      set({
+        error:
+          "A video already exists for this storyboard. Use Regenerate video if you want a new one.",
+      });
+      return;
+    }
 
     const ordered = [...scenes].sort((a, b) => a.sceneNumber - b.sceneNumber);
     const missing = ordered.filter((s) => !s.frameImageUrl?.trim());
@@ -581,15 +618,38 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
     }
     if (!ordered.length) return;
 
+    const epoch = get().videoGenerationEpoch + 1;
     const videoDuration = pickStoryboardVideoDuration(settings.durationSec);
+    if (conversationId) {
+      markPendingVideo(conversationId, "single");
+    }
+
+    set({
+      videoGenerationEpoch: epoch,
+      isGeneratingVideo: true,
+      videoProgress: 8,
+      error: null,
+      ...(options?.replace
+        ? {
+            storyboardVideoUrl: null,
+            storyboardVideoDurationSec: null,
+            singleVideoStoragePath: null,
+          }
+        : {}),
+    });
+
     const stopProgress = startEstimatedVideoProgress(
       estimateVideoGenerationMs(videoDuration, { multiFrameRefs: true }),
       (percent) => {
-        if (get().isGeneratingVideo) set({ videoProgress: percent });
-      }
+        if (
+          get().isGeneratingVideo &&
+          get().videoGenerationEpoch === epoch
+        ) {
+          set({ videoProgress: percent });
+        }
+      },
+      () => get().videoProgress
     );
-
-    set({ isGeneratingVideo: true, videoProgress: 8, error: null });
 
     try {
       const res = await fetch("/api/storyboard/generate-video", {
@@ -609,8 +669,10 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Video generation failed");
+      if (get().videoGenerationEpoch !== epoch) return;
 
       stopProgress();
+      clearPendingVideo();
       const storagePath = (data.storagePath as string | undefined) ?? null;
       set({
         storyboardVideoUrl: data.videoUrl as string,
@@ -620,7 +682,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
         videoProgress: 100,
       });
       get().saveDraft();
-      if (storagePath) {
+      if (storagePath && get().conversationId) {
         await persistVideoOutputs({
           singleVideoStoragePath: storagePath,
           singleVideoDurationSec: (data.durationSec as number) ?? null,
@@ -628,15 +690,16 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
       }
     } catch (err) {
       stopProgress();
+      clearPendingVideo();
+      if (get().videoGenerationEpoch !== epoch) return;
       set({
         isGeneratingVideo: false,
-        videoProgress: 0,
         error: err instanceof Error ? err.message : "Video generation failed",
       });
     }
   },
 
-  generateStoryboardStitchedVideo: async () => {
+  generateStoryboardStitchedVideo: async (options) => {
     const {
       scenes,
       script,
@@ -647,6 +710,33 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
       isGeneratingFrames,
     } = get();
     if (get().isAnyVideoGenerating() || isGeneratingFrames) return;
+
+    const {
+      storyboardStitchedVideoUrl,
+      stitchedVideoStoragePath,
+    } = get();
+
+    if (
+      isPendingVideoForConversation(conversationId, "stitched") &&
+      !storyboardStitchedVideoUrl
+    ) {
+      set({
+        error:
+          "Stitched video may still be running. Wait or use Check for video — do not start again.",
+      });
+      return;
+    }
+
+    if (
+      !options?.replace &&
+      (storyboardStitchedVideoUrl || stitchedVideoStoragePath)
+    ) {
+      set({
+        error:
+          "A stitched video already exists. Use Regenerate stitched video for a new one.",
+      });
+      return;
+    }
 
     const ordered = [...scenes].sort((a, b) => a.sceneNumber - b.sceneNumber);
     const missing = ordered.filter((s) => !s.frameImageUrl?.trim());
@@ -660,9 +750,22 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
 
     const totalDuration = ordered.reduce((sum, s) => sum + s.durationSec, 0);
     const clipUrls: string[] = [];
+    const epoch = get().stitchedVideoGenerationEpoch + 1;
+
+    if (conversationId) {
+      markPendingVideo(conversationId, "stitched");
+    }
 
     set({
+      stitchedVideoGenerationEpoch: epoch,
       isGeneratingStitchedVideo: true,
+      ...(options?.replace
+        ? {
+            storyboardStitchedVideoUrl: null,
+            storyboardStitchedVideoDurationSec: null,
+            stitchedVideoStoragePath: null,
+          }
+        : {}),
       stitchedVideoProgress: 0,
       stitchedVideoStatus: `Generating clip 1 of ${ordered.length}…`,
       error: null,
@@ -673,39 +776,69 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
         const scene = ordered[i];
         const nextScene = ordered[i + 1] ?? null;
         const clipId = `${scene.id}-${i}`;
+        const clipDuration = pickStoryboardVideoDuration(scene.durationSec);
+        const clipBaseProgress = Math.round((i / ordered.length) * 85);
 
         set({
           stitchedVideoStatus: `Generating clip ${i + 1} of ${ordered.length} (scene ${scene.sceneNumber})…`,
-          stitchedVideoProgress: Math.round((i / ordered.length) * 85),
+          stitchedVideoProgress: clipBaseProgress,
         });
 
-        const res = await fetch("/api/storyboard/generate-video-clip", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            projectId: storyboardProjectId,
-            storageConversationId: storageFolderId(
-              conversationId,
-              storyboardProjectId
-            ),
-            clipId,
-            scene,
-            nextScene,
-            script,
-            settings,
-            continuity,
-            sceneIndex: i,
-            totalScenes: ordered.length,
-          }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(
-            data.error ?? `Clip ${scene.sceneNumber} generation failed`
+        let stopClipProgress = () => {};
+        try {
+          stopClipProgress = startEstimatedVideoProgress(
+            estimateVideoGenerationMs(clipDuration),
+            (percent) => {
+              if (
+                get().isGeneratingStitchedVideo &&
+                get().stitchedVideoGenerationEpoch === epoch
+              ) {
+                const slice = 85 / ordered.length;
+                const mapped = Math.round(
+                  clipBaseProgress + (percent / 100) * slice
+                );
+                set({ stitchedVideoProgress: Math.min(85, mapped) });
+              }
+            },
+            () => get().stitchedVideoProgress
           );
+
+          const res = await fetch("/api/storyboard/generate-video-clip", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              projectId: storyboardProjectId,
+              storageConversationId: storageFolderId(
+                conversationId,
+                storyboardProjectId
+              ),
+              clipId,
+              scene,
+              nextScene,
+              script,
+              settings,
+              continuity,
+              sceneIndex: i,
+              totalScenes: ordered.length,
+            }),
+          });
+          const data = await res.json();
+          if (!res.ok) {
+            throw new Error(
+              data.error ?? `Clip ${scene.sceneNumber} generation failed`
+            );
+          }
+          if (get().stitchedVideoGenerationEpoch !== epoch) return;
+          clipUrls.push(data.videoUrl as string);
+          set({
+            stitchedVideoProgress: Math.round(((i + 1) / ordered.length) * 85),
+          });
+        } finally {
+          stopClipProgress();
         }
-        clipUrls.push(data.videoUrl as string);
       }
+
+      if (get().stitchedVideoGenerationEpoch !== epoch) return;
 
       set({
         stitchedVideoStatus: "Stitching clips into one video…",
@@ -733,6 +866,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
       const storagePath = (stitchData.storagePath as string | undefined) ?? null;
       const durationSec =
         (stitchData.durationSec as number) ?? totalDuration;
+      clearPendingVideo();
       set({
         storyboardStitchedVideoUrl: stitchData.videoUrl as string,
         storyboardStitchedVideoDurationSec: durationSec,
@@ -742,20 +876,44 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
         stitchedVideoStatus: null,
       });
       get().saveDraft();
-      if (storagePath) {
+      if (storagePath && get().conversationId) {
         await persistVideoOutputs({
           stitchedVideoStoragePath: storagePath,
           stitchedVideoDurationSec: durationSec,
         });
       }
     } catch (err) {
+      clearPendingVideo();
+      if (get().stitchedVideoGenerationEpoch !== epoch) return;
       set({
         isGeneratingStitchedVideo: false,
-        stitchedVideoProgress: 0,
         stitchedVideoStatus: null,
         error:
           err instanceof Error ? err.message : "Stitched video generation failed",
       });
+    }
+  },
+
+  checkPendingStoryboardVideo: async () => {
+    await get().refreshStoryboardVideos();
+    const s = get();
+    const pending = getPendingVideo();
+    if (!pending || pending.conversationId !== s.conversationId) return;
+
+    if (
+      pending.kind === "single" &&
+      (s.storyboardVideoUrl || s.singleVideoStoragePath)
+    ) {
+      clearPendingVideo();
+      set({ error: null });
+      return;
+    }
+    if (
+      pending.kind === "stitched" &&
+      (s.storyboardStitchedVideoUrl || s.stitchedVideoStoragePath)
+    ) {
+      clearPendingVideo();
+      set({ error: null });
     }
   },
 
@@ -826,6 +984,23 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
   },
 
   loadStoryboardConversation: async (id) => {
+    const current = get();
+    if (
+      current.conversationId === id &&
+      (current.isGeneratingVideo || current.isGeneratingStitchedVideo)
+    ) {
+      return;
+    }
+    if (current.conversationId !== id) {
+      set({
+        videoGenerationEpoch: current.videoGenerationEpoch + 1,
+        stitchedVideoGenerationEpoch: current.stitchedVideoGenerationEpoch + 1,
+      });
+      const pending = getPendingVideo();
+      if (pending && pending.conversationId !== id) {
+        clearPendingVideo();
+      }
+    }
     set({ error: null });
     try {
       const loaded = await fetchStoryboard(id);
@@ -867,6 +1042,39 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
     }
   },
 
+  refreshStoryboardVideos: async () => {
+    const {
+      conversationId,
+      wizardLocked,
+      isGeneratingVideo,
+      isGeneratingStitchedVideo,
+    } = get();
+    const pendingForThis = isPendingVideoForConversation(conversationId);
+    if (!conversationId || !wizardLocked) return;
+    if (
+      (isGeneratingVideo || isGeneratingStitchedVideo) &&
+      !pendingForThis
+    ) {
+      return;
+    }
+    try {
+      const loaded = await fetchStoryboard(conversationId);
+      set({
+        storyboardVideoUrl: loaded.storyboardVideoUrl,
+        storyboardVideoDurationSec: loaded.storyboardVideoDurationSec,
+        storyboardStitchedVideoUrl: loaded.storyboardStitchedVideoUrl,
+        storyboardStitchedVideoDurationSec:
+          loaded.storyboardStitchedVideoDurationSec,
+      });
+      if (loaded.storyboardVideoUrl || loaded.storyboardStitchedVideoUrl) {
+        clearPendingVideo();
+      }
+      get().saveDraft();
+    } catch {
+      /* ignore */
+    }
+  },
+
   resetStoryboard: () => {
     set({
       step: 1,
@@ -895,6 +1103,8 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
       singleVideoStoragePath: null,
       stitchedVideoStoragePath: null,
       frameGenerationEpoch: {},
+      videoGenerationEpoch: 0,
+      stitchedVideoGenerationEpoch: 0,
       error: null,
       history: [[]],
       historyIndex: 0,

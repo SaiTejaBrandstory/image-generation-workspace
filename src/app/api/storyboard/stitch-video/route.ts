@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { formatOpenRouterErrorForUser } from "@/lib/openrouter-errors";
 import { concatMp4Buffers } from "@/lib/storyboard/stitch-videos";
+import { updateStoryboardOutputs } from "@/lib/supabase/storyboard-db";
 import { createClient } from "@/lib/supabase/server";
 import {
   uploadGenerationVideoBuffer,
   videoSourceToBuffer,
 } from "@/lib/supabase/storage";
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export const maxDuration = 120;
 
@@ -52,6 +56,20 @@ export async function POST(request: NextRequest) {
       buffer: stitched,
       mime: "video/mp4",
     });
+
+    if (UUID_RE.test(storageFolder)) {
+      try {
+        await updateStoryboardOutputs(supabase, user.id, storageFolder, {
+          stitchedVideoStoragePath: uploaded.storagePath,
+          stitchedVideoDurationSec: body.totalDurationSec ?? null,
+        });
+      } catch (persistErr) {
+        console.error(
+          "[storyboard/stitch-video] DB persist failed",
+          persistErr instanceof Error ? persistErr.message : persistErr
+        );
+      }
+    }
 
     return NextResponse.json({
       videoUrl: uploaded.signedUrl,

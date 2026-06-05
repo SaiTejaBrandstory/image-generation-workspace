@@ -23,6 +23,7 @@ import { StoryboardVideoPlayer } from "@/components/storyboard/storyboard-video-
 import { Button } from "@/components/ui/button";
 import { exportProjectJson, exportScenesCsv } from "@/lib/storyboard/export";
 import { SCENE_TRANSITIONS } from "@/lib/storyboard/constants";
+import { isPendingVideoForConversation } from "@/lib/storyboard/pending-video";
 import { useStoryboardStore } from "@/store/storyboard-store";
 import { cn } from "@/lib/utils";
 import { normalizeSceneFields } from "@/lib/storyboard/scene-fields";
@@ -70,7 +71,25 @@ export function StepStoryboardViewer() {
     generateStoryboardStitchedVideo,
     isAnyVideoGenerating,
     resetStoryboard,
+    refreshStoryboardVideos,
+    checkPendingStoryboardVideo,
+    conversationId,
+    singleVideoStoragePath,
+    stitchedVideoStoragePath,
   } = useStoryboardStore();
+
+  const pendingSingleVideo =
+    isPendingVideoForConversation(conversationId, "single") &&
+    !storyboardVideoUrl;
+  const pendingStitchedVideo =
+    isPendingVideoForConversation(conversationId, "stitched") &&
+    !storyboardStitchedVideoUrl;
+  const hasSingleVideo = Boolean(
+    storyboardVideoUrl || singleVideoStoragePath
+  );
+  const hasStitchedVideo = Boolean(
+    storyboardStitchedVideoUrl || stitchedVideoStoragePath
+  );
 
   const [presentationIndex, setPresentationIndex] = useState(0);
   const [expandedDetailsId, setExpandedDetailsId] = useState<string | null>(null);
@@ -113,10 +132,35 @@ export function StepStoryboardViewer() {
 
   const presentationScene = scenes[presentationIndex];
 
-  const showVideoSection = isGeneratingVideo || Boolean(storyboardVideoUrl);
+  const showVideoSection =
+    wizardLocked || isGeneratingVideo || Boolean(storyboardVideoUrl);
   const showStitchedVideoSection =
-    isGeneratingStitchedVideo || Boolean(storyboardStitchedVideoUrl);
-  const anyVideoGenerating = isAnyVideoGenerating();
+    wizardLocked ||
+    isGeneratingStitchedVideo ||
+    Boolean(storyboardStitchedVideoUrl);
+  const anyVideoGenerating =
+    isAnyVideoGenerating() || pendingSingleVideo || pendingStitchedVideo;
+
+  useEffect(() => {
+    if (!wizardLocked || !conversationId) return;
+    void refreshStoryboardVideos();
+  }, [conversationId, wizardLocked, refreshStoryboardVideos]);
+
+  useEffect(() => {
+    if (!conversationId || (!pendingSingleVideo && !pendingStitchedVideo)) {
+      return;
+    }
+    void checkPendingStoryboardVideo();
+    const id = setInterval(() => {
+      void checkPendingStoryboardVideo();
+    }, 20_000);
+    return () => clearInterval(id);
+  }, [
+    conversationId,
+    pendingSingleVideo,
+    pendingStitchedVideo,
+    checkPendingStoryboardVideo,
+  ]);
 
   useEffect(() => {
     if (isGeneratingVideo && videoSectionRef.current) {
@@ -356,16 +400,39 @@ export function StepStoryboardViewer() {
             <StoryboardVideoPlayer
               title="Storyboard video"
               subtitle={
-                isGeneratingVideo
-                  ? "One AI video from all frames and script"
+                isGeneratingVideo || pendingSingleVideo
+                  ? pendingSingleVideo && !isGeneratingVideo
+                    ? "Generation started — checking history for your video"
+                    : "One AI video from all frames and script"
                   : `${scenes.length} frames · single AI generation`
               }
               videoUrl={storyboardVideoUrl}
               durationSec={storyboardVideoDurationSec ?? undefined}
               sceneCount={scenes.length}
-              isGenerating={isGeneratingVideo}
-              videoProgress={videoProgress}
+              isGenerating={isGeneratingVideo || pendingSingleVideo}
+              videoProgress={
+                isGeneratingVideo || pendingSingleVideo ? videoProgress : 0
+              }
+              progressLabel={
+                pendingSingleVideo && !isGeneratingVideo
+                  ? "Video may still be generating — do not click Generate again"
+                  : undefined
+              }
+              placeholderText={
+                pendingSingleVideo && !isGeneratingVideo
+                  ? "Still checking for your video… use Check for video below"
+                  : undefined
+              }
               downloadFilename="storyboard-video.mp4"
+              onGenerate={
+                !hasSingleVideo && !pendingSingleVideo
+                  ? () => void generateStoryboardVideo()
+                  : undefined
+              }
+              generateDisabled={
+                !allFramesReady || anyFrameGenerating || anyVideoGenerating
+              }
+              generateLabel="Generate video"
             />
           </div>
         )}
@@ -378,26 +445,52 @@ export function StepStoryboardViewer() {
             <StoryboardVideoPlayer
               title="Stitched storyboard video"
               subtitle={
-                isGeneratingStitchedVideo
-                  ? stitchedVideoStatus ??
-                    "One clip per frame, then stitched together"
+                isGeneratingStitchedVideo || pendingStitchedVideo
+                  ? pendingStitchedVideo && !isGeneratingStitchedVideo
+                    ? "Generation started — checking history for stitched video"
+                    : (stitchedVideoStatus ??
+                      "One clip per frame, then stitched together")
                   : `${scenes.length} clips stitched · full timeline`
               }
               progressLabel={
-                stitchedVideoStatus ??
-                "Generating clips and stitching — this can take many minutes"
+                pendingStitchedVideo && !isGeneratingStitchedVideo
+                  ? "Stitched video may still be generating — do not start again"
+                  : (stitchedVideoStatus ??
+                    "Generating clips and stitching — this can take many minutes")
               }
-              placeholderText="Stitched video will appear here when all clips are ready"
+              placeholderText={
+                pendingStitchedVideo && !isGeneratingStitchedVideo
+                  ? "Still checking for your stitched video…"
+                  : "Stitched video will appear here when all clips are ready"
+              }
               videoUrl={storyboardStitchedVideoUrl}
               durationSec={storyboardStitchedVideoDurationSec ?? undefined}
               sceneCount={scenes.length}
-              isGenerating={isGeneratingStitchedVideo}
-              videoProgress={stitchedVideoProgress}
+              isGenerating={
+                isGeneratingStitchedVideo || pendingStitchedVideo
+              }
+              videoProgress={
+                isGeneratingStitchedVideo || pendingStitchedVideo
+                  ? stitchedVideoProgress
+                  : 0
+              }
               downloadFilename="storyboard-stitched.mp4"
             />
           </div>
         )}
       </div>
+
+      {error && (
+        <p className="shrink-0 rounded-md border border-accent-orange/30 bg-accent-orange/5 px-4 py-3 text-center text-sm text-accent-orange">
+          {error}
+        </p>
+      )}
+
+      {isCommitting && (
+        <p className="shrink-0 text-center text-sm text-foreground-muted">
+          Saving storyboard to history…
+        </p>
+      )}
 
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-surface-elevated px-4 py-3">
         <div className="flex flex-wrap gap-2">
@@ -423,45 +516,96 @@ export function StepStoryboardViewer() {
             <LayoutGrid className="h-4 w-4" />
             Generate missing
           </Button>
-          <Button
-            size="sm"
-            onClick={() => void generateStoryboardVideo()}
-            disabled={
-              !allFramesReady || anyFrameGenerating || anyVideoGenerating
-            }
-            title={
-              allFramesReady
-                ? "One AI video from all frames and script (faster)"
-                : "Generate all frame images first"
-            }
-          >
-            {isGeneratingVideo ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Video className="h-4 w-4" />
-            )}
-            Generate video
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void generateStoryboardStitchedVideo()}
-            disabled={
-              !allFramesReady || anyFrameGenerating || anyVideoGenerating
-            }
-            title={
-              allFramesReady
-                ? "One clip per frame, stitched into full-length video"
-                : "Generate all frame images first"
-            }
-          >
-            {isGeneratingStitchedVideo ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Layers className="h-4 w-4" />
-            )}
-            Generate stitched video
-          </Button>
+          {!hasSingleVideo ? (
+            <Button
+              size="sm"
+              onClick={() => void generateStoryboardVideo()}
+              disabled={
+                !allFramesReady ||
+                anyFrameGenerating ||
+                anyVideoGenerating ||
+                pendingSingleVideo
+              }
+              title={
+                pendingSingleVideo
+                  ? "A generation may still be running — use Check for video"
+                  : allFramesReady
+                    ? "One AI video from all frames and script (faster)"
+                    : "Generate all frame images first"
+              }
+            >
+              {isGeneratingVideo || pendingSingleVideo ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Video className="h-4 w-4" />
+              )}
+              {pendingSingleVideo ? "Video in progress…" : "Generate video"}
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void generateStoryboardVideo({ replace: true })}
+              disabled={
+                !allFramesReady || anyFrameGenerating || anyVideoGenerating
+              }
+            >
+              <RefreshCw className="h-4 w-4" />
+              Regenerate video
+            </Button>
+          )}
+          {!hasStitchedVideo ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void generateStoryboardStitchedVideo()}
+              disabled={
+                !allFramesReady ||
+                anyFrameGenerating ||
+                anyVideoGenerating ||
+                pendingStitchedVideo
+              }
+              title={
+                pendingStitchedVideo
+                  ? "Stitched generation may still be running"
+                  : allFramesReady
+                    ? "One clip per frame, stitched into full-length video"
+                    : "Generate all frame images first"
+              }
+            >
+              {isGeneratingStitchedVideo || pendingStitchedVideo ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Layers className="h-4 w-4" />
+              )}
+              {pendingStitchedVideo
+                ? "Stitch in progress…"
+                : "Generate stitched video"}
+            </Button>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                void generateStoryboardStitchedVideo({ replace: true })
+              }
+              disabled={
+                !allFramesReady || anyFrameGenerating || anyVideoGenerating
+              }
+            >
+              <RefreshCw className="h-4 w-4" />
+              Regenerate stitched
+            </Button>
+          )}
+          {(pendingSingleVideo || pendingStitchedVideo) && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => void checkPendingStoryboardVideo()}
+            >
+              Check for video
+            </Button>
+          )}
         </div>
         <div className="flex flex-wrap gap-2">
           <Button
@@ -482,18 +626,6 @@ export function StepStoryboardViewer() {
           </Button>
         </div>
       </div>
-
-      {error && (
-        <p className="rounded-md border border-accent-orange/30 bg-accent-orange/5 px-4 py-3 text-center text-sm text-accent-orange">
-          {error}
-        </p>
-      )}
-
-      {isCommitting && (
-        <p className="text-center text-sm text-foreground-muted">
-          Saving storyboard to history…
-        </p>
-      )}
 
       <div className="flex justify-between gap-3">
         {!wizardLocked ? (

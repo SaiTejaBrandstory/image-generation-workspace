@@ -15,6 +15,9 @@ export function StoryboardVideoPlayer({
   sceneCount,
   isGenerating,
   videoProgress = 0,
+  onGenerate,
+  generateDisabled = false,
+  generateLabel = "Generate video",
 }: {
   title?: string;
   subtitle?: string;
@@ -26,6 +29,9 @@ export function StoryboardVideoPlayer({
   sceneCount?: number;
   isGenerating?: boolean;
   videoProgress?: number;
+  onGenerate?: () => void;
+  generateDisabled?: boolean;
+  generateLabel?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(false);
@@ -67,10 +73,15 @@ export function StoryboardVideoPlayer({
           </div>
           <div className="h-2 overflow-hidden rounded-full bg-border">
             <div
-              className="h-full rounded-full bg-accent-orange transition-all duration-500"
-              style={{ width: `${videoProgress}%` }}
+              className="h-full rounded-full bg-accent-orange transition-[width] duration-700 ease-out"
+              style={{ width: `${Math.max(0, Math.min(100, videoProgress))}%` }}
             />
           </div>
+          {videoProgress >= 70 && videoProgress < 100 && (
+            <p className="mt-2 text-[11px] text-foreground-muted/80">
+              Still working — video models can take several more minutes after 70%.
+            </p>
+          )}
         </div>
       )}
 
@@ -83,18 +94,34 @@ export function StoryboardVideoPlayer({
               Do not close this tab while generation is in progress
             </p>
           </div>
+        ) : videoUrl ? (
+          <video
+            ref={videoRef}
+            src={videoUrl}
+            className="aspect-video max-h-[min(70vh,480px)] w-full object-cover"
+            playsInline
+            controls
+            onPlay={() => setPlaying(true)}
+            onPause={() => setPlaying(false)}
+          />
         ) : (
-          videoUrl && (
-            <video
-              ref={videoRef}
-              src={videoUrl}
-              className="aspect-video max-h-[min(70vh,480px)] w-full object-cover"
-              playsInline
-              controls
-              onPlay={() => setPlaying(true)}
-              onPause={() => setPlaying(false)}
-            />
-          )
+          <div className="flex aspect-video max-h-[min(70vh,480px)] w-full flex-col items-center justify-center gap-3 px-6 text-center text-foreground-muted">
+            <p className="text-sm">No video yet</p>
+            <p className="text-xs text-foreground-muted/80">
+              {onGenerate
+                ? "Generate a single AI video from all frames and your script."
+                : "Keep this tab open until generation finishes."}
+            </p>
+            {onGenerate && (
+              <Button
+                size="sm"
+                onClick={onGenerate}
+                disabled={generateDisabled}
+              >
+                {generateLabel}
+              </Button>
+            )}
+          </div>
         )}
       </div>
 

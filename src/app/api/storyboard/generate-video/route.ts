@@ -12,8 +12,12 @@ import {
   getStoryboardFullVideoMaxPollMs,
   STORYBOARD_VIDEO_MODEL,
 } from "@/lib/storyboard/storyboard-video";
+import { updateStoryboardOutputs } from "@/lib/supabase/storyboard-db";
 import { createClient } from "@/lib/supabase/server";
 import { uploadGenerationVideoBuffer } from "@/lib/supabase/storage";
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 import type {
   StoryboardContinuity,
   StoryboardProjectSettings,
@@ -100,6 +104,21 @@ export async function POST(request: NextRequest) {
       buffer: result.videoBuffer,
       mime: result.mime,
     });
+
+    const conversationId = storageFolder;
+    if (UUID_RE.test(conversationId)) {
+      try {
+        await updateStoryboardOutputs(supabase, user.id, conversationId, {
+          singleVideoStoragePath: uploaded.storagePath,
+          singleVideoDurationSec: duration,
+        });
+      } catch (persistErr) {
+        console.error(
+          "[storyboard/generate-video] DB persist failed",
+          persistErr instanceof Error ? persistErr.message : persistErr
+        );
+      }
+    }
 
     return NextResponse.json({
       videoUrl: uploaded.signedUrl,
