@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   FolderKanban,
@@ -15,6 +15,7 @@ import {
 import { cn } from "@/lib/utils";
 import { fetchConversationHistory } from "@/lib/conversations-api";
 import { useIsDesktop } from "@/lib/use-media-query";
+import { useStoryboardStore } from "@/store/storyboard-store";
 import { useWorkspaceStore } from "@/store/workspace-store";
 import { Tooltip, TooltipProvider } from "@/components/ui/tooltip";
 import { UserMenu } from "@/components/auth/user-menu";
@@ -24,6 +25,11 @@ import {
   type HistoryMediaFilter,
 } from "@/components/workspace/history-media-filter";
 import { HistoryListItem } from "@/components/workspace/history-list-item";
+import {
+  WorkspaceToolsNav,
+  prefetchVideoModels,
+} from "@/components/workspace/workspace-tools-nav";
+import { isStoryboardTool, type WorkspaceToolId } from "@/lib/workspace-tools";
 import type { AuthUser } from "@/types/auth";
 import type { Conversation } from "@/types";
 
@@ -33,7 +39,10 @@ interface SidebarProps {
 
 export function Sidebar({ user }: SidebarProps) {
   const pathname = usePathname();
+  const router = useRouter();
   const isProjectsPage = pathname.startsWith("/projects");
+  const isWorkspaceHome = pathname === "/";
+  const isStoryboardPage = pathname.startsWith("/storyboard");
   const isDesktop = useIsDesktop();
   const {
     sidebarExpanded,
@@ -45,7 +54,46 @@ export function Sidebar({ user }: SidebarProps) {
     historyLoading,
     mobileSidebarOpen,
     setMobileSidebarOpen,
+    setMobilePanel,
+    setMediaType,
+    isGenerating,
   } = useWorkspaceStore();
+
+  const resetStoryboard = useStoryboardStore((s) => s.resetStoryboard);
+  const loadStoryboardConversation = useStoryboardStore(
+    (s) => s.loadStoryboardConversation
+  );
+  const storyboardConversationId = useStoryboardStore((s) => s.conversationId);
+
+  const startNewChatWithTool = useCallback(
+    (tool: WorkspaceToolId) => {
+      if (isGenerating) return;
+      newConversation();
+      if (isStoryboardTool(tool)) {
+        resetStoryboard();
+        if (!isStoryboardPage) router.push("/storyboard");
+        if (!isDesktop) setMobileSidebarOpen(false);
+        return;
+      }
+      setMediaType(tool);
+      if (tool === "video") prefetchVideoModels();
+      if (!isWorkspaceHome) router.push("/");
+      setMobilePanel(tool === "video" ? "layouts" : "chat");
+      if (!isDesktop) setMobileSidebarOpen(false);
+    },
+    [
+      isGenerating,
+      resetStoryboard,
+      isStoryboardPage,
+      isWorkspaceHome,
+      isDesktop,
+      newConversation,
+      router,
+      setMediaType,
+      setMobilePanel,
+      setMobileSidebarOpen,
+    ]
+  );
 
   const [historySearch, setHistorySearch] = useState("");
   const [historyMediaFilter, setHistoryMediaFilter] =
@@ -102,9 +150,24 @@ export function Sidebar({ user }: SidebarProps) {
   }, [historySearch]);
 
   const handleSelectConversation = (id: string) => {
+    const item =
+      displayed.find((c) => c.id === id) ??
+      conversations.find((c) => c.id === id);
+    if (item?.mediaType === "storyboard") {
+      void loadStoryboardConversation(id).then(() => {
+        if (!isStoryboardPage) router.push("/storyboard");
+        if (!isDesktop) setMobileSidebarOpen(false);
+      });
+      return;
+    }
     void selectConversation(id);
     if (!isDesktop) setMobileSidebarOpen(false);
   };
+
+  const isHistoryItemActive = (item: Conversation) =>
+    item.mediaType === "storyboard" && isStoryboardPage
+      ? storyboardConversationId === item.id
+      : activeConversationId === item.id;
 
   const desktopWidth = sidebarExpanded ? 280 : 72;
 
@@ -230,6 +293,12 @@ export function Sidebar({ user }: SidebarProps) {
             </AnimatePresence>
 
           </div>
+
+          <WorkspaceToolsNav
+            compact={!showExpanded}
+            showLabel={showExpanded}
+            onSelect={startNewChatWithTool}
+          />
 
           <Tooltip content="Projects">
             <Link
@@ -364,7 +433,7 @@ export function Sidebar({ user }: SidebarProps) {
                   <HistoryListItem
                     key={item.id}
                     item={item}
-                    isActive={activeConversationId === item.id}
+                    isActive={isHistoryItemActive(item)}
                     isSearching={isSearching}
                     onSelect={handleSelectConversation}
                   />
@@ -381,7 +450,7 @@ export function Sidebar({ user }: SidebarProps) {
                   <HistoryListItem
                     key={item.id}
                     item={item}
-                    isActive={activeConversationId === item.id}
+                    isActive={isHistoryItemActive(item)}
                     isSearching={false}
                     onSelect={handleSelectConversation}
                   />
@@ -409,7 +478,7 @@ export function Sidebar({ user }: SidebarProps) {
                   <HistoryListItem
                     key={item.id}
                     item={item}
-                    isActive={activeConversationId === item.id}
+                    isActive={isHistoryItemActive(item)}
                     isSearching={false}
                     onSelect={handleSelectConversation}
                   />

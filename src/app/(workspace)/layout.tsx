@@ -1,9 +1,13 @@
 import { redirect } from "next/navigation";
-import { WorkspaceShell } from "@/components/workspace/workspace-shell";
+import { AppShell } from "@/components/workspace/app-shell";
 import { createClient } from "@/lib/supabase/server";
 import { authUserFromSupabase } from "@/types/auth";
 
-export default async function Home() {
+export default async function WorkspaceLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
   const supabase = await createClient();
   const {
     data: { user },
@@ -13,5 +17,5 @@ export default async function Home() {
     redirect("/login");
   }
 
-  return <WorkspaceShell user={authUserFromSupabase(user)} />;
+  return <AppShell user={authUserFromSupabase(user)}>{children}</AppShell>;
 }

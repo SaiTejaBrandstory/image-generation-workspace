@@ -44,6 +44,12 @@ export interface GenerateVideoOptions {
   generateAudio?: boolean;
   references?: ReferenceImagePayload[];
   onStatus?: (status: VideoJobStatus) => void;
+  /**
+   * Override default poll window (ms).
+   * Set to `0` for no poll cap — keeps polling until OpenRouter finishes
+   * (the route `maxDuration` is still the hard ceiling).
+   */
+  maxPollMs?: number;
 }
 
 function sleep(ms: number) {
@@ -159,8 +165,12 @@ export async function generateVideoWithOpenRouter(
     throw new Error(formatOpenRouterErrorForUser("Failed to start video generation"));
   }
 
+  const unlimitedPoll = options.maxPollMs === 0;
+  const pollLimit = unlimitedPoll
+    ? Number.POSITIVE_INFINITY
+    : (options.maxPollMs ?? MAX_POLL_MS);
   const started = Date.now();
-  while (Date.now() - started < MAX_POLL_MS) {
+  while (Date.now() - started < pollLimit) {
     await sleep(POLL_INTERVAL_MS);
 
     const pollRes = await fetch(pollingUrl, { headers });

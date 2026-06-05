@@ -1270,7 +1270,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
       set((s) => ({
         variants,
-        mediaType: conversation.mediaType ?? "image",
+        mediaType:
+          conversation.mediaType === "image" ||
+          conversation.mediaType === "video"
+            ? conversation.mediaType
+            : s.mediaType,
         conversations: mergeConversationInList(s.conversations, id, hydrated),
         generationProgress: viewingInFlight ? s.generationProgress : 0,
         mobilePanel: "chat",

@@ -38,7 +38,6 @@ import { LayoutSelector } from "./layout-selector";
 import { ModelSelector } from "./model-selector";
 import { VideoModelSelector } from "./video-model-selector";
 import { VideoOptionsSelects } from "./video-options-selects";
-import { MediaTypeToggle } from "./media-type-toggle";
 import {
   clampImageAspectRatioToModel,
   getAspectRatiosForModel,
@@ -658,10 +657,6 @@ export function PromptComposer() {
           onSelect={handleModeSelect}
           onCancel={handleModeCancel}
         />
-
-        <div className="mb-2 flex justify-center">
-          <MediaTypeToggle />
-        </div>
 
         <ReferenceChips />
 

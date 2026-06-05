@@ -61,6 +61,9 @@ export type PlatformPreset =
 
 export type MediaType = "image" | "video";
 
+/** Conversation list media — includes storyboard projects */
+export type ConversationMediaType = MediaType | "storyboard";
+
 /** Per-model values from OpenRouter (e.g. 16:9, 21:9, 4K) */
 export type VideoAspectRatio = string;
 
@@ -206,7 +209,7 @@ export interface Conversation {
   title: string;
   /** Original user prompt (for history search) */
   prompt?: string;
-  mediaType?: MediaType;
+  mediaType?: ConversationMediaType;
   messages: ChatMessage[];
   variants: LayoutVariant[];
   createdAt: number;

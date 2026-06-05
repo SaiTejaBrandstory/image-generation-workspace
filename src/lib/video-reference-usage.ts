@@ -6,7 +6,8 @@ const MAX_VIDEO_REFERENCES = MAX_REFERENCES_VIDEO;
 
 export function buildVideoReferencePayloads(
   refs: ReferenceImagePayload[],
-  modelId: string
+  modelId: string,
+  maxReferences = MAX_VIDEO_REFERENCES
 ): {
   frameImages: Array<{
     type: "image_url";
@@ -23,7 +24,7 @@ export function buildVideoReferencePayloads(
   const config = getVideoModelConfig(modelId);
   const batch = refs
     .filter((r) => r.dataUrl)
-    .slice(0, MAX_VIDEO_REFERENCES);
+    .slice(0, maxReferences);
 
   const frameImages: Array<{
     type: "image_url";

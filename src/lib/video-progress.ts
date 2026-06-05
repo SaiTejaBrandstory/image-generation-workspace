@@ -1,7 +1,12 @@
 /** Rough wait time from clip length + OpenRouter poll cadence (~12s) */
-export function estimateVideoGenerationMs(durationSec: number): number {
+export function estimateVideoGenerationMs(
+  durationSec: number,
+  options?: { multiFrameRefs?: boolean }
+): number {
   const seconds = Math.max(4, durationSec);
-  return Math.max(90_000, seconds * 14_000 + 55_000);
+  const base = Math.max(90_000, seconds * 14_000 + 55_000);
+  // Full storyboard video sends up to 4 frame refs — often much longer than a single clip
+  return options?.multiFrameRefs ? Math.max(base, 720_000) : base;
 }
 
 /**

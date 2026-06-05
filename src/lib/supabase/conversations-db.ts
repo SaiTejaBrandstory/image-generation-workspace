@@ -4,6 +4,7 @@ import type {
   AspectRatio,
   ChatMessage,
   Conversation,
+  ConversationMediaType,
   GenerationParams,
   LayoutId,
   LayoutVariant,
@@ -25,7 +26,7 @@ export interface DbConversationRow {
   aspect_ratio: string | null;
   image_model: string | null;
   video_model: string | null;
-  media_type: MediaType;
+  media_type: ConversationMediaType;
   params: GenerationParams;
   selected_layouts: LayoutId[];
   starred: boolean;

@@ -1,10 +1,11 @@
 "use client";
 
-import { Film, ImageIcon, LayoutGrid } from "lucide-react";
+import { Clapperboard, Film, ImageIcon, LayoutGrid } from "lucide-react";
+import type { ConversationMediaType } from "@/types";
 import { cn } from "@/lib/utils";
 import { Tooltip } from "@/components/ui/tooltip";
 
-export type HistoryMediaFilter = "all" | "image" | "video";
+export type HistoryMediaFilter = "all" | "image" | "video" | "storyboard";
 
 const OPTIONS: {
   value: HistoryMediaFilter;
@@ -14,6 +15,7 @@ const OPTIONS: {
   { value: "all", label: "All", icon: LayoutGrid },
   { value: "image", label: "Images", icon: ImageIcon },
   { value: "video", label: "Videos", icon: Film },
+  { value: "storyboard", label: "Storyboards", icon: Clapperboard },
 ];
 
 export function HistoryMediaFilterToggle({
@@ -39,6 +41,7 @@ export function HistoryMediaFilterToggle({
         const active = value === opt.value;
         const isVideo = opt.value === "video";
         const isImage = opt.value === "image";
+        const isStoryboard = opt.value === "storyboard";
         return (
           <Tooltip key={opt.value} content={opt.label}>
             <button
@@ -53,7 +56,9 @@ export function HistoryMediaFilterToggle({
                     ? "bg-accent-cyan/20 text-accent-cyan"
                     : isImage
                       ? "bg-accent-violet/20 text-accent-violet"
-                      : "bg-surface-hover text-foreground"
+                      : isStoryboard
+                        ? "bg-accent-orange/20 text-accent-orange"
+                        : "bg-surface-hover text-foreground"
                   : "text-foreground-muted hover:bg-surface-hover hover:text-foreground"
               )}
             >
@@ -67,7 +72,7 @@ export function HistoryMediaFilterToggle({
 }
 
 export function conversationMatchesMediaFilter(
-  conversation: { mediaType?: "image" | "video" },
+  conversation: { mediaType?: ConversationMediaType },
   filter: HistoryMediaFilter
 ): boolean {
   if (filter === "all") return true;

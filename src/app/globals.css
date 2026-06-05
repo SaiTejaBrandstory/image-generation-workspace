@@ -90,6 +90,89 @@ body {
   box-shadow: var(--shadow-cinematic);
 }
 
+/* —— Storyboard Studio —— */
+html:not([data-theme="light"]) {
+  --sb-glow-a: rgba(249, 115, 22, 0.16);
+  --sb-glow-b: rgba(236, 72, 153, 0.09);
+  --sb-glow-c: rgba(124, 58, 237, 0.07);
+  --sb-glass-bg: color-mix(in srgb, var(--surface) 78%, transparent);
+  --sb-glass-border: color-mix(in srgb, var(--accent-orange) 22%, var(--border));
+  --sb-card-shadow: 0 8px 40px rgba(0, 0, 0, 0.28);
+}
+
+html[data-theme="light"] {
+  --sb-glow-a: rgba(251, 146, 60, 0.35);
+  --sb-glow-b: rgba(253, 186, 116, 0.28);
+  --sb-glow-c: rgba(249, 115, 22, 0.12);
+  --sb-glass-bg: color-mix(in srgb, #ffffff 92%, transparent);
+  --sb-glass-border: color-mix(in srgb, var(--accent-orange) 28%, #e5e5e5);
+  --sb-card-shadow: 0 8px 32px rgba(249, 115, 22, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.storyboard-canvas {
+  position: relative;
+  isolation: isolate;
+  background: var(--background);
+}
+
+.storyboard-canvas::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(ellipse 75% 55% at 8% -5%, var(--sb-glow-a) 0%, transparent 58%),
+    radial-gradient(ellipse 55% 45% at 95% 8%, var(--sb-glow-b) 0%, transparent 52%),
+    radial-gradient(ellipse 50% 35% at 50% 102%, var(--sb-glow-c) 0%, transparent 48%);
+}
+
+.storyboard-canvas > * {
+  position: relative;
+  z-index: 1;
+}
+
+.storyboard-glass {
+  background: var(--sb-glass-bg);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--sb-glass-border);
+  box-shadow: var(--sb-card-shadow);
+}
+
+.storyboard-glass-focus:focus-within {
+  border-color: color-mix(in srgb, var(--accent-orange) 55%, var(--border));
+  box-shadow:
+    var(--sb-card-shadow),
+    0 0 0 3px color-mix(in srgb, var(--accent-orange) 18%, transparent);
+}
+
+.storyboard-gradient-text {
+  background: linear-gradient(135deg, #ea580c 0%, #f97316 45%, #fbbf24 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.storyboard-btn-primary {
+  background: linear-gradient(135deg, #c2410c 0%, #ea580c 35%, #f97316 70%, #fb923c 100%);
+  color: #fff !important;
+  border: 1px solid color-mix(in srgb, #fb923c 40%, transparent) !important;
+  box-shadow: 0 4px 22px rgba(249, 115, 22, 0.38);
+}
+
+.storyboard-btn-primary:hover:not(:disabled) {
+  filter: brightness(1.06);
+  box-shadow: 0 6px 28px rgba(249, 115, 22, 0.48);
+}
+
+.storyboard-header-bar {
+  background: color-mix(in srgb, var(--sb-glass-bg) 90%, transparent);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--sb-glass-border);
+}
+
 .glow-subtle {
   box-shadow: 0 0 32px rgba(124, 58, 237, 0.12);
 }
