@@ -10,7 +10,7 @@ import { buildVideoReferencePayloads } from "@/lib/video-reference-usage";
 import type { ReferenceImagePayload } from "@/types";
 
 const OPENROUTER_VIDEOS_URL = "https://openrouter.ai/api/v1/videos";
-const POLL_INTERVAL_MS = 12_000;
+const POLL_INTERVAL_MS = 8_000;
 /** Keep below Next.js route maxDuration (300s) to allow submit + download + persist */
 const MAX_POLL_MS = 4 * 60 * 1000;
 
@@ -54,6 +54,34 @@ export interface GenerateVideoOptions {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithRetry(
+  url: string,
+  init?: RequestInit,
+  label = "request"
+): Promise<Response> {
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      return await fetch(url, init);
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      lastError = error;
+      const message = `${error.message} ${error.cause instanceof Error ? error.cause.message : ""}`.trim();
+      if (
+        isRetryableOpenRouterError(undefined, message) &&
+        attempt < 3
+      ) {
+        await sleepMs(retryDelayMs(attempt));
+        continue;
+      }
+      throw new Error(
+        message || `Video API ${label} failed`
+      );
+    }
+  }
+  throw lastError ?? new Error(`Video API ${label} failed`);
 }
 
 function formatVideoError(
@@ -126,24 +154,49 @@ export async function generateVideoWithOpenRouter(
 
   let jobId: string | undefined;
   let pollingUrl: string | undefined;
+  const submitBody = JSON.stringify(body);
+  const refBytes = (options.references ?? []).reduce(
+    (sum, ref) => sum + (ref.dataUrl?.length ?? 0),
+    0
+  );
+  if (refBytes > 500_000) {
+    console.warn(
+      "[openrouter-video] Large reference payload",
+      `${Math.round(refBytes / 1024)}KB — prefer HTTPS frame URLs`
+    );
+  }
 
   for (let attempt = 0; attempt < 4; attempt++) {
-    const submitRes = await fetch(OPENROUTER_VIDEOS_URL, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-    });
+    const submitRes = await fetchWithRetry(
+      OPENROUTER_VIDEOS_URL,
+      {
+        method: "POST",
+        headers,
+        body: submitBody,
+      },
+      "submit"
+    );
 
     const submitJson = (await submitRes.json()) as VideoSubmitResponse & {
-      error?: { message?: string };
+      error?: { message?: string; code?: string };
+      message?: string;
     };
 
     if (!submitRes.ok) {
+      const errField = submitJson.error;
       const raw =
-        submitJson.error?.message ??
-        (typeof submitJson === "object" && "message" in submitJson
-          ? String((submitJson as { message?: string }).message)
-          : "Failed to start video generation");
+        (typeof errField === "object" && errField?.message
+          ? [errField.code, errField.message].filter(Boolean).join(": ")
+          : typeof errField === "string"
+            ? errField
+            : null) ??
+        (typeof submitJson.message === "string" ? submitJson.message : null) ??
+        `HTTP ${submitRes.status}: video submit failed`;
+      console.error(
+        "[openrouter-video] submit failed",
+        submitRes.status,
+        JSON.stringify(submitJson).slice(0, 500)
+      );
       if (
         isRetryableOpenRouterError(submitRes.status, raw) &&
         attempt < 3
@@ -173,7 +226,7 @@ export async function generateVideoWithOpenRouter(
   while (Date.now() - started < pollLimit) {
     await sleep(POLL_INTERVAL_MS);
 
-    const pollRes = await fetch(pollingUrl, { headers });
+    const pollRes = await fetchWithRetry(pollingUrl, { headers }, "status");
     const status = (await pollRes.json()) as VideoPollResponse & {
       error?: { message?: string };
     };
@@ -195,7 +248,7 @@ export async function generateVideoWithOpenRouter(
         throw new Error("Video completed but no download URL was returned.");
       }
 
-      const videoRes = await fetch(contentUrl, { headers });
+      const videoRes = await fetchWithRetry(contentUrl, { headers }, "download");
       if (!videoRes.ok) {
         throw new Error("Failed to download generated video.");
       }

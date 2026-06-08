@@ -17,7 +17,6 @@ import {
   RefreshCw,
   Timer,
   Video,
-  Layers,
 } from "lucide-react";
 import { StoryboardSceneEditDialog } from "@/components/storyboard/storyboard-scene-edit-dialog";
 import { StoryboardVideoPlayer } from "@/components/storyboard/storyboard-video-player";
@@ -33,6 +32,10 @@ import { downloadImage } from "@/lib/download-utils";
 import { exportStoryboardPdf } from "@/lib/storyboard/export";
 import { SCENE_TRANSITIONS } from "@/lib/storyboard/constants";
 import { isPendingVideoForConversation } from "@/lib/storyboard/pending-video";
+import {
+  chunkStoryboardScenesForVideo,
+  needsStoryboardVideoBatching,
+} from "@/lib/storyboard/storyboard-video";
 import { useStoryboardStore } from "@/store/storyboard-store";
 import { cn } from "@/lib/utils";
 import { normalizeSceneFields } from "@/lib/storyboard/scene-fields";
@@ -69,35 +72,28 @@ export function StepStoryboardViewer() {
     generationProgress,
     isGeneratingVideo,
     videoProgress,
+    videoGenerationStatus,
     storyboardVideoUrl,
     storyboardVideoDurationSec,
-    isGeneratingStitchedVideo,
-    stitchedVideoProgress,
-    stitchedVideoStatus,
-    storyboardStitchedVideoUrl,
-    storyboardStitchedVideoDurationSec,
     generateStoryboardVideo,
-    generateStoryboardStitchedVideo,
     isAnyVideoGenerating,
     resetStoryboard,
     refreshStoryboardVideos,
     checkPendingStoryboardVideo,
     conversationId,
     singleVideoStoragePath,
-    stitchedVideoStoragePath,
   } = useStoryboardStore();
 
   const pendingSingleVideo =
     isPendingVideoForConversation(conversationId, "single") &&
     !storyboardVideoUrl;
-  const pendingStitchedVideo =
-    isPendingVideoForConversation(conversationId, "stitched") &&
-    !storyboardStitchedVideoUrl;
   const hasSingleVideo = Boolean(
     storyboardVideoUrl || singleVideoStoragePath
   );
-  const hasStitchedVideo = Boolean(
-    storyboardStitchedVideoUrl || stitchedVideoStoragePath
+  const usesVideoBatching = needsStoryboardVideoBatching(scenes);
+  const videoSegmentCount = useMemo(
+    () => chunkStoryboardScenesForVideo(scenes).length,
+    [scenes]
   );
 
   const [presentationIndex, setPresentationIndex] = useState(0);
@@ -108,7 +104,6 @@ export function StepStoryboardViewer() {
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [exportPdfError, setExportPdfError] = useState<string | null>(null);
   const videoSectionRef = useRef<HTMLDivElement>(null);
-  const stitchedVideoSectionRef = useRef<HTMLDivElement>(null);
 
   const totalDuration = useMemo(
     () => scenes.reduce((sum, s) => sum + s.durationSec, 0),
@@ -170,12 +165,8 @@ export function StepStoryboardViewer() {
 
   const showVideoSection =
     wizardLocked || isGeneratingVideo || Boolean(storyboardVideoUrl);
-  const showStitchedVideoSection =
-    wizardLocked ||
-    isGeneratingStitchedVideo ||
-    Boolean(storyboardStitchedVideoUrl);
   const anyVideoGenerating =
-    isAnyVideoGenerating() || pendingSingleVideo || pendingStitchedVideo;
+    isAnyVideoGenerating() || pendingSingleVideo;
 
   useEffect(() => {
     if (!wizardLocked || !conversationId) return;
@@ -183,7 +174,7 @@ export function StepStoryboardViewer() {
   }, [conversationId, wizardLocked, refreshStoryboardVideos]);
 
   useEffect(() => {
-    if (!conversationId || (!pendingSingleVideo && !pendingStitchedVideo)) {
+    if (!conversationId || !pendingSingleVideo) {
       return;
     }
     void checkPendingStoryboardVideo();
@@ -191,27 +182,13 @@ export function StepStoryboardViewer() {
       void checkPendingStoryboardVideo();
     }, 20_000);
     return () => clearInterval(id);
-  }, [
-    conversationId,
-    pendingSingleVideo,
-    pendingStitchedVideo,
-    checkPendingStoryboardVideo,
-  ]);
+  }, [conversationId, pendingSingleVideo, checkPendingStoryboardVideo]);
 
   useEffect(() => {
     if (isGeneratingVideo && videoSectionRef.current) {
       videoSectionRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
     }
   }, [isGeneratingVideo]);
-
-  useEffect(() => {
-    if (isGeneratingStitchedVideo && stitchedVideoSectionRef.current) {
-      stitchedVideoSectionRef.current.scrollIntoView({
-        behavior: "smooth",
-        block: "start",
-      });
-    }
-  }, [isGeneratingStitchedVideo]);
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
@@ -411,11 +388,17 @@ export function StepStoryboardViewer() {
                 isGeneratingVideo || pendingSingleVideo
                   ? pendingSingleVideo && !isGeneratingVideo
                     ? "Generation started — checking history for your video"
-                    : "One AI video from all frames and script"
-                  : `${scenes.length} frames · single AI generation`
+                    : videoGenerationStatus ??
+                      (usesVideoBatching
+                        ? `Generating ${videoSegmentCount} clips (up to 4 frames each), then stitching`
+                        : "One AI video from all frames and script")
+                  : usesVideoBatching
+                    ? `${scenes.length} frames · ${videoSegmentCount} clips (≤4 frames each)`
+                    : `${scenes.length} frames · single AI generation`
               }
               videoUrl={storyboardVideoUrl}
               durationSec={storyboardVideoDurationSec ?? undefined}
+              storyboardDurationSec={totalDuration}
               sceneCount={scenes.length}
               isGenerating={isGeneratingVideo || pendingSingleVideo}
               videoProgress={
@@ -424,7 +407,9 @@ export function StepStoryboardViewer() {
               progressLabel={
                 pendingSingleVideo && !isGeneratingVideo
                   ? "Video may still be generating — do not click Generate again"
-                  : undefined
+                  : isGeneratingVideo
+                    ? (videoGenerationStatus ?? undefined)
+                    : undefined
               }
               placeholderText={
                 pendingSingleVideo && !isGeneratingVideo
@@ -445,47 +430,6 @@ export function StepStoryboardViewer() {
           </div>
         )}
 
-        {showStitchedVideoSection && (
-          <div
-            ref={stitchedVideoSectionRef}
-            className="mt-8 border-t border-border pt-8 pb-6"
-          >
-            <StoryboardVideoPlayer
-              title="Stitched storyboard video"
-              subtitle={
-                isGeneratingStitchedVideo || pendingStitchedVideo
-                  ? pendingStitchedVideo && !isGeneratingStitchedVideo
-                    ? "Generation started — checking history for stitched video"
-                    : (stitchedVideoStatus ??
-                      "One clip per frame, then stitched together")
-                  : `${scenes.length} clips stitched · full timeline`
-              }
-              progressLabel={
-                pendingStitchedVideo && !isGeneratingStitchedVideo
-                  ? "Stitched video may still be generating — do not start again"
-                  : (stitchedVideoStatus ??
-                    "Generating clips and stitching — this can take many minutes")
-              }
-              placeholderText={
-                pendingStitchedVideo && !isGeneratingStitchedVideo
-                  ? "Still checking for your stitched video…"
-                  : "Stitched video will appear here when all clips are ready"
-              }
-              videoUrl={storyboardStitchedVideoUrl}
-              durationSec={storyboardStitchedVideoDurationSec ?? undefined}
-              sceneCount={scenes.length}
-              isGenerating={
-                isGeneratingStitchedVideo || pendingStitchedVideo
-              }
-              videoProgress={
-                isGeneratingStitchedVideo || pendingStitchedVideo
-                  ? stitchedVideoProgress
-                  : 0
-              }
-              downloadFilename="storyboard-stitched.mp4"
-            />
-          </div>
-        )}
       </div>
 
       {error && (
@@ -538,7 +482,9 @@ export function StepStoryboardViewer() {
                 pendingSingleVideo
                   ? "A generation may still be running — use Check for video"
                   : allFramesReady
-                    ? "One AI video from all frames and script (faster)"
+                    ? usesVideoBatching
+                      ? `${videoSegmentCount} clips (≤4 frames each), then stitched`
+                      : "One AI video from all frames and script"
                     : "Generate all frame images first"
               }
             >
@@ -562,50 +508,7 @@ export function StepStoryboardViewer() {
               Regenerate video
             </Button>
           )}
-          {!hasStitchedVideo ? (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => void generateStoryboardStitchedVideo()}
-              disabled={
-                !allFramesReady ||
-                anyFrameGenerating ||
-                anyVideoGenerating ||
-                pendingStitchedVideo
-              }
-              title={
-                pendingStitchedVideo
-                  ? "Stitched generation may still be running"
-                  : allFramesReady
-                    ? "One clip per frame, stitched into full-length video"
-                    : "Generate all frame images first"
-              }
-            >
-              {isGeneratingStitchedVideo || pendingStitchedVideo ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Layers className="h-4 w-4" />
-              )}
-              {pendingStitchedVideo
-                ? "Stitch in progress…"
-                : "Generate stitched video"}
-            </Button>
-          ) : (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() =>
-                void generateStoryboardStitchedVideo({ replace: true })
-              }
-              disabled={
-                !allFramesReady || anyFrameGenerating || anyVideoGenerating
-              }
-            >
-              <RefreshCw className="h-4 w-4" />
-              Regenerate stitched
-            </Button>
-          )}
-          {(pendingSingleVideo || pendingStitchedVideo) && (
+          {pendingSingleVideo && (
             <Button
               variant="ghost"
               size="sm"

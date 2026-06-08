@@ -56,8 +56,37 @@ function sortResolutions(res: string[]): string[] {
   );
 }
 
-function sortDurations(dur: number[]): number[] {
+export function sortDurations(dur: number[]): number[] {
   return [...dur].sort((a, b) => a - b);
+}
+
+/** Pick closest allowed duration, capped at the model maximum (e.g. 28s → 15s on Seedance). */
+export function pickNearestSupportedDuration(
+  requestedSec: number,
+  modelId: string
+): number {
+  const supported = sortDurations(
+    getVideoModelConfig(modelId).supportedDurations
+  );
+  if (!supported.length) {
+    return Math.max(1, Math.round(requestedSec));
+  }
+
+  const min = supported[0]!;
+  const max = supported[supported.length - 1]!;
+  const target = Math.min(Math.max(requestedSec, min), max);
+
+  let floor = min;
+  for (const d of supported) {
+    if (d <= target) floor = d;
+    else break;
+  }
+  if (floor >= target) return floor;
+
+  for (const d of supported) {
+    if (d >= target) return d;
+  }
+  return max;
 }
 
 function inferGroup(id: string): VideoModelGroup {
@@ -371,11 +400,7 @@ export function clampVideoSettingsToModel(
   generateAudio: boolean;
 } {
   const config = getVideoModelConfig(modelId);
-  const duration = config.supportedDurations.includes(settings.duration)
-    ? settings.duration
-    : config.supportedDurations.includes(DEFAULT_VIDEO_DURATION)
-      ? DEFAULT_VIDEO_DURATION
-      : config.supportedDurations[0];
+  const duration = pickNearestSupportedDuration(settings.duration, modelId);
 
   const resolution = config.supportedResolutions.includes(settings.resolution)
     ? settings.resolution

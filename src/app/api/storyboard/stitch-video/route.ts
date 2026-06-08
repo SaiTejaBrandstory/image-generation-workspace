@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { formatOpenRouterErrorForUser } from "@/lib/openrouter-errors";
-import { concatMp4Buffers } from "@/lib/storyboard/stitch-videos";
+import {
+  concatMp4Buffers,
+  probeMp4DurationSec,
+} from "@/lib/storyboard/stitch-videos";
 import { updateStoryboardOutputs } from "@/lib/supabase/storyboard-db";
 import { createClient } from "@/lib/supabase/server";
 import {
@@ -18,6 +21,8 @@ interface StitchVideoBody {
   storageConversationId?: string;
   clipUrls: string[];
   totalDurationSec?: number;
+  /** Distinguish full storyboard video vs per-frame stitched output in storage. */
+  outputKind?: "full" | "stitched";
 }
 
 export async function POST(request: NextRequest) {
@@ -46,23 +51,36 @@ export async function POST(request: NextRequest) {
     }
 
     const stitched = await concatMp4Buffers(buffers);
+    const probedDurationSec = await probeMp4DurationSec(stitched);
+    const durationSec =
+      probedDurationSec ?? body.totalDurationSec ?? null;
 
     const storageFolder =
       body.storageConversationId?.trim() || body.projectId?.trim() || "storyboard-draft";
     const uploaded = await uploadGenerationVideoBuffer({
       userId: user.id,
       conversationId: storageFolder,
-      variantId: `stitched-${body.projectId}`,
+      variantId:
+        body.outputKind === "full"
+          ? `full-${body.projectId}`
+          : `stitched-${body.projectId}`,
       buffer: stitched,
       mime: "video/mp4",
     });
 
     if (UUID_RE.test(storageFolder)) {
       try {
-        await updateStoryboardOutputs(supabase, user.id, storageFolder, {
-          stitchedVideoStoragePath: uploaded.storagePath,
-          stitchedVideoDurationSec: body.totalDurationSec ?? null,
-        });
+        const outputsPatch =
+          body.outputKind === "full"
+            ? {
+                singleVideoStoragePath: uploaded.storagePath,
+                singleVideoDurationSec: durationSec,
+              }
+            : {
+                stitchedVideoStoragePath: uploaded.storagePath,
+                stitchedVideoDurationSec: durationSec,
+              };
+        await updateStoryboardOutputs(supabase, user.id, storageFolder, outputsPatch);
       } catch (persistErr) {
         console.error(
           "[storyboard/stitch-video] DB persist failed",
@@ -74,7 +92,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       videoUrl: uploaded.signedUrl,
       storagePath: uploaded.storagePath,
-      durationSec: body.totalDurationSec ?? null,
+      durationSec,
       clipCount: body.clipUrls.length,
     });
   } catch (err) {

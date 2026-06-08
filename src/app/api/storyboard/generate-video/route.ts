@@ -1,17 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
-import { formatOpenRouterErrorForUser } from "@/lib/openrouter-errors";
+import {
+  formatOpenRouterErrorForUser,
+  isRealPersonVideoRejection,
+} from "@/lib/openrouter-errors";
 import { generateVideoWithOpenRouter } from "@/lib/openrouter-video";
 import {
+  clampVideoSettingsToModel,
   DEFAULT_VIDEO_ASPECT,
   DEFAULT_VIDEO_RESOLUTION,
 } from "@/lib/openrouter-video-models";
 import { buildStoryboardFullVideoPrompt } from "@/lib/storyboard/storyboard-video-prompt";
 import {
   buildStoryboardAllFrameReferences,
-  pickStoryboardVideoDuration,
   getStoryboardFullVideoMaxPollMs,
-  STORYBOARD_VIDEO_MODEL,
+  getStoryboardVideoModelChain,
 } from "@/lib/storyboard/storyboard-video";
+import type { StoryboardVideoBatchContext } from "@/lib/storyboard/storyboard-video-prompt";
 import { updateStoryboardOutputs } from "@/lib/supabase/storyboard-db";
 import { createClient } from "@/lib/supabase/server";
 import { uploadGenerationVideoBuffer } from "@/lib/supabase/storage";
@@ -24,7 +28,7 @@ import type {
   StoryboardScene,
 } from "@/types/storyboard";
 
-/** Vercel Hobby cap is 300s — poll window must finish within this. */
+/** 5 min per segment (Next.js max). Set STORYBOARD_VIDEO_MAX_POLL_MS=270000 on Vercel Hobby. */
 export const maxDuration = 300;
 
 interface GenerateStoryboardVideoBody {
@@ -34,6 +38,9 @@ interface GenerateStoryboardVideoBody {
   script: string;
   settings: StoryboardProjectSettings;
   continuity?: StoryboardContinuity | null;
+  /** Override duration for this segment (batch sum or project total). */
+  videoDurationSec?: number;
+  batch?: StoryboardVideoBatchContext;
 }
 
 export async function POST(request: NextRequest) {
@@ -63,7 +70,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "No scenes provided." }, { status: 400 });
     }
 
-    const missing = scenes.find((s) => !s.frameImageUrl?.trim());
+    const missing = scenes.find(
+      (s) => !s.frameImageUrl?.trim() && !s.frameStoragePath?.trim()
+    );
     if (missing) {
       return NextResponse.json(
         { error: `Scene ${missing.sceneNumber} has no frame image.` },
@@ -71,46 +80,104 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const duration = pickStoryboardVideoDuration(body.settings?.durationSec ?? 30);
+    const requestedDuration =
+      body.videoDurationSec != null
+        ? body.videoDurationSec
+        : scenes.reduce((acc, scene) => acc + scene.durationSec, 0);
 
-    const prompt = buildStoryboardFullVideoPrompt({
-      scenes,
-      script: body.script ?? "",
-      settings: body.settings,
-      continuity: body.continuity ?? null,
-      videoDurationSec: duration,
+    const storageFolder =
+      body.storageConversationId?.trim() ||
+      body.projectId?.trim() ||
+      "storyboard-draft";
+    const references = await buildStoryboardAllFrameReferences(scenes, {
+      userId: user.id,
+      storageConversationId: storageFolder,
     });
 
-    const references = await buildStoryboardAllFrameReferences(scenes);
-
-    const result = await generateVideoWithOpenRouter({
-      model: STORYBOARD_VIDEO_MODEL,
-      prompt,
-      duration,
+    const modelChain = getStoryboardVideoModelChain();
+    let videoModel = modelChain[0]!;
+    let videoSettings = clampVideoSettingsToModel(videoModel, {
+      duration: requestedDuration,
       resolution: DEFAULT_VIDEO_RESOLUTION,
       aspectRatio: DEFAULT_VIDEO_ASPECT,
       generateAudio: true,
-      references,
-      maxPollMs: getStoryboardFullVideoMaxPollMs(),
     });
+    let result: Awaited<ReturnType<typeof generateVideoWithOpenRouter>> | null =
+      null;
+    let lastError: Error | null = null;
 
-    const variantId = body.projectId?.trim() || crypto.randomUUID();
-    const storageFolder =
-      body.storageConversationId?.trim() || variantId || "storyboard-draft";
+    for (let i = 0; i < modelChain.length; i++) {
+      videoModel = modelChain[i]!;
+      videoSettings = clampVideoSettingsToModel(videoModel, {
+        duration: requestedDuration,
+        resolution: DEFAULT_VIDEO_RESOLUTION,
+        aspectRatio: DEFAULT_VIDEO_ASPECT,
+        generateAudio: true,
+      });
+
+      const prompt = buildStoryboardFullVideoPrompt({
+        scenes,
+        script: body.script ?? "",
+        settings: body.settings,
+        continuity: body.continuity ?? null,
+        videoDurationSec: videoSettings.duration,
+        batch: body.batch,
+      });
+
+      try {
+        result = await generateVideoWithOpenRouter({
+          model: videoModel,
+          prompt,
+          duration: videoSettings.duration,
+          resolution: videoSettings.resolution,
+          aspectRatio: videoSettings.aspectRatio,
+          generateAudio: true,
+          references,
+          maxPollMs: getStoryboardFullVideoMaxPollMs(),
+        });
+        if (i > 0) {
+          console.info(
+            `[storyboard/generate-video] Used fallback model ${videoModel}`
+          );
+        }
+        break;
+      } catch (err) {
+        const error = err instanceof Error ? err : new Error(String(err));
+        lastError = error;
+        const nextModel = modelChain[i + 1];
+        if (nextModel && isRealPersonVideoRejection(error.message)) {
+          console.warn(
+            `[storyboard/generate-video] ${videoModel} rejected human frames, trying ${nextModel}`
+          );
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    if (!result) {
+      throw lastError ?? new Error("Video generation failed");
+    }
+
+    const projectId = body.projectId?.trim() || crypto.randomUUID();
+    const segmentKey = body.batch
+      ? `seg-${body.batch.index + 1}of${body.batch.total}`
+      : "full";
     const uploaded = await uploadGenerationVideoBuffer({
       userId: user.id,
       conversationId: storageFolder,
-      variantId: `video-${variantId}`,
+      variantId: `video-${projectId}-${segmentKey}`,
       buffer: result.videoBuffer,
       mime: result.mime,
     });
 
     const conversationId = storageFolder;
-    if (UUID_RE.test(conversationId)) {
+    const isSingleGeneration = !body.batch || body.batch.total === 1;
+    if (UUID_RE.test(conversationId) && isSingleGeneration) {
       try {
         await updateStoryboardOutputs(supabase, user.id, conversationId, {
           singleVideoStoragePath: uploaded.storagePath,
-          singleVideoDurationSec: duration,
+          singleVideoDurationSec: videoSettings.duration,
         });
       } catch (persistErr) {
         console.error(
@@ -123,8 +190,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       videoUrl: uploaded.signedUrl,
       storagePath: uploaded.storagePath,
-      durationSec: duration,
-      model: STORYBOARD_VIDEO_MODEL,
+      durationSec: videoSettings.duration,
+      model: videoModel,
       jobId: result.jobId,
       sceneCount: scenes.length,
     });
@@ -133,7 +200,11 @@ export async function POST(request: NextRequest) {
       err instanceof Error
         ? formatOpenRouterErrorForUser(err.message)
         : "Video generation failed";
-    console.error("[storyboard/generate-video]", message);
+    console.error(
+      "[storyboard/generate-video]",
+      message,
+      err instanceof Error && err.cause ? err.cause : ""
+    );
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

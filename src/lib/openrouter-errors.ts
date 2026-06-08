@@ -15,7 +15,11 @@ export function isRetryableOpenRouterError(
     m.includes("temporarily unavailable") ||
     m.includes("try again later") ||
     m.includes("service unavailable") ||
-    m.includes("capacity")
+    m.includes("capacity") ||
+    m.includes("fetch failed") ||
+    m.includes("econnreset") ||
+    m.includes("socket hang up") ||
+    m.includes("network")
   );
 }
 
@@ -24,8 +28,36 @@ import {
   MIN_VIDEO_REFERENCE_DIMENSION,
 } from "@/lib/reference-image-dimensions";
 
+/** Seedance blocks photorealistic / real-person-looking reference frames. */
+export function isRealPersonVideoRejection(message: string): boolean {
+  const text = normalizeProviderErrorText(message);
+  return /SensitiveContent|PrivacyInformation|real person|may contain real/i.test(
+    text
+  );
+}
+
+/** Pull provider message out of `HTTP 400: {"error":{...}}` style strings. */
+function normalizeProviderErrorText(raw: string): string {
+  const jsonStart = raw.indexOf("{");
+  if (jsonStart === -1) return raw;
+  try {
+    const parsed = JSON.parse(raw.slice(jsonStart)) as {
+      error?: { message?: string; code?: string };
+      message?: string;
+    };
+    const inner = parsed.error;
+    if (inner?.message) {
+      return [inner.code, inner.message].filter(Boolean).join(": ");
+    }
+    if (parsed.message) return parsed.message;
+  } catch {
+    /* keep original */
+  }
+  return raw;
+}
+
 export function formatOpenRouterErrorForUser(raw: string): string {
-  const trimmed = raw.trim();
+  const trimmed = normalizeProviderErrorText(raw.trim());
   const withoutOpId = trimmed.replace(
     /\s*Operation ID:\s*[a-f0-9-]+\.?/gi,
     ""
@@ -43,6 +75,21 @@ export function formatOpenRouterErrorForUser(raw: string): string {
     return (
       `Reference image resolution is too small. Use at least ` +
       `${MIN_VIDEO_REFERENCE_DIMENSION}×${MIN_VIDEO_REFERENCE_DIMENSION}px on each side.`
+    );
+  }
+
+  if (isRealPersonVideoRejection(withoutOpId)) {
+    return (
+      "This storyboard frame looks like a real person, which Seedance cannot use. " +
+      "If Veo fallback also failed, try a more illustrated frame style or set " +
+      "STORYBOARD_VIDEO_FALLBACK_MODEL=google/veo-3.1-fast in .env."
+    );
+  }
+
+  if (/fetch failed|econnreset|socket hang up/i.test(withoutOpId)) {
+    return (
+      "Network error while contacting the video API. This often happens when " +
+      "reference images are too large — we retried automatically. Please try again."
     );
   }
 

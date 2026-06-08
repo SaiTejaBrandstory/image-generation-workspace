@@ -2,7 +2,11 @@
 
 import { create } from "zustand";
 import { getAnchorFrameUrl } from "@/lib/storyboard/continuity";
-import { pickStoryboardVideoDuration } from "@/lib/storyboard/storyboard-video";
+import {
+  chunkStoryboardScenesForVideo,
+  needsStoryboardVideoBatching,
+  pickStoryboardBatchDuration,
+} from "@/lib/storyboard/storyboard-video";
 import { normalizeFrameStyle } from "@/lib/storyboard/frame-styles";
 import { normalizeFrameCount } from "@/lib/storyboard/script-utils";
 import {
@@ -56,6 +60,7 @@ interface StoryboardState {
   generationProgress: number;
   isGeneratingVideo: boolean;
   videoProgress: number;
+  videoGenerationStatus: string | null;
   storyboardVideoUrl: string | null;
   storyboardVideoDurationSec: number | null;
   isGeneratingStitchedVideo: boolean;
@@ -104,9 +109,6 @@ interface StoryboardState {
   regenerateFrames: (sceneIds?: string[]) => Promise<void>;
   generateFrame: (sceneId: string) => Promise<void>;
   generateStoryboardVideo: (options?: { replace?: boolean }) => Promise<void>;
-  generateStoryboardStitchedVideo: (options?: {
-    replace?: boolean;
-  }) => Promise<void>;
   checkPendingStoryboardVideo: () => Promise<void>;
   isFrameBusy: (sceneId: string) => boolean;
   isAnyVideoGenerating: () => boolean;
@@ -132,6 +134,56 @@ function storyboardTitle(script: string): string {
 
 function cloneScenes(scenes: StoryboardScene[]): StoryboardScene[] {
   return scenes.map((s) => ({ ...s }));
+}
+
+function isVideoTimeoutError(message: string): boolean {
+  return /timed out|timeout/i.test(message);
+}
+
+function isRetryableVideoClientError(message: string): boolean {
+  return (
+    isVideoTimeoutError(message) ||
+    /network error|fetch failed|high load|rate limit|temporarily unavailable/i.test(
+      message
+    )
+  );
+}
+
+async function fetchStoryboardVideoSegment(
+  payload: Record<string, unknown>,
+  segmentLabel: string
+): Promise<{
+  videoUrl: string;
+  storagePath: string | null;
+  durationSec: number;
+}> {
+  let lastError = "Video generation failed";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const res = await fetch("/api/storyboard/generate-video", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = (await res.json()) as {
+      videoUrl?: string;
+      storagePath?: string;
+      durationSec?: number;
+      error?: string;
+    };
+    if (res.ok && data.videoUrl) {
+      return {
+        videoUrl: data.videoUrl,
+        storagePath: data.storagePath ?? null,
+        durationSec: data.durationSec ?? 0,
+      };
+    }
+    lastError = data.error ?? "Video generation failed";
+    if (attempt === 0 && isRetryableVideoClientError(lastError)) {
+      continue;
+    }
+    throw new Error(`${segmentLabel}: ${lastError}`);
+  }
+  throw new Error(`${segmentLabel}: ${lastError}`);
 }
 
 /** Keep localStorage small — never persist base64 frame blobs. */
@@ -233,6 +285,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
   generationProgress: 0,
   isGeneratingVideo: false,
   videoProgress: 0,
+  videoGenerationStatus: null,
   storyboardVideoUrl: null,
   storyboardVideoDurationSec: null,
   isGeneratingStitchedVideo: false,
@@ -671,8 +724,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
     }
   },
 
-  isAnyVideoGenerating: () =>
-    get().isGeneratingVideo || get().isGeneratingStitchedVideo,
+  isAnyVideoGenerating: () => get().isGeneratingVideo,
 
   generateStoryboardVideo: async (options) => {
     const {
@@ -721,7 +773,14 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
     if (!ordered.length) return;
 
     const epoch = get().videoGenerationEpoch + 1;
-    const videoDuration = pickStoryboardVideoDuration(settings.durationSec);
+    const batches = chunkStoryboardScenesForVideo(ordered);
+    const batched = batches.length > 1;
+    const storyboardDurationSec = ordered.reduce(
+      (sum, s) => sum + s.durationSec,
+      0
+    );
+    const storageFolder = storageFolderId(conversationId, storyboardProjectId);
+
     if (conversationId) {
       markPendingVideo(conversationId, "single");
     }
@@ -729,7 +788,10 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
     set({
       videoGenerationEpoch: epoch,
       isGeneratingVideo: true,
-      videoProgress: 8,
+      videoProgress: 4,
+      videoGenerationStatus: batched
+        ? `Generating ${batches.length} segments in parallel…`
+        : "Generating video…",
       error: null,
       ...(options?.replace
         ? {
@@ -740,258 +802,145 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
         : {}),
     });
 
-    const stopProgress = startEstimatedVideoProgress(
-      estimateVideoGenerationMs(videoDuration, { multiFrameRefs: true }),
-      (percent) => {
-        if (
-          get().isGeneratingVideo &&
-          get().videoGenerationEpoch === epoch
-        ) {
-          set({ videoProgress: percent });
-        }
-      },
-      () => get().videoProgress
-    );
+    let stopProgress = () => {};
 
     try {
-      const res = await fetch("/api/storyboard/generate-video", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          projectId: storyboardProjectId,
-          storageConversationId: storageFolderId(
-            conversationId,
-            storyboardProjectId
-          ),
-          scenes: ordered,
-          script,
-          settings,
-          continuity,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Video generation failed");
-      if (get().videoGenerationEpoch !== epoch) return;
+      const maxBatchDuration = Math.max(
+        ...batches.map((batch) => pickStoryboardBatchDuration(batch))
+      );
 
-      stopProgress();
-      clearPendingVideo();
-      const storagePath = (data.storagePath as string | undefined) ?? null;
       set({
-        storyboardVideoUrl: data.videoUrl as string,
-        storyboardVideoDurationSec: (data.durationSec as number) ?? null,
-        singleVideoStoragePath: storagePath,
-        isGeneratingVideo: false,
-        videoProgress: 100,
+        videoGenerationStatus: batched
+          ? `Generating ${batches.length} segments in parallel…`
+          : "Generating video…",
+        videoProgress: 8,
       });
-      get().saveDraft();
-      if (storagePath && get().conversationId) {
-        await persistVideoOutputs({
-          singleVideoStoragePath: storagePath,
-          singleVideoDurationSec: (data.durationSec as number) ?? null,
-        });
-      }
-    } catch (err) {
-      stopProgress();
-      clearPendingVideo();
-      if (get().videoGenerationEpoch !== epoch) return;
-      set({
-        isGeneratingVideo: false,
-        error: err instanceof Error ? err.message : "Video generation failed",
-      });
-    }
-  },
 
-  generateStoryboardStitchedVideo: async (options) => {
-    const {
-      scenes,
-      script,
-      settings,
-      continuity,
-      storyboardProjectId,
-      conversationId,
-      isGeneratingFrames,
-    } = get();
-    if (get().isAnyVideoGenerating() || isGeneratingFrames) return;
-
-    const {
-      storyboardStitchedVideoUrl,
-      stitchedVideoStoragePath,
-    } = get();
-
-    if (
-      isPendingVideoForConversation(conversationId, "stitched") &&
-      !storyboardStitchedVideoUrl
-    ) {
-      set({
-        error:
-          "Stitched video may still be running. Wait or use Check for video — do not start again.",
-      });
-      return;
-    }
-
-    if (
-      !options?.replace &&
-      (storyboardStitchedVideoUrl || stitchedVideoStoragePath)
-    ) {
-      set({
-        error:
-          "A stitched video already exists. Use Regenerate stitched video for a new one.",
-      });
-      return;
-    }
-
-    const ordered = [...scenes].sort((a, b) => a.sceneNumber - b.sceneNumber);
-    const missing = ordered.filter((s) => !s.frameImageUrl?.trim());
-    if (missing.length) {
-      set({
-        error: `Generate all frame images first (missing scene ${missing[0].sceneNumber}).`,
-      });
-      return;
-    }
-    if (!ordered.length) return;
-
-    const totalDuration = ordered.reduce((sum, s) => sum + s.durationSec, 0);
-    const clipUrls: string[] = [];
-    const epoch = get().stitchedVideoGenerationEpoch + 1;
-
-    if (conversationId) {
-      markPendingVideo(conversationId, "stitched");
-    }
-
-    set({
-      stitchedVideoGenerationEpoch: epoch,
-      isGeneratingStitchedVideo: true,
-      ...(options?.replace
-        ? {
-            storyboardStitchedVideoUrl: null,
-            storyboardStitchedVideoDurationSec: null,
-            stitchedVideoStoragePath: null,
+      stopProgress = startEstimatedVideoProgress(
+        estimateVideoGenerationMs(maxBatchDuration, { multiFrameRefs: true }),
+        (percent) => {
+          if (get().isGeneratingVideo && get().videoGenerationEpoch === epoch) {
+            set({ videoProgress: Math.min(85, Math.round(8 + percent * 0.77)) });
           }
-        : {}),
-      stitchedVideoProgress: 0,
-      stitchedVideoStatus: `Generating clip 1 of ${ordered.length}…`,
-      error: null,
-    });
+        },
+        () => get().videoProgress
+      );
 
-    try {
-      for (let i = 0; i < ordered.length; i++) {
-        const scene = ordered[i];
-        const nextScene = ordered[i + 1] ?? null;
-        const clipId = `${scene.id}-${i}`;
-        const clipDuration = pickStoryboardVideoDuration(scene.durationSec);
-        const clipBaseProgress = Math.round((i / ordered.length) * 85);
-
-        set({
-          stitchedVideoStatus: `Generating clip ${i + 1} of ${ordered.length} (scene ${scene.sceneNumber})…`,
-          stitchedVideoProgress: clipBaseProgress,
-        });
-
-        let stopClipProgress = () => {};
-        try {
-          stopClipProgress = startEstimatedVideoProgress(
-            estimateVideoGenerationMs(clipDuration),
-            (percent) => {
-              if (
-                get().isGeneratingStitchedVideo &&
-                get().stitchedVideoGenerationEpoch === epoch
-              ) {
-                const slice = 85 / ordered.length;
-                const mapped = Math.round(
-                  clipBaseProgress + (percent / 100) * slice
-                );
-                set({ stitchedVideoProgress: Math.min(85, mapped) });
-              }
-            },
-            () => get().stitchedVideoProgress
-          );
-
-          const res = await fetch("/api/storyboard/generate-video-clip", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
+      const segmentResults = await Promise.all(
+        batches.map(async (batch, i) => {
+          const batchDuration = pickStoryboardBatchDuration(batch);
+          const segmentLabel = `Segment ${i + 1} (scenes ${batch[0].sceneNumber}–${batch[batch.length - 1].sceneNumber})`;
+          const result = await fetchStoryboardVideoSegment(
+            {
               projectId: storyboardProjectId,
-              storageConversationId: storageFolderId(
-                conversationId,
-                storyboardProjectId
-              ),
-              clipId,
-              scene,
-              nextScene,
+              storageConversationId: storageFolder,
+              scenes: batch,
               script,
               settings,
               continuity,
-              sceneIndex: i,
-              totalScenes: ordered.length,
-            }),
-          });
-          const data = await res.json();
-          if (!res.ok) {
-            throw new Error(
-              data.error ?? `Clip ${scene.sceneNumber} generation failed`
-            );
-          }
-          if (get().stitchedVideoGenerationEpoch !== epoch) return;
-          clipUrls.push(data.videoUrl as string);
-          set({
-            stitchedVideoProgress: Math.round(((i + 1) / ordered.length) * 85),
-          });
-        } finally {
-          stopClipProgress();
+              videoDurationSec: batchDuration,
+              batch: batched
+                ? { index: i, total: batches.length }
+                : undefined,
+            },
+            segmentLabel
+          );
+          return {
+            index: i,
+            videoUrl: result.videoUrl,
+            storagePath: result.storagePath,
+            durationSec: result.durationSec,
+          };
+        })
+      );
+
+      if (get().videoGenerationEpoch !== epoch) return;
+      stopProgress();
+
+      segmentResults.sort((a, b) => a.index - b.index);
+      const segmentUrls = segmentResults.map((r) => r.videoUrl);
+      const lastSegmentStoragePath =
+        segmentResults[segmentResults.length - 1]?.storagePath ?? null;
+
+      let finalVideoUrl = segmentUrls[0]!;
+      let finalStoragePath = lastSegmentStoragePath;
+      let finalDuration = segmentResults.reduce(
+        (sum, r) => sum + r.durationSec,
+        0
+      );
+
+      const uniqueSegmentUrls = [...new Set(segmentUrls)];
+      if (
+        uniqueSegmentUrls.length > 1 &&
+        uniqueSegmentUrls.length === segmentUrls.length
+      ) {
+        set({
+          videoGenerationStatus: "Stitching segments into one video…",
+          videoProgress: 90,
+        });
+
+        const stitchRes = await fetch("/api/storyboard/stitch-video", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            projectId: storyboardProjectId,
+            storageConversationId: storageFolder,
+            clipUrls: uniqueSegmentUrls,
+            totalDurationSec: finalDuration,
+            outputKind: "full",
+          }),
+        });
+        const stitchData = (await stitchRes.json()) as {
+          videoUrl?: string;
+          storagePath?: string;
+          durationSec?: number | null;
+          error?: string;
+        };
+        if (!stitchRes.ok) {
+          throw new Error(stitchData.error ?? "Video stitching failed");
         }
+        if (get().videoGenerationEpoch !== epoch) return;
+
+        finalVideoUrl = stitchData.videoUrl as string;
+        finalStoragePath =
+          (stitchData.storagePath as string | undefined) ?? null;
+        if (stitchData.durationSec != null && stitchData.durationSec > 0) {
+          finalDuration = stitchData.durationSec;
+        }
+      } else if (
+        uniqueSegmentUrls.length === 1 &&
+        segmentUrls.length > 1
+      ) {
+        throw new Error(
+          "Video segments were identical — generation could not produce distinct clips. Try Regenerate video."
+        );
       }
 
-      if (get().stitchedVideoGenerationEpoch !== epoch) return;
-
-      set({
-        stitchedVideoStatus: "Stitching clips into one video…",
-        stitchedVideoProgress: 90,
-      });
-
-      const stitchRes = await fetch("/api/storyboard/stitch-video", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          projectId: storyboardProjectId,
-          storageConversationId: storageFolderId(
-            conversationId,
-            storyboardProjectId
-          ),
-          clipUrls,
-          totalDurationSec: totalDuration,
-        }),
-      });
-      const stitchData = await stitchRes.json();
-      if (!stitchRes.ok) {
-        throw new Error(stitchData.error ?? "Video stitching failed");
-      }
-
-      const storagePath = (stitchData.storagePath as string | undefined) ?? null;
-      const durationSec =
-        (stitchData.durationSec as number) ?? totalDuration;
+      stopProgress();
       clearPendingVideo();
       set({
-        storyboardStitchedVideoUrl: stitchData.videoUrl as string,
-        storyboardStitchedVideoDurationSec: durationSec,
-        stitchedVideoStoragePath: storagePath,
-        isGeneratingStitchedVideo: false,
-        stitchedVideoProgress: 100,
-        stitchedVideoStatus: null,
+        storyboardVideoUrl: finalVideoUrl,
+        storyboardVideoDurationSec: finalDuration,
+        singleVideoStoragePath: finalStoragePath,
+        isGeneratingVideo: false,
+        videoProgress: 100,
+        videoGenerationStatus: null,
       });
       get().saveDraft();
-      if (storagePath && get().conversationId) {
+      if (finalStoragePath && get().conversationId) {
         await persistVideoOutputs({
-          stitchedVideoStoragePath: storagePath,
-          stitchedVideoDurationSec: durationSec,
+          singleVideoStoragePath: finalStoragePath,
+          singleVideoDurationSec: finalDuration,
         });
       }
     } catch (err) {
+      stopProgress();
       clearPendingVideo();
-      if (get().stitchedVideoGenerationEpoch !== epoch) return;
+      if (get().videoGenerationEpoch !== epoch) return;
       set({
-        isGeneratingStitchedVideo: false,
-        stitchedVideoStatus: null,
-        error:
-          err instanceof Error ? err.message : "Stitched video generation failed",
+        isGeneratingVideo: false,
+        videoGenerationStatus: null,
+        error: err instanceof Error ? err.message : "Video generation failed",
       });
     }
   },
@@ -1010,12 +959,8 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
       set({ error: null });
       return;
     }
-    if (
-      pending.kind === "stitched" &&
-      (s.storyboardStitchedVideoUrl || s.stitchedVideoStoragePath)
-    ) {
+    if (pending.kind === "stitched") {
       clearPendingVideo();
-      set({ error: null });
     }
   },
 
@@ -1198,6 +1143,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
       generationProgress: 0,
       isGeneratingVideo: false,
       videoProgress: 0,
+      videoGenerationStatus: null,
       storyboardVideoUrl: null,
       storyboardVideoDurationSec: null,
       isGeneratingStitchedVideo: false,

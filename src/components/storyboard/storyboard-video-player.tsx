@@ -12,6 +12,7 @@ export function StoryboardVideoPlayer({
   downloadFilename = "storyboard-video.mp4",
   videoUrl,
   durationSec,
+  storyboardDurationSec,
   sceneCount,
   isGenerating,
   videoProgress = 0,
@@ -26,6 +27,8 @@ export function StoryboardVideoPlayer({
   downloadFilename?: string;
   videoUrl?: string | null;
   durationSec?: number;
+  /** Storyboard script timing (may differ from actual generated clip length). */
+  storyboardDurationSec?: number;
   sceneCount?: number;
   isGenerating?: boolean;
   videoProgress?: number;
@@ -58,7 +61,11 @@ export function StoryboardVideoPlayer({
               : sceneCount
                 ? `${sceneCount} frames`
                 : "Storyboard animatic")}
-          {!isGenerating && durationSec ? ` · ${durationSec}s` : ""}
+          {!isGenerating && durationSec
+            ? storyboardDurationSec && storyboardDurationSec !== durationSec
+              ? ` · video ${durationSec}s (storyboard ${storyboardDurationSec}s)`
+              : ` · ${durationSec}s`
+            : ""}
         </p>
       </div>
 

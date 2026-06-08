@@ -95,6 +95,9 @@ export function validateVideoReferencePayloads(
 }
 
 export function assertVideoReferenceDataUrl(dataUrl: string): void {
+  if (dataUrl.startsWith("http://") || dataUrl.startsWith("https://")) {
+    return;
+  }
   const match = dataUrl.match(/^data:([^;]+);base64,/i);
   const mime = match?.[1]?.toLowerCase() ?? "";
   if (!VIDEO_MIMES.has(mime)) {

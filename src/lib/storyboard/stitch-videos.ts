@@ -45,6 +45,33 @@ async function runConcat(listFile: string, outFile: string, reencode: boolean) {
   await execFileAsync(ffmpeg, args);
 }
 
+/** Read container duration from an MP4 buffer (seconds, rounded). */
+export async function probeMp4DurationSec(buffer: Buffer): Promise<number | null> {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "storyboard-probe-"));
+  const file = path.join(dir, "probe.mp4");
+  try {
+    await writeFile(file, buffer);
+    const { stderr } = await execFileAsync(ffmpegPath(), [
+      "-i",
+      file,
+      "-f",
+      "null",
+      "-",
+    ]);
+    const output = String(stderr);
+    const match = output.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+    if (!match) return null;
+    const hours = Number.parseInt(match[1]!, 10);
+    const minutes = Number.parseInt(match[2]!, 10);
+    const seconds = Number.parseFloat(match[3]!);
+    return Math.round(hours * 3600 + minutes * 60 + seconds);
+  } catch {
+    return null;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 /** Concatenate MP4 buffers in order into one file. */
 export async function concatMp4Buffers(clips: Buffer[]): Promise<Buffer> {
   if (!clips.length) {

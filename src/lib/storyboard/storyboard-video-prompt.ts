@@ -5,14 +5,21 @@ import type {
   StoryboardScene,
 } from "@/types/storyboard";
 
+export interface StoryboardVideoBatchContext {
+  index: number;
+  total: number;
+}
+
 export function buildStoryboardFullVideoPrompt(options: {
   scenes: StoryboardScene[];
   script: string;
   settings: StoryboardProjectSettings;
   continuity: StoryboardContinuity | null;
   videoDurationSec: number;
+  batch?: StoryboardVideoBatchContext;
 }): string {
-  const { scenes, script, settings, continuity, videoDurationSec } = options;
+  const { scenes, script, settings, continuity, videoDurationSec, batch } =
+    options;
 
   const shotList = scenes
     .map((scene) => {
@@ -36,8 +43,17 @@ export function buildStoryboardFullVideoPrompt(options: {
     })
     .join("\n");
 
+  const batchLead =
+    batch && batch.total > 1
+      ? batch.index === 0
+        ? `This is segment 1 of ${batch.total} in a longer storyboard video. Generate ONE continuous ${videoDurationSec}-second clip covering these ${scenes.length} shots — more segments will be stitched after.`
+        : batch.index === batch.total - 1
+          ? `This is the FINAL segment (${batch.index + 1} of ${batch.total}). Continue seamlessly from the previous segment — same characters, style, and mood. Generate ONE continuous ${videoDurationSec}-second clip for these ${scenes.length} shots.`
+          : `This is segment ${batch.index + 1} of ${batch.total}. Continue seamlessly from the previous segment — match characters, lighting, and pacing. Generate ONE continuous ${videoDurationSec}-second clip for these ${scenes.length} shots.`
+      : `Generate ONE continuous ${videoDurationSec}-second video that plays through ALL ${scenes.length} storyboard shots in order.`;
+
   return [
-    `Generate ONE continuous ${videoDurationSec}-second video that plays through ALL ${scenes.length} storyboard shots in order.`,
+    batchLead,
     `Genre: ${settings.genre}.`,
     script.trim() ? `Script: ${script.trim().slice(0, 800)}` : "",
     continuity?.characters?.trim()
