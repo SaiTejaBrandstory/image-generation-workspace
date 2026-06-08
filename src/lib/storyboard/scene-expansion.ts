@@ -1,8 +1,10 @@
+import { stripBriefMeta } from "@/lib/storyboard/brief-meta";
 import {
   CAMERA_ANGLES,
   CAMERA_MOVEMENTS,
   SHOT_TYPES,
 } from "@/lib/storyboard/constants";
+import { getFrameStyleConfig } from "@/lib/storyboard/frame-styles";
 import { normalizeSceneFields } from "@/lib/storyboard/scene-fields";
 import { distributeDurations } from "@/lib/storyboard/scene-engine";
 import type {
@@ -29,12 +31,14 @@ function buildUniqueBeat(
 ): string {
   const label =
     NARRATIVE_BEAT_LABELS[sceneIndex % NARRATIVE_BEAT_LABELS.length];
-  const snippet = script.trim().slice(0, 140);
-  return `Scene ${sceneIndex + 1} of ${totalScenes} — ${label}. Context: ${snippet}`;
+  const snippet = stripBriefMeta(script).slice(0, 140);
+  return snippet
+    ? `${label}. ${snippet}`
+    : `${label} for scene ${sceneIndex + 1} of ${totalScenes}`;
 }
 
 function buildVisualDescription(beat: string, sceneNumber: number): string {
-  return beat.replace(/^Scene \d+ of \d+ — /, "").trim() || `Moment ${sceneNumber}`;
+  return stripBriefMeta(beat).trim() || `Moment ${sceneNumber}`;
 }
 
 function createSceneFromBeat(
@@ -60,15 +64,17 @@ function createSceneFromBeat(
     visualDescription: visual,
     ...camera,
     characterActions: `Distinct action for scene ${sceneNumber} — advance the story, do not repeat prior shots`,
-    environment: "Context-appropriate environment matching script tone",
+    environment:
+      settings.sceneEnvironment?.trim() ||
+      "Context-appropriate environment matching script tone",
     emotion: index === 0 ? "calm" : "excitement",
     transition: index === 0 ? "fade" : "cut",
     imagePrompt: [
-      `Single storyboard sketch for scene ${sceneNumber}.`,
+      `Storyboard frame for scene ${sceneNumber}.`,
       `Shot: ${visual}`,
       `Camera: ${shotType}.`,
-      `Mood: ${settings.mood || "professional"}.`,
-      "One unique hand-drawn moment — different composition from other scenes.",
+      `Genre: ${settings.genre.replace("-", " ")}.`,
+      `${getFrameStyleConfig(settings.frameStyle).breakdownHint} — different composition from other scenes.`,
     ].join(" "),
     frameStatus: "pending",
   };
@@ -123,7 +129,7 @@ export function dedupeSceneContent(
       visualDescription: buildVisualDescription(beat, index + 1),
       characterActions: `Unique action for scene ${index + 1}`,
       imagePrompt: [
-        scene.imagePrompt.split(".")[0] || "Storyboard sketch",
+        scene.imagePrompt.split(".")[0] || "Storyboard frame",
         `Distinct scene ${index + 1} — ${buildVisualDescription(beat, index + 1)}`,
         "Different camera and action from previous scenes.",
       ].join(". "),

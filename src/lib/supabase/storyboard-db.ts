@@ -1,10 +1,31 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { normalizeFrameStyle } from "@/lib/storyboard/frame-styles";
+import { normalizeFrameCount } from "@/lib/storyboard/script-utils";
 import { getSignedImageUrl } from "@/lib/supabase/storage";
 import type {
   StoryboardContinuity,
   StoryboardProjectSettings,
   StoryboardScene,
 } from "@/types/storyboard";
+
+const DEFAULT_STORYBOARD_SETTINGS: StoryboardProjectSettings = {
+  genre: "commercial",
+  durationSec: 30,
+  frameCount: 6,
+  frameStyle: "sketch",
+  sceneEnvironment: "",
+};
+
+function normalizeStoryboardSettings(
+  raw: Partial<StoryboardProjectSettings> | null | undefined
+): StoryboardProjectSettings {
+  return {
+    ...DEFAULT_STORYBOARD_SETTINGS,
+    ...raw,
+    frameCount: normalizeFrameCount(raw?.frameCount),
+    frameStyle: normalizeFrameStyle(raw?.frameStyle),
+  };
+}
 
 export interface DbStoryboardSceneRow {
   id: string;
@@ -159,7 +180,7 @@ export async function persistStoryboard(
         prompt: payload.script,
         media_type: "storyboard",
         style: "none",
-        platform: payload.settings.platform,
+        platform: "youtube",
         aspect_ratio: "16:9",
         image_model: null,
         params: {},
@@ -244,16 +265,9 @@ export async function loadStoryboardByConversationId(
   );
 
   const out = outputs as DbStoryboardOutputsRow | null;
-  const settings = (out?.settings ?? {
-    genre: "commercial",
-    durationSec: 30,
-    frameCount: 6,
-    targetAudience: "",
-    visualStyle: "",
-    mood: "",
-    brandTone: "",
-    platform: "youtube",
-  }) as StoryboardProjectSettings;
+  const settings = normalizeStoryboardSettings(
+    out?.settings as Partial<StoryboardProjectSettings> | undefined
+  );
 
   let storyboardVideoUrl: string | null = null;
   let storyboardStitchedVideoUrl: string | null = null;

@@ -2,7 +2,6 @@ import type {
   SceneEmotion,
   SceneTransition,
   StoryboardGenre,
-  StoryboardPlatform,
 } from "@/types/storyboard";
 
 export const STORYBOARD_GENRES: {
@@ -29,7 +28,7 @@ export const STORYBOARD_GENRES: {
 export const STORYBOARD_SEC_PER_SCENE = 5;
 export const STORYBOARD_DEFAULT_SCENE_COUNT = 6;
 
-export const STORYBOARD_FRAME_COUNTS = [4, 6] as const;
+export const STORYBOARD_FRAME_COUNTS = [4, 6, 8, 10, 12, 15, 18, 21] as const;
 
 export const DURATION_PRESETS = [
   { label: "15 Seconds", sec: 15 },
@@ -39,14 +38,6 @@ export const DURATION_PRESETS = [
   { label: "90 Seconds", sec: 90 },
   { label: "120 Seconds", sec: 120 },
 ] as const;
-
-export const STORYBOARD_PLATFORMS: { id: StoryboardPlatform; label: string }[] = [
-  { id: "youtube", label: "YouTube" },
-  { id: "instagram", label: "Instagram" },
-  { id: "tiktok", label: "TikTok" },
-  { id: "tv", label: "TV Commercial" },
-  { id: "website", label: "Website" },
-];
 
 export const SHOT_TYPES = [
   "Wide Shot",

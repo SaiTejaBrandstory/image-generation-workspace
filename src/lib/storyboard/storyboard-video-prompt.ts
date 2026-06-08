@@ -1,3 +1,4 @@
+import { getFrameStyleLabel } from "@/lib/storyboard/frame-styles";
 import type {
   StoryboardContinuity,
   StoryboardProjectSettings,
@@ -37,7 +38,7 @@ export function buildStoryboardFullVideoPrompt(options: {
 
   return [
     `Generate ONE continuous ${videoDurationSec}-second video that plays through ALL ${scenes.length} storyboard shots in order.`,
-    `Genre: ${settings.genre}. Mood: ${settings.mood}. Style: ${settings.visualStyle}. Platform: ${settings.platform}.`,
+    `Genre: ${settings.genre}.`,
     script.trim() ? `Script: ${script.trim().slice(0, 800)}` : "",
     continuity?.characters?.trim()
       ? `Characters (consistent throughout): ${continuity.characters.trim()}`
@@ -49,7 +50,7 @@ export function buildStoryboardFullVideoPrompt(options: {
     shotList,
     "The attached opening reference image is shot 1. The closing reference is the final shot.",
     "Additional references guide middle beats. Animate through every listed shot in one uninterrupted edit.",
-    "Match storyboard pencil-sketch character design and cinematic pacing. No on-screen text or graphics.",
+    `Match storyboard ${getFrameStyleLabel(settings.frameStyle).toLowerCase()} character design and cinematic pacing. No on-screen text or graphics.`,
   ]
     .filter(Boolean)
     .join("\n");
@@ -69,7 +70,7 @@ export function buildStoryboardClipPrompt(options: {
 
   const parts = [
     `Storyboard clip — scene ${scene.sceneNumber} of ${totalScenes}.`,
-    `Genre: ${settings.genre}. Mood: ${settings.mood}. Style: ${settings.visualStyle}.`,
+    `Genre: ${settings.genre}.`,
     script.trim() ? `Script context: ${script.trim().slice(0, 400)}` : "",
     scene.voiceover?.trim() ? `Voiceover: ${scene.voiceover.trim()}` : "",
     scene.visualDescription?.trim()
@@ -88,8 +89,8 @@ export function buildStoryboardClipPrompt(options: {
       ? `Characters: ${continuity.characters.trim()}`
       : "",
     hasEndFrame
-      ? "Animate from the opening storyboard frame toward the closing frame. Match pencil sketch style and character design."
-      : "Animate from the opening storyboard frame for this scene beat. Match pencil sketch style.",
+      ? `Animate from the opening storyboard frame toward the closing frame. Match ${getFrameStyleLabel(settings.frameStyle).toLowerCase()} style and character design.`
+      : `Animate from the opening storyboard frame for this scene beat. Match ${getFrameStyleLabel(settings.frameStyle).toLowerCase()} style.`,
     "Cinematic motion, natural pacing, no on-screen text or graphics.",
   ];
 

@@ -3,6 +3,7 @@
 import { create } from "zustand";
 import { getAnchorFrameUrl } from "@/lib/storyboard/continuity";
 import { pickStoryboardVideoDuration } from "@/lib/storyboard/storyboard-video";
+import { normalizeFrameStyle } from "@/lib/storyboard/frame-styles";
 import { normalizeFrameCount } from "@/lib/storyboard/script-utils";
 import {
   estimateVideoGenerationMs,
@@ -36,11 +37,8 @@ const DEFAULT_SETTINGS: StoryboardProjectSettings = {
   genre: "commercial",
   durationSec: 30,
   frameCount: 6,
-  targetAudience: "",
-  visualStyle: "Premium cinematic",
-  mood: "Confident",
-  brandTone: "Professional",
-  platform: "youtube",
+  frameStyle: "sketch",
+  sceneEnvironment: "",
 };
 
 interface StoryboardState {
@@ -52,6 +50,8 @@ interface StoryboardState {
   selectedSceneId: string | null;
   viewMode: StoryboardViewMode;
   isBreakingDown: boolean;
+  isInferringEnvironment: boolean;
+  isGeneratingScript: boolean;
   isGeneratingFrames: boolean;
   generationProgress: number;
   isGeneratingVideo: boolean;
@@ -80,8 +80,10 @@ interface StoryboardState {
 
   setStep: (step: StoryboardWizardStep) => void;
   nextStep: () => void;
+  goToProjectSettings: () => Promise<void>;
   prevStep: () => void;
   setScript: (script: string) => void;
+  generateScriptWithAi: () => Promise<void>;
   patchSettings: (patch: Partial<StoryboardProjectSettings>) => void;
   setSelectedSceneId: (id: string | null) => void;
   setViewMode: (mode: StoryboardViewMode) => void;
@@ -140,6 +142,8 @@ function scenesForDraft(scenes: StoryboardScene[]): StoryboardScene[] {
       scene.frameImageUrl?.startsWith("data:") ? undefined : scene.frameImageUrl,
   }));
 }
+
+let sceneEditSyncTimer: ReturnType<typeof setTimeout> | null = null;
 
 export const useStoryboardStore = create<StoryboardState>((set, get) => {
   const syncStoryboardToHistory = async () => {
@@ -223,6 +227,8 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
   selectedSceneId: null,
   viewMode: "grid",
   isBreakingDown: false,
+  isInferringEnvironment: false,
+  isGeneratingScript: false,
   isGeneratingFrames: false,
   generationProgress: 0,
   isGeneratingVideo: false,
@@ -258,6 +264,47 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
     if (step < 4) set({ step: (step + 1) as StoryboardWizardStep, error: null });
     get().saveDraft();
   },
+  goToProjectSettings: async () => {
+    if (get().wizardLocked) return;
+    const script = get().script.trim();
+    if (!script) {
+      set({ error: "Enter a script before continuing." });
+      return;
+    }
+    set({ isInferringEnvironment: true, error: null });
+    try {
+      const res = await fetch("/api/storyboard/infer-environment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ script }),
+      });
+      const data = (await res.json()) as { sceneEnvironment?: string; error?: string };
+      if (!res.ok) {
+        throw new Error(data.error ?? "Failed to infer scene environment");
+      }
+      set((s) => ({
+        settings: {
+          ...s.settings,
+          sceneEnvironment: data.sceneEnvironment?.trim() ?? "",
+        },
+        step: 2,
+      }));
+      get().saveDraft();
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : "Failed to infer scene environment";
+      set((s) => ({
+        settings: { ...s.settings, sceneEnvironment: "" },
+        step: 2,
+        error: `${message} You can fill in scene environment manually below.`,
+      }));
+      get().saveDraft();
+    } finally {
+      set({ isInferringEnvironment: false });
+    }
+  },
   prevStep: () => {
     if (get().wizardLocked) return;
     const step = get().step;
@@ -269,8 +316,53 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
     get().saveDraft();
   },
 
+  generateScriptWithAi: async () => {
+    set({ isGeneratingScript: true, error: null });
+    try {
+      const res = await fetch("/api/storyboard/generate-script", {
+        method: "POST",
+      });
+      const data = (await res.json()) as { script?: string; error?: string };
+      if (!res.ok) {
+        throw new Error(data.error ?? "Failed to generate script");
+      }
+      const script = data.script?.trim();
+      if (!script) {
+        throw new Error("AI returned an empty script. Please try again.");
+      }
+      set({ script });
+      get().saveDraft();
+    } catch (err) {
+      set({
+        error:
+          err instanceof Error ? err.message : "Failed to generate script",
+      });
+    } finally {
+      set({ isGeneratingScript: false });
+    }
+  },
+
   patchSettings: (patch) => {
-    set((s) => ({ settings: { ...s.settings, ...patch } }));
+    set((s) => {
+      const settings = {
+        ...s.settings,
+        ...patch,
+        ...(patch.frameStyle !== undefined
+          ? { frameStyle: normalizeFrameStyle(patch.frameStyle) }
+          : {}),
+        ...(patch.frameCount !== undefined
+          ? { frameCount: normalizeFrameCount(patch.frameCount) }
+          : {}),
+      };
+      const scenes =
+        patch.sceneEnvironment !== undefined && s.scenes.length
+          ? s.scenes.map((scene) => ({
+              ...scene,
+              environment: settings.sceneEnvironment,
+            }))
+          : s.scenes;
+      return { settings, scenes };
+    });
     get().saveDraft();
   },
 
@@ -292,12 +384,22 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
       ),
     }));
     get().saveDraft();
+    const { wizardLocked, conversationId } = get();
+    if (wizardLocked && conversationId) {
+      if (sceneEditSyncTimer) clearTimeout(sceneEditSyncTimer);
+      sceneEditSyncTimer = setTimeout(() => {
+        sceneEditSyncTimer = null;
+        void syncStoryboardToHistory();
+      }, 1500);
+    }
   },
 
   addScene: () => {
     get().pushHistory();
     set((s) => {
-      const next = [...s.scenes, createEmptyScene(s.scenes.length + 1)];
+      const empty = createEmptyScene(s.scenes.length + 1);
+      empty.environment = s.settings.sceneEnvironment;
+      const next = [...s.scenes, empty];
       return {
         scenes: renumberScenes(next),
         selectedSceneId: next[next.length - 1]?.id ?? null,
@@ -524,9 +626,9 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
           visualDescription: current.visualDescription,
           cameraDirection: current.cameraDirection,
           characterActions: current.characterActions,
-          environment: current.environment,
+          environment: settings.sceneEnvironment || current.environment,
           genre: settings.genre,
-          visualStyle: settings.visualStyle,
+          frameStyle: settings.frameStyle,
           continuity,
           referenceFrameUrl,
         }),
@@ -1008,7 +1110,12 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
         conversationId: loaded.conversationId,
         wizardLocked: loaded.wizardLocked,
         script: loaded.script,
-        settings: loaded.settings,
+        settings: {
+          ...DEFAULT_SETTINGS,
+          ...loaded.settings,
+          frameCount: normalizeFrameCount(loaded.settings.frameCount),
+          frameStyle: normalizeFrameStyle(loaded.settings.frameStyle),
+        },
         continuity: loaded.continuity,
         scenes: loaded.scenes,
         step: 4,
@@ -1085,6 +1192,8 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
       selectedSceneId: null,
       viewMode: "grid",
       isBreakingDown: false,
+      isInferringEnvironment: false,
+      isGeneratingScript: false,
       isGeneratingFrames: false,
       generationProgress: 0,
       isGeneratingVideo: false,
@@ -1137,6 +1246,9 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
           ...draft.settings,
           frameCount: normalizeFrameCount(
             (draft.settings as StoryboardProjectSettings | undefined)?.frameCount
+          ),
+          frameStyle: normalizeFrameStyle(
+            (draft.settings as StoryboardProjectSettings | undefined)?.frameStyle
           ),
         },
         continuity: draft.continuity ?? null,

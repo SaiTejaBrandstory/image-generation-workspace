@@ -6,7 +6,11 @@ import {
   isPersistableImageUrl,
   uploadGenerationImage,
 } from "@/lib/supabase/storage";
-import type { StoryboardContinuity, StoryboardGenre } from "@/types/storyboard";
+import type {
+  StoryboardContinuity,
+  StoryboardFrameStyle,
+  StoryboardGenre,
+} from "@/types/storyboard";
 
 export const maxDuration = 120;
 
@@ -20,6 +24,7 @@ interface GenerateFrameBody {
   characterActions?: string;
   environment?: string;
   genre?: StoryboardGenre;
+  frameStyle?: StoryboardFrameStyle;
   visualStyle?: string;
   continuity?: StoryboardContinuity | null;
   referenceFrameUrl?: string;
@@ -61,6 +66,7 @@ export async function POST(request: NextRequest) {
       characterActions: body.characterActions,
       environment: body.environment,
       genre: body.genre,
+      frameStyle: body.frameStyle,
       visualStyle: body.visualStyle,
       continuity: body.continuity,
       referenceFrameUrl: body.referenceFrameUrl,

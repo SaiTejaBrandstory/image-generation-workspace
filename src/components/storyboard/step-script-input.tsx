@@ -1,7 +1,6 @@
 "use client";
 
-import { useCallback, useRef } from "react";
-import { Clapperboard, FileUp, Loader2, Sparkles } from "lucide-react";
+import { Clapperboard, Loader2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { STORYBOARD_SAMPLE_PROMPTS } from "@/lib/storyboard/sample-prompts";
 import { countWords, detectScriptLanguage } from "@/lib/storyboard/script-utils";
@@ -17,14 +16,14 @@ function StatPill({ children }: { children: React.ReactNode }) {
 }
 
 export function StepScriptInput() {
-  const fileRef = useRef<HTMLInputElement>(null);
   const {
     script,
     settings,
     setScript,
-    nextStep,
-    generateBreakdown,
-    isBreakingDown,
+    generateScriptWithAi,
+    goToProjectSettings,
+    isInferringEnvironment,
+    isGeneratingScript,
     error,
   } = useStoryboardStore();
 
@@ -33,29 +32,6 @@ export function StepScriptInput() {
   const sceneEstimate = settings.frameCount ?? 6;
   const language = detectScriptLanguage(script);
   const hasScript = Boolean(script.trim());
-
-  const onFile = useCallback(
-    async (file: File) => {
-      if (file.type === "text/plain" || file.name.endsWith(".txt")) {
-        setScript(await file.text());
-        return;
-      }
-      setScript(
-        (useStoryboardStore.getState().script || "") +
-          `\n[Uploaded ${file.name} — paste text manually for PDF/DOCX for now]`
-      );
-    },
-    [setScript]
-  );
-
-  const onDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      const file = e.dataTransfer.files[0];
-      if (file) void onFile(file);
-    },
-    [onFile]
-  );
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-8 py-2 sm:py-6">
@@ -68,8 +44,8 @@ export function StepScriptInput() {
             Create New Storyboard
           </h1>
           <p className="mx-auto max-w-md text-sm leading-relaxed text-foreground-muted">
-            Describe your idea in a sentence or paste a full script — we&apos;ll
-            build the scene breakdown for you.
+            Describe your video idea in a few lines — scene breakdown, voiceover,
+            and shots are generated in the next steps.
           </p>
         </div>
       </div>
@@ -84,6 +60,7 @@ export function StepScriptInput() {
               key={sample.id}
               type="button"
               onClick={() => setScript(sample.prompt)}
+              style={{ cursor: "pointer" }}
               className={cn(
                 "rounded-md border px-4 py-2 text-xs font-medium transition-all",
                 script === sample.prompt
@@ -98,8 +75,6 @@ export function StepScriptInput() {
       </div>
 
       <div
-        onDragOver={(e) => e.preventDefault()}
-        onDrop={onDrop}
         className={cn(
           "overflow-hidden rounded-lg border border-border bg-surface-elevated/90",
           "shadow-[0_12px_40px_rgba(0,0,0,0.08)] ring-1 ring-inset ring-white/[0.06]",
@@ -113,32 +88,28 @@ export function StepScriptInput() {
           placeholder="Describe your video in a few lines…&#10;&#10;e.g. 30-second running shoe ad, rainy city streets at night, energetic mood"
           className="min-h-[220px] w-full resize-y bg-transparent px-5 py-5 text-sm leading-relaxed outline-none placeholder:text-foreground-muted/50"
         />
-        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border/70 bg-background/30 px-4 py-3">
-          <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/70 bg-background/30 px-4 py-3">
+          <div className="flex flex-wrap items-center gap-1.5">
             <StatPill>{charCount.toLocaleString()} chars</StatPill>
             <StatPill>{wordCount.toLocaleString()} words</StatPill>
             <StatPill>~{sceneEstimate} scenes</StatPill>
             {hasScript && <StatPill>{language}</StatPill>}
           </div>
-          <button
+          <Button
             type="button"
-            onClick={() => fileRef.current?.click()}
-            className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-medium text-accent-orange transition-colors hover:bg-accent-orange/8"
+            variant="outline"
+            size="sm"
+            onClick={() => void generateScriptWithAi()}
+            disabled={isGeneratingScript || isInferringEnvironment}
+            className="shrink-0 border-accent-orange/30 text-accent-orange hover:bg-accent-orange/10 hover:text-accent-orange"
           >
-            <FileUp className="h-3.5 w-3.5" />
-            Upload file
-          </button>
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".txt,.pdf,.doc,.docx,text/plain"
-            className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) void onFile(file);
-              e.target.value = "";
-            }}
-          />
+            {isGeneratingScript ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="h-3.5 w-3.5" />
+            )}
+            {isGeneratingScript ? "Generating…" : "Generate with AI"}
+          </Button>
         </div>
       </div>
 
@@ -148,30 +119,17 @@ export function StepScriptInput() {
         </p>
       )}
 
-      <div className="flex flex-col-reverse gap-2.5 sm:flex-row sm:justify-end">
+      <div className="mt-4 flex justify-end">
         <Button
-          variant="outline"
-          onClick={nextStep}
-          disabled={!hasScript}
-          className="w-full sm:w-auto"
+          variant="primary"
+          onClick={() => void goToProjectSettings()}
+          disabled={!hasScript || isInferringEnvironment || isGeneratingScript}
+          className="w-full bg-accent-orange text-white shadow-[0_4px_24px_rgba(251,146,60,0.25)] hover:bg-accent-orange/90 sm:w-auto"
         >
-          Configure project
-        </Button>
-        <Button
-          onClick={() => void generateBreakdown()}
-          disabled={!hasScript || isBreakingDown}
-          className={cn(
-            "w-full border-0 sm:w-auto",
-            "bg-accent-orange text-white shadow-[0_4px_24px_rgba(251,146,60,0.25)]",
-            "hover:bg-accent-orange/90 disabled:opacity-50"
-          )}
-        >
-          {isBreakingDown ? (
+          {isInferringEnvironment ? (
             <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <Sparkles className="h-4 w-4" />
-          )}
-          Generate Scene Breakdown
+          ) : null}
+          {isInferringEnvironment ? "Analyzing script…" : "Configure project"}
         </Button>
       </div>
     </div>

@@ -1,4 +1,6 @@
+import { stripBriefMeta, stripOpeningBoilerplate } from "@/lib/storyboard/brief-meta";
 import { CAMERA_ANGLES, CAMERA_MOVEMENTS, SHOT_TYPES } from "@/lib/storyboard/constants";
+import { getFrameStyleConfig } from "@/lib/storyboard/frame-styles";
 import { normalizeSceneFields } from "@/lib/storyboard/scene-fields";
 import {
   getTargetSceneCount,
@@ -28,12 +30,13 @@ function buildImagePrompt(
   sceneNumber: number,
   camera: string
 ): string {
+  const styleHint = getFrameStyleConfig(settings.frameStyle).breakdownHint;
   return [
-    `Single storyboard sketch panel for scene ${sceneNumber}.`,
+    `Storyboard frame for scene ${sceneNumber}.`,
     `Shot: ${beat}`,
     `Camera: ${camera}.`,
-    `Setting tone: ${settings.mood || "neutral"} ${settings.genre.replace("-", " ")} production.`,
-    "One simple hand-drawn pencil sketch of this single moment — not a collage or ad layout.",
+    `Setting tone: ${settings.genre.replace("-", " ")} production.`,
+    `${styleHint} — not a collage or ad layout.`,
   ].join(" ");
 }
 
@@ -54,20 +57,30 @@ export function generateScenesFromScript(
       cameraAngle: CAMERA_ANGLES[index % CAMERA_ANGLES.length],
       cameraMovement: CAMERA_MOVEMENTS[index % CAMERA_MOVEMENTS.length],
     });
+    const narrativeBeat = stripBriefMeta(
+      beat.replace(/^[^:]+:\s*/, "").trim() || beat
+    );
+    const voiceover =
+      sceneNumber === 1
+        ? narrativeBeat
+        : stripOpeningBoilerplate(narrativeBeat);
+    const visualDescription = voiceover;
     return {
       id: crypto.randomUUID(),
       sceneNumber,
       durationSec: durations[index] ?? 3,
-      voiceover: beat,
-      visualDescription: beat.replace(/^[^:]+:\s*/, "").trim() || beat.slice(0, 120),
+      voiceover,
+      visualDescription,
       ...camera,
       characterActions: "Subject performs key action described in voiceover",
-      environment: settings.genre === "real-estate"
-        ? "Modern interior / architectural setting"
-        : "Context-appropriate environment matching script tone",
+      environment:
+        settings.sceneEnvironment?.trim() ||
+        (settings.genre === "real-estate"
+          ? "Modern interior / architectural setting"
+          : "Context-appropriate environment matching script tone"),
       emotion: index === 0 ? "calm" : index === beats.length - 1 ? "hope" : "excitement",
       transition: index === 0 ? "fade" : "cut",
-      imagePrompt: buildImagePrompt(beat, settings, sceneNumber, shotType),
+      imagePrompt: buildImagePrompt(voiceover, settings, sceneNumber, shotType),
       frameStatus: "pending" as const,
     };
   });

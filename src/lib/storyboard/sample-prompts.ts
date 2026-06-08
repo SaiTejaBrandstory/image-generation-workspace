@@ -9,13 +9,13 @@ export const STORYBOARD_SAMPLE_PROMPTS: StoryboardSamplePrompt[] = [
     id: "running-shoe",
     label: "Running shoe ad",
     prompt:
-      "30-second running shoe commercial. Athlete sprints through rainy city streets at night. Close-ups on shoes hitting wet pavement. Ends on a rooftop at sunrise, energetic and cinematic.",
+      "Running shoe commercial. Athlete sprints through rainy city streets at night. Close-ups on shoes hitting wet pavement. Ends on a rooftop at sunrise, energetic and cinematic.",
   },
   {
     id: "saas-explainer",
     label: "SaaS explainer",
     prompt:
-      "45-second SaaS product explainer. A marketer is overwhelmed by messy tabs, then discovers a clean dashboard. Team celebrates on a video call. Ends with a confident launch-ready moment.",
+      "SaaS product explainer. A marketer is overwhelmed by messy tabs, then discovers a clean dashboard. Team celebrates on a video call. Ends with a confident launch-ready moment.",
   },
   {
     id: "coffee-brand",

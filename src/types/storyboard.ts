@@ -15,13 +15,6 @@ export type StoryboardGenre =
   | "healthcare"
   | "education";
 
-export type StoryboardPlatform =
-  | "youtube"
-  | "instagram"
-  | "tiktok"
-  | "tv"
-  | "website";
-
 export type StoryboardViewMode = "grid" | "filmstrip" | "presentation" | "timeline";
 
 export type SceneTransition =
@@ -44,18 +37,31 @@ export type SceneEmotion =
 
 export type FrameStatus = "pending" | "generating" | "complete" | "error";
 
-export type StoryboardFrameCount = 4 | 6;
+export type StoryboardFrameCount = 4 | 6 | 8 | 10 | 12 | 15 | 18 | 21;
+
+export type StoryboardFrameStyle =
+  | "sketch"
+  | "cinematic"
+  | "illustrated"
+  | "photorealistic"
+  | "anime"
+  | "comic"
+  | "watercolor"
+  | "cgi"
+  | "noir"
+  | "minimalist"
+  | "vintage"
+  | "pixel-art";
 
 export interface StoryboardProjectSettings {
   genre: StoryboardGenre;
   durationSec: number;
-  /** Number of storyboard keyframes to generate (4 or 6). */
+  /** Number of storyboard keyframes to generate. */
   frameCount: StoryboardFrameCount;
-  targetAudience: string;
-  visualStyle: string;
-  mood: string;
-  brandTone: string;
-  platform: StoryboardPlatform;
+  /** Visual style for generated storyboard frame images. */
+  frameStyle: StoryboardFrameStyle;
+  /** Global setting/location for every storyboard frame. */
+  sceneEnvironment: string;
 }
 
 /** Locked visual bible — same characters, locations, and sketch style in every frame. */

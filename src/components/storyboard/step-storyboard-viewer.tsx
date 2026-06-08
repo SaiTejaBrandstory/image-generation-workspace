@@ -8,19 +8,28 @@ import {
   ChevronUp,
   ClipboardList,
   Download,
+  Expand,
   Film,
   Grid3X3,
   LayoutGrid,
   Loader2,
   MonitorPlay,
   RefreshCw,
-  Sparkles,
   Timer,
   Video,
   Layers,
 } from "lucide-react";
+import { StoryboardSceneEditDialog } from "@/components/storyboard/storyboard-scene-edit-dialog";
 import { StoryboardVideoPlayer } from "@/components/storyboard/storyboard-video-player";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { downloadImage } from "@/lib/download-utils";
 import { exportStoryboardPdf } from "@/lib/storyboard/export";
 import { SCENE_TRANSITIONS } from "@/lib/storyboard/constants";
 import { isPendingVideoForConversation } from "@/lib/storyboard/pending-video";
@@ -93,7 +102,8 @@ export function StepStoryboardViewer() {
 
   const [presentationIndex, setPresentationIndex] = useState(0);
   const [expandedDetailsId, setExpandedDetailsId] = useState<string | null>(null);
-  const [expandedPromptId, setExpandedPromptId] = useState<string | null>(null);
+  const [editSceneId, setEditSceneId] = useState<string | null>(null);
+  const [previewSceneId, setPreviewSceneId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [exportPdfError, setExportPdfError] = useState<string | null>(null);
@@ -147,6 +157,16 @@ export function StepStoryboardViewer() {
   };
 
   const presentationScene = scenes[presentationIndex];
+  const previewSceneIndex =
+    previewSceneId !== null
+      ? scenes.findIndex((s) => s.id === previewSceneId)
+      : -1;
+  const previewScene =
+    previewSceneIndex >= 0 ? scenes[previewSceneIndex] : null;
+  const editScene = useMemo(
+    () => scenes.find((s) => s.id === editSceneId) ?? null,
+    [scenes, editSceneId]
+  );
 
   const showVideoSection =
     wizardLocked || isGeneratingVideo || Boolean(storyboardVideoUrl);
@@ -257,15 +277,8 @@ export function StepStoryboardViewer() {
                     id === scene.id ? null : scene.id
                   )
                 }
-                expandedPrompt={expandedPromptId === scene.id}
-                onTogglePrompt={() =>
-                  setExpandedPromptId((id) =>
-                    id === scene.id ? null : scene.id
-                  )
-                }
-                onPromptChange={(prompt) =>
-                  updateScene(scene.id, { imagePrompt: prompt })
-                }
+                onEditScene={() => setEditSceneId(scene.id)}
+                onPreview={() => setPreviewSceneId(scene.id)}
                 onRegenerate={() => handleRegenerateOne(scene.id)}
                 isRegenerating={scene.frameStatus === "generating"}
                 actionsDisabled={anyFrameGenerating}
@@ -288,15 +301,8 @@ export function StepStoryboardViewer() {
                       id === scene.id ? null : scene.id
                     )
                   }
-                  expandedPrompt={expandedPromptId === scene.id}
-                  onTogglePrompt={() =>
-                    setExpandedPromptId((id) =>
-                      id === scene.id ? null : scene.id
-                    )
-                  }
-                  onPromptChange={(prompt) =>
-                    updateScene(scene.id, { imagePrompt: prompt })
-                  }
+                  onEditScene={() => setEditSceneId(scene.id)}
+                  onPreview={() => setPreviewSceneId(scene.id)}
                   onRegenerate={() => handleRegenerateOne(scene.id)}
                   isRegenerating={scene.frameStatus === "generating"}
                   actionsDisabled={anyFrameGenerating}
@@ -319,15 +325,8 @@ export function StepStoryboardViewer() {
                   id === presentationScene.id ? null : presentationScene.id
                 )
               }
-              expandedPrompt={expandedPromptId === presentationScene.id}
-              onTogglePrompt={() =>
-                setExpandedPromptId((id) =>
-                  id === presentationScene.id ? null : presentationScene.id
-                )
-              }
-              onPromptChange={(prompt) =>
-                updateScene(presentationScene.id, { imagePrompt: prompt })
-              }
+              onEditScene={() => setEditSceneId(presentationScene.id)}
+              onPreview={() => setPreviewSceneId(presentationScene.id)}
               onRegenerate={() => handleRegenerateOne(presentationScene.id)}
               isRegenerating={presentationScene.frameStatus === "generating"}
               actionsDisabled={anyFrameGenerating}
@@ -389,15 +388,8 @@ export function StepStoryboardViewer() {
                       id === scene.id ? null : scene.id
                     )
                   }
-                  expandedPrompt={expandedPromptId === scene.id}
-                  onTogglePrompt={() =>
-                    setExpandedPromptId((id) =>
-                      id === scene.id ? null : scene.id
-                    )
-                  }
-                  onPromptChange={(prompt) =>
-                    updateScene(scene.id, { imagePrompt: prompt })
-                  }
+                  onEditScene={() => setEditSceneId(scene.id)}
+                  onPreview={() => setPreviewSceneId(scene.id)}
                   onRegenerate={() => handleRegenerateOne(scene.id)}
                   isRegenerating={scene.frameStatus === "generating"}
                   actionsDisabled={anyFrameGenerating}
@@ -656,6 +648,33 @@ export function StepStoryboardViewer() {
           New storyboard
         </Button>
       </div>
+
+      <StoryboardFramePreviewDialog
+        scenes={scenes}
+        scene={previewScene}
+        sceneIndex={previewSceneIndex}
+        open={previewSceneId !== null}
+        onOpenChange={(open) => {
+          if (!open) setPreviewSceneId(null);
+        }}
+        onNavigate={(sceneId) => setPreviewSceneId(sceneId)}
+      />
+
+      <StoryboardSceneEditDialog
+        scene={editScene}
+        open={editSceneId !== null}
+        onOpenChange={(open) => {
+          if (!open) setEditSceneId(null);
+        }}
+        onUpdate={(patch) => {
+          if (editSceneId) updateScene(editSceneId, patch);
+        }}
+        onRegenerate={() => {
+          if (editSceneId) handleRegenerateOne(editSceneId);
+        }}
+        isRegenerating={editScene?.frameStatus === "generating"}
+        actionsDisabled={anyFrameGenerating}
+      />
     </div>
   );
 }
@@ -689,15 +708,171 @@ function FrameDetailRow({
   );
 }
 
+const frameImageActionClass =
+  "flex h-8 w-8 items-center justify-center rounded-lg bg-black/60 text-white backdrop-blur-md transition-colors hover:bg-black/80 disabled:cursor-not-allowed disabled:opacity-60";
+
+function StoryboardFramePreviewDialog({
+  scenes,
+  scene,
+  sceneIndex,
+  open,
+  onOpenChange,
+  onNavigate,
+}: {
+  scenes: StoryboardScene[];
+  scene: StoryboardScene | null;
+  sceneIndex: number;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onNavigate: (sceneId: string) => void;
+}) {
+  const [downloading, setDownloading] = useState(false);
+  const previewableSceneIds = useMemo(
+    () => scenes.filter((s) => s.frameImageUrl).map((s) => s.id),
+    [scenes]
+  );
+  const previewSlot = scene ? previewableSceneIds.indexOf(scene.id) : -1;
+  const canGoPrevious = previewSlot > 0;
+  const canGoNext =
+    previewSlot >= 0 && previewSlot < previewableSceneIds.length - 1;
+
+  const goPrevious = () => {
+    const prevId = previewableSceneIds[previewSlot - 1];
+    if (prevId) onNavigate(prevId);
+  };
+
+  const goNext = () => {
+    const nextId = previewableSceneIds[previewSlot + 1];
+    if (nextId) onNavigate(nextId);
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "ArrowLeft" && previewSlot > 0) {
+        e.preventDefault();
+        const prevId = previewableSceneIds[previewSlot - 1];
+        if (prevId) onNavigate(prevId);
+      }
+      if (
+        e.key === "ArrowRight" &&
+        previewSlot >= 0 &&
+        previewSlot < previewableSceneIds.length - 1
+      ) {
+        e.preventDefault();
+        const nextId = previewableSceneIds[previewSlot + 1];
+        if (nextId) onNavigate(nextId);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, previewSlot, previewableSceneIds, onNavigate]);
+
+  const handleDownload = async () => {
+    if (!scene?.frameImageUrl) return;
+    setDownloading(true);
+    try {
+      await downloadImage(
+        scene.frameImageUrl,
+        `storyboard-scene-${String(scene.sceneNumber).padStart(2, "0")}`
+      );
+    } catch (err) {
+      console.error("Frame download failed:", err);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  if (!scene) return null;
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="flex w-[min(960px,calc(100vw-2rem))] max-h-[min(90vh,880px)] flex-col gap-0 overflow-hidden p-0">
+        <DialogHeader className="shrink-0 border-b border-border/60 px-6 pb-4 pt-6">
+          <div className="flex items-center justify-between gap-3 pr-8">
+            <DialogTitle>
+              Scene {String(scene.sceneNumber).padStart(2, "0")} preview
+            </DialogTitle>
+            <span className="text-xs tabular-nums text-foreground-muted">
+              {previewSlot >= 0 ? previewSlot + 1 : sceneIndex + 1} /{" "}
+              {previewableSceneIds.length || scenes.length}
+            </span>
+          </div>
+          <DialogDescription className="sr-only">
+            Full-size storyboard frame preview. Use arrow keys or on-screen
+            buttons to move between scenes.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="relative min-h-0 flex-1 bg-black/90">
+          <button
+            type="button"
+            onClick={goPrevious}
+            disabled={!canGoPrevious}
+            className={cn(
+              "absolute left-3 top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/60 text-white backdrop-blur-md transition-colors hover:bg-black/80 disabled:cursor-not-allowed disabled:opacity-30",
+              canGoPrevious && "cursor-pointer"
+            )}
+            aria-label="Previous scene"
+          >
+            <ChevronLeft className="h-5 w-5" />
+          </button>
+          <button
+            type="button"
+            onClick={goNext}
+            disabled={!canGoNext}
+            className={cn(
+              "absolute right-3 top-1/2 z-10 flex h-10 w-10 -translate-y-1/2 items-center justify-center rounded-full bg-black/60 text-white backdrop-blur-md transition-colors hover:bg-black/80 disabled:cursor-not-allowed disabled:opacity-30",
+              canGoNext && "cursor-pointer"
+            )}
+            aria-label="Next scene"
+          >
+            <ChevronRight className="h-5 w-5" />
+          </button>
+          <div className="flex min-h-[min(60vh,520px)] items-center justify-center overflow-auto p-4 px-14">
+            {scene.frameImageUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={scene.frameImageUrl}
+                alt={`Scene ${scene.sceneNumber} storyboard frame`}
+                className="max-h-[min(75vh,720px)] w-full object-contain"
+              />
+            ) : (
+              <p className="text-sm text-foreground-muted">No frame image yet</p>
+            )}
+          </div>
+          {scene.frameImageUrl && (
+            <div className="absolute bottom-3 right-3 z-10">
+              <button
+                type="button"
+                onClick={() => void handleDownload()}
+                disabled={downloading}
+                className={frameImageActionClass}
+                style={{ cursor: "pointer" }}
+                title="Download frame"
+                aria-label="Download frame"
+              >
+                {downloading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Download className="h-4 w-4" />
+                )}
+              </button>
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function StoryboardFrameCard({
   scene,
   selected,
   onSelect,
   detailsOpen,
   onToggleDetails,
-  expandedPrompt,
-  onTogglePrompt,
-  onPromptChange,
+  onEditScene,
+  onPreview,
   onRegenerate,
   isRegenerating,
   actionsDisabled,
@@ -709,22 +884,35 @@ function StoryboardFrameCard({
   onSelect: () => void;
   detailsOpen: boolean;
   onToggleDetails: () => void;
-  expandedPrompt: boolean;
-  onTogglePrompt: () => void;
-  onPromptChange: (prompt: string) => void;
+  onEditScene: () => void;
+  onPreview: () => void;
   onRegenerate: () => void;
   isRegenerating: boolean;
   actionsDisabled: boolean;
   compact?: boolean;
   large?: boolean;
 }) {
+  const [downloading, setDownloading] = useState(false);
   const camera = normalizeSceneFields(scene);
-  const actionNotes = [scene.characterActions, scene.visualDescription]
-    .filter(Boolean)
-    .join(" · ");
   const transitionLabel =
     SCENE_TRANSITIONS.find((t) => t.id === scene.transition)?.label ??
     scene.transition;
+  const hasFrame = Boolean(scene.frameImageUrl);
+
+  const handleDownload = async () => {
+    if (!scene.frameImageUrl) return;
+    setDownloading(true);
+    try {
+      await downloadImage(
+        scene.frameImageUrl,
+        `storyboard-scene-${String(scene.sceneNumber).padStart(2, "0")}`
+      );
+    } catch (err) {
+      console.error("Frame download failed:", err);
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   return (
     <article
@@ -802,6 +990,41 @@ function StoryboardFrameCard({
             className={cn("h-3.5 w-3.5", isRegenerating && "animate-spin")}
           />
         </button>
+        {hasFrame && (
+          <div className="absolute bottom-2 right-2 z-10 flex gap-1.5">
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onPreview();
+              }}
+              className={frameImageActionClass}
+              style={{ cursor: "pointer" }}
+              title="Preview frame"
+              aria-label="Preview frame"
+            >
+              <Expand className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                void handleDownload();
+              }}
+              disabled={downloading}
+              className={frameImageActionClass}
+              style={{ cursor: "pointer" }}
+              title="Download frame"
+              aria-label="Download frame"
+            >
+              {downloading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Download className="h-4 w-4" />
+              )}
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="space-y-2 border-t border-border/60 p-3">
@@ -829,15 +1052,10 @@ function StoryboardFrameCard({
         <div className="flex items-center justify-between gap-2 pt-0.5">
           <button
             type="button"
-            onClick={onTogglePrompt}
-            className={cn(
-              "inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-[11px] font-medium transition-colors",
-              expandedPrompt
-                ? "bg-accent-orange/10 text-accent-orange"
-                : "bg-surface-hover text-foreground-muted hover:text-foreground"
-            )}
+            onClick={onEditScene}
+            className="inline-flex items-center gap-1 rounded-md bg-surface-hover px-2.5 py-1.5 text-[11px] font-medium text-foreground-muted transition-colors hover:text-foreground"
           >
-            {expandedPrompt ? "Hide AI prompt" : "Edit AI prompt"}
+            Edit scene
           </button>
           <button
             type="button"
@@ -869,54 +1087,17 @@ function StoryboardFrameCard({
             />
             <FrameDetailRow label="Dialogue / VO" value={scene.voiceover} />
             <FrameDetailRow
-              label="Action / Notes"
-              value={actionNotes}
+              label="Character actions"
+              value={scene.characterActions}
+            />
+            <FrameDetailRow
+              label="Visual description"
+              value={scene.visualDescription}
               isLast
             />
           </div>
         )}
 
-        {expandedPrompt && (
-          <div className="space-y-2">
-            <textarea
-              rows={4}
-              value={scene.imagePrompt}
-              onChange={(e) => onPromptChange(e.target.value)}
-              placeholder="Describe the sketch frame for the AI…"
-              className="w-full resize-y rounded-md border border-border bg-background px-2.5 py-2 text-xs leading-relaxed outline-none focus:border-accent-orange/40"
-            />
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-[10px] text-foreground-muted">
-                Edit prompt, then regenerate to apply
-              </p>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onRegenerate();
-                }}
-                disabled={
-                  isRegenerating ||
-                  actionsDisabled ||
-                  !scene.imagePrompt.trim()
-                }
-                className={cn(
-                  "inline-flex items-center gap-1 rounded-md px-2.5 py-1.5 text-[11px] font-medium transition-colors",
-                  isRegenerating || actionsDisabled || !scene.imagePrompt.trim()
-                    ? "cursor-not-allowed bg-surface-hover text-foreground-muted/50"
-                    : "bg-accent-orange text-white hover:bg-accent-orange/90"
-                )}
-              >
-                {isRegenerating ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                ) : (
-                  <Sparkles className="h-3 w-3" />
-                )}
-                Regenerate frame
-              </button>
-            </div>
-          </div>
-        )}
       </div>
     </article>
   );

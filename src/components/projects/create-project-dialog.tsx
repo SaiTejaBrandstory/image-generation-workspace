@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -61,6 +62,9 @@ export function CreateProjectDialog({
           <DialogTitle className="text-xl font-semibold tracking-tight">
             Create a project
           </DialogTitle>
+          <DialogDescription className="sr-only">
+            Name your project and add an optional description.
+          </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-6 bg-surface px-8 py-6">

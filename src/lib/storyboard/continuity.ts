@@ -1,3 +1,4 @@
+import { getFrameStyleConfig } from "@/lib/storyboard/frame-styles";
 import type {
   StoryboardContinuity,
   StoryboardProjectSettings,
@@ -10,11 +11,12 @@ export function buildDefaultContinuity(
   return {
     characters:
       "Use the same character designs in every frame — identical face, hair, age, body type, clothing, and proportions. Do not redesign or recast characters between scenes.",
-    locations:
-      "Keep recurring locations visually consistent — same architecture, layout, lighting direction, and spatial geography when scenes share a setting.",
+    locations: settings.sceneEnvironment?.trim()
+      ? `Primary setting for the full storyboard: ${settings.sceneEnvironment.trim()}. Keep this environment visually consistent across every frame.`
+      : "Keep recurring locations visually consistent — same architecture, layout, lighting direction, and spatial geography when scenes share a setting.",
     props:
       "Keep hero products, vehicles, and key props identical in shape, size, branding silhouette, and design across all frames.",
-    sketchStyle: `Maintain one consistent pencil storyboard style across the full sequence — same line weight, shading density, and sketch detail level. Genre mood: ${settings.mood || "professional"}. Visual direction: ${settings.visualStyle || "cinematic"}.`,
+    sketchStyle: `${getFrameStyleConfig(settings.frameStyle).continuityHint} Genre: ${settings.genre.replace("-", " ")}.`,
   };
 }
 

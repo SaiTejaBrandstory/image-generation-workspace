@@ -59,7 +59,7 @@ export async function exportStoryboardPdf(
   doc.setFontSize(9);
   doc.setTextColor(80, 80, 80);
   doc.text(
-    `${ordered.length} scenes · ${totalDuration}s · ${settings.visualStyle} · ${settings.platform} · ${settings.genre}`,
+    `${ordered.length} scenes · ${totalDuration}s · ${settings.genre}`,
     margin,
     y
   );

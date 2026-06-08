@@ -1,4 +1,8 @@
 import {
+  extractNarrativeSentences,
+  stripBriefMeta,
+} from "@/lib/storyboard/brief-meta";
+import {
   STORYBOARD_DEFAULT_SCENE_COUNT,
   STORYBOARD_FRAME_COUNTS,
   STORYBOARD_SEC_PER_SCENE,
@@ -44,10 +48,16 @@ export function defaultSceneCount(durationSec?: number): number {
 export function normalizeFrameCount(
   value: number | undefined
 ): StoryboardFrameCount {
-  return value === 4 ? 4 : 6;
+  if (value !== undefined && isStoryboardFrameCount(value)) return value;
+  if (value !== undefined) {
+    return STORYBOARD_FRAME_COUNTS.reduce((closest, count) =>
+      Math.abs(count - value) < Math.abs(closest - value) ? count : closest
+    );
+  }
+  return 6;
 }
 
-/** User-selected frame count from project settings (4 or 6 only). */
+/** User-selected frame count from project settings. */
 export function getTargetSceneCount(settings: StoryboardProjectSettings): number {
   return normalizeFrameCount(settings.frameCount);
 }
@@ -75,18 +85,19 @@ export function detectScriptLanguage(text: string): string {
 }
 
 export function splitScriptIntoBeats(script: string, targetScenes: number): string[] {
-  const paragraphs = script
+  const narrative = stripBriefMeta(script);
+  const paragraphs = narrative
     .split(/\n\s*\n/)
-    .map((p) => p.trim())
+    .map((p) => stripBriefMeta(p.trim()))
     .filter(Boolean);
   if (paragraphs.length >= targetScenes) {
     return paragraphs.slice(0, targetScenes);
   }
-  const sentences = script
-    .split(/(?<=[.!?])\s+/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  if (sentences.length === 0) return [script.trim() || "Opening scene"];
+  const sentences = extractNarrativeSentences(narrative);
+  if (sentences.length === 0) {
+    const fallback = narrative.trim() || stripBriefMeta(script).trim();
+    return fallback ? [fallback] : ["Opening scene"];
+  }
   const perBeat = Math.max(1, Math.ceil(sentences.length / targetScenes));
   const beats: string[] = [];
   for (let i = 0; i < sentences.length; i += perBeat) {
@@ -117,10 +128,11 @@ export function splitScriptIntoBeats(script: string, targetScenes: number): stri
       "Closing hero shot",
       "Final brand moment",
     ];
+    const storySnippet = stripBriefMeta(script).slice(0, 120);
     while (beats.length < targetScenes) {
       const i = beats.length;
       const label = labels[i % labels.length];
-      beats.push(`${label}: ${script.trim().slice(0, 120)}`);
+      beats.push(storySnippet ? `${label}: ${storySnippet}` : label);
     }
   }
 

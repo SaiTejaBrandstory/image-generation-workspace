@@ -1,11 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { buildDefaultContinuity } from "@/lib/storyboard/continuity";
+import {
+  getFrameStyleConfig,
+  normalizeFrameStyle,
+} from "@/lib/storyboard/frame-styles";
+import { normalizeFrameCount } from "@/lib/storyboard/script-utils";
 import { generateScenesFromScript } from "@/lib/storyboard/scene-engine";
 import { normalizeSceneFields } from "@/lib/storyboard/scene-fields";
 import {
   dedupeSceneContent,
   padScenesToTarget,
 } from "@/lib/storyboard/scene-expansion";
+import { sanitizeScenes } from "@/lib/storyboard/brief-meta";
+import { applyGlobalSceneEnvironment } from "@/lib/storyboard/scene-environment";
+import { storyboardChatCompletion } from "@/lib/storyboard/openrouter-text";
 import { getTargetSceneCount } from "@/lib/storyboard/script-utils";
 import { formatOpenRouterErrorForUser } from "@/lib/openrouter-errors";
 import { createClient } from "@/lib/supabase/server";
@@ -45,8 +53,7 @@ async function breakdownWithLlm(
   if (!apiKey) return null;
 
   const targetScenes = getTargetSceneCount(settings);
-  const model =
-    process.env.OPENROUTER_TEXT_MODEL?.trim() || "google/gemini-2.0-flash-001";
+  const frameStyleConfig = getFrameStyleConfig(settings.frameStyle);
 
   const system = `You are a professional storyboard supervisor for film production. Return ONLY valid JSON with "continuity" and "scenes".
 
@@ -54,27 +61,30 @@ async function breakdownWithLlm(
 - characters: detailed locked descriptions of every recurring character (face, hair, age, build, clothing, distinguishing features). Use specific names.
 - locations: locked descriptions of recurring sets/environments.
 - props: locked descriptions of hero products, vehicles, or key objects.
-- sketchStyle: one consistent pencil storyboard drawing style for the full sequence.
+- sketchStyle: one consistent ${frameStyleConfig.label.toLowerCase()} visual style for the full sequence (${frameStyleConfig.continuityHint}).
 
 "scenes" array — each scene must have: voiceover, visualDescription, cameraDirection (shot type e.g. Wide Shot, Close Up), cameraAngle (e.g. Eye Level, Low Angle), cameraMovement (e.g. Static, Pan, Dolly In, Tracking), characterActions, environment, emotion (neutral|joy|tension|sadness|excitement|calm|urgency|hope), transition (cut|fade|dissolve|wipe|match-cut|jump-cut), imagePrompt, durationSec (integer).
 Return EXACTLY ${targetScenes} scenes in the array — no more, no fewer.
 Total duration must sum to approximately ${settings.durationSec} seconds across all ${targetScenes} scenes.
-Genre: ${settings.genre}. Mood: ${settings.mood}. Platform: ${settings.platform}.
+Genre: ${settings.genre}.
+${
+  settings.sceneEnvironment?.trim()
+    ? `Global scene environment for ALL scenes (use exactly this in every scene's environment field): ${settings.sceneEnvironment.trim()}`
+    : ""
+}
 
 CRITICAL: Every scene must be UNIQUE. Different voiceover, visualDescription, cameraDirection, cameraAngle, cameraMovement, characterActions, and imagePrompt per scene. Do NOT copy-paste or repeat the same beat across scenes. Each scene advances the story forward.
 
-Use the SAME character names and physical descriptions in every scene. For imagePrompt: ONE single pencil storyboard sketch shot. Reference continuity bible characters by name. Never include scene numbers, shot labels, or any text that could appear in the image. No text, labels, UI, timelines, collages, or multi-panel layouts.`;
+BRIEF INPUT RULES: The user brief may mention runtime (e.g. "45-second ad") — IGNORE that completely. Total duration is ${settings.durationSec}s from project settings only. Do NOT copy the brief's opening sentence into voiceover or visualDescription. Do NOT repeat "A 45-second ad for…", duration labels, or format meta in any scene field.
 
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
-      "X-Title": "Brandwise Storyboard",
-    },
-    body: JSON.stringify({
-      model,
+voiceover: Spoken narration for THIS scene only — natural lines the narrator or character would say. Not a description of the ad format.
+visualDescription: What the camera sees in this single shot — subject, action, setting, mood. Not ad-length meta or the brief preamble.
+
+Use the SAME character names and physical descriptions in every scene. For imagePrompt: ${frameStyleConfig.breakdownHint}. Reference continuity bible characters by name. Never include scene numbers, shot labels, or any text that could appear in the image. No text, labels, UI, timelines, collages, or multi-panel layouts.`;
+
+  let raw: string;
+  try {
+    raw = await storyboardChatCompletion({
       messages: [
         { role: "system", content: system },
         {
@@ -82,17 +92,11 @@ Use the SAME character names and physical descriptions in every scene. For image
           content: `Create ${targetScenes} storyboard scenes from this input. It may be a short creative brief or a full screenplay — if brief, invent a complete script with voiceover, characters, and visual beats:\n\n${script}`,
         },
       ],
-      response_format: { type: "json_object" },
-    }),
-  });
-
-  if (!res.ok) return null;
-
-  const data = (await res.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-  };
-  const raw = data.choices?.[0]?.message?.content;
-  if (!raw) return null;
+      responseFormat: { type: "json_object" },
+    });
+  } catch {
+    return null;
+  }
 
   try {
     const parsed = JSON.parse(raw) as {
@@ -152,32 +156,42 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Script is required." }, { status: 400 });
     }
 
-    const llmResult = await breakdownWithLlm(body.script, body.settings);
-    const targetScenes = getTargetSceneCount(body.settings);
+    const settings: StoryboardProjectSettings = {
+      ...body.settings,
+      frameCount: normalizeFrameCount(body.settings?.frameCount),
+      frameStyle: normalizeFrameStyle(body.settings?.frameStyle),
+    };
+
+    const llmResult = await breakdownWithLlm(body.script, settings);
+    const targetScenes = getTargetSceneCount(settings);
     let scenes =
       llmResult?.scenes ??
-      generateScenesFromScript(body.script, body.settings, targetScenes);
+      generateScenesFromScript(body.script, settings, targetScenes);
     const continuity =
-      llmResult?.continuity ?? buildDefaultContinuity(body.settings);
+      llmResult?.continuity ?? buildDefaultContinuity(settings);
 
     scenes = padScenesToTarget(
       scenes,
       body.script,
-      body.settings,
+      settings,
       targetScenes
     );
-    scenes = dedupeSceneContent(scenes, body.script, body.settings);
+    scenes = dedupeSceneContent(scenes, body.script, settings);
+    scenes = sanitizeScenes(scenes);
 
     const total = scenes.reduce((sum, s) => sum + s.durationSec, 0);
-    if (total !== body.settings.durationSec && scenes.length > 0) {
-      const ratio = body.settings.durationSec / total;
+    if (total !== settings.durationSec && scenes.length > 0) {
+      const ratio = settings.durationSec / total;
       scenes = scenes.map((s) => ({
         ...s,
         durationSec: Math.max(2, Math.round(s.durationSec * ratio)),
       }));
     }
 
-    return NextResponse.json({ scenes, continuity });
+    return NextResponse.json({
+      scenes: applyGlobalSceneEnvironment(scenes, settings.sceneEnvironment),
+      continuity,
+    });
   } catch (err) {
     const message =
       err instanceof Error

@@ -10,6 +10,7 @@ import {
   retryDelayMs,
   sleepMs,
 } from "@/lib/openrouter-errors";
+import { getFrameStyleConfig } from "@/lib/storyboard/frame-styles";
 import {
   buildStoryboardSketchPrompt,
   resolveStoryboardImageModel,
@@ -70,6 +71,7 @@ export async function generateStoryboardSketchFrame(
   const referenceUrl = scene.referenceFrameUrl?.trim();
   const useReference =
     Boolean(referenceUrl) && config.supportsVisionInput && scene.sceneNumber > 1;
+  const styleConfig = getFrameStyleConfig(scene.frameStyle ?? "sketch");
 
   let textPrompt = buildStoryboardSketchPrompt({
     ...scene,
@@ -84,7 +86,7 @@ export async function generateStoryboardSketchFrame(
         { type: "text", text: textPrompt },
         {
           type: "text",
-          text: "REFERENCE FRAME — preserve the same character faces, bodies, clothing, props, and pencil sketch technique. Draw a new shot of the same production:",
+          text: `REFERENCE FRAME — preserve the same character faces, bodies, clothing, props, and ${styleConfig.referenceHint}. Draw a new shot of the same production:`,
         },
         { type: "image_url", image_url: { url: referenceUrl } },
       ]
