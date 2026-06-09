@@ -1,9 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { formatOpenRouterErrorForUser } from "@/lib/openrouter-errors";
+import { buildStoryboardVoiceoverTrack } from "@/lib/storyboard/storyboard-voiceover";
 import {
   concatMp4Buffers,
+  concatMp4BuffersWithCrossfade,
+  mixNarrationOntoVideo,
+  probeMp4DurationFloat,
   probeMp4DurationSec,
 } from "@/lib/storyboard/stitch-videos";
+import type { StoryboardScene } from "@/types/storyboard";
 import { updateStoryboardOutputs } from "@/lib/supabase/storyboard-db";
 import { createClient } from "@/lib/supabase/server";
 import {
@@ -21,6 +26,8 @@ interface StitchVideoBody {
   storageConversationId?: string;
   clipUrls: string[];
   totalDurationSec?: number;
+  /** All storyboard scenes — used to synthesize one narrator track after stitching. */
+  scenes?: StoryboardScene[];
   /** Distinguish full storyboard video vs per-frame stitched output in storage. */
   outputKind?: "full" | "stitched";
 }
@@ -50,7 +57,38 @@ export async function POST(request: NextRequest) {
       buffers.push(buffer);
     }
 
-    const stitched = await concatMp4Buffers(buffers);
+    const useCrossfade = body.outputKind === "full" && buffers.length > 1;
+    let stitched = useCrossfade
+      ? await concatMp4BuffersWithCrossfade(buffers)
+      : await concatMp4Buffers(buffers);
+
+    const stitchedDuration = await probeMp4DurationFloat(stitched);
+
+    let voiceoverApplied = false;
+    if (body.outputKind === "full" && body.scenes?.length) {
+      try {
+        const voiceover = await buildStoryboardVoiceoverTrack(body.scenes, {
+          targetDurationSec: stitchedDuration ?? body.totalDurationSec,
+        });
+        if (voiceover) {
+          stitched = await mixNarrationOntoVideo(stitched, voiceover);
+          voiceoverApplied = true;
+          console.info(
+            "[storyboard/stitch-video] Mixed unified TTS narration with segment audio"
+          );
+        } else {
+          console.warn(
+            "[storyboard/stitch-video] No voiceover text on scenes — video keeps ambient audio only"
+          );
+        }
+      } catch (voErr) {
+        console.error(
+          "[storyboard/stitch-video] Voiceover mix failed — returning stitch without narration",
+          voErr instanceof Error ? voErr.message : voErr
+        );
+      }
+    }
+
     const probedDurationSec = await probeMp4DurationSec(stitched);
     const durationSec =
       probedDurationSec ?? body.totalDurationSec ?? null;
@@ -94,6 +132,7 @@ export async function POST(request: NextRequest) {
       storagePath: uploaded.storagePath,
       durationSec,
       clipCount: body.clipUrls.length,
+      voiceoverApplied,
     });
   } catch (err) {
     const message =

@@ -23,6 +23,73 @@ export const STORYBOARD_VIDEO_MODEL = "google/veo-3.1-lite";
 /** Fallback when a non-Veo primary rejects human-looking frames. */
 export const STORYBOARD_VIDEO_HUMAN_FALLBACK_MODEL = "google/veo-3.1-lite";
 
+/** Preferred display order for storyboard video aspect ratios. */
+const STORYBOARD_VIDEO_ASPECT_ORDER = [
+  "16:9",
+  "9:16",
+  "1:1",
+  "4:3",
+  "3:4",
+  "3:2",
+  "2:3",
+  "21:9",
+  "9:21",
+] as const;
+
+/** CSS `aspect-ratio` value for storyboard video layout (e.g. `9 / 16`). */
+export function storyboardVideoAspectRatioCss(aspectRatio: string): string {
+  const [w, h] = aspectRatio.split(":").map(Number);
+  if (!w || !h) return "16 / 9";
+  return `${w} / ${h}`;
+}
+
+/** Aspect ratios a video model accepts (storyboard-friendly order). */
+export function storyboardVideoAspectRatiosForModel(modelId: string): string[] {
+  const supported = getVideoModelConfig(modelId).supportedAspectRatios;
+  const supportedSet = new Set(supported);
+  const ordered: string[] = STORYBOARD_VIDEO_ASPECT_ORDER.filter((ratio) =>
+    supportedSet.has(ratio)
+  );
+  for (const ratio of supported) {
+    if (!ordered.includes(ratio)) ordered.push(ratio);
+  }
+  return ordered;
+}
+
+export function clampStoryboardVideoAspectRatio(
+  modelId: string,
+  aspectRatio: string
+): string {
+  const ratios = storyboardVideoAspectRatiosForModel(modelId);
+  const clamped = clampVideoSettingsToModel(modelId, {
+    duration: 8,
+    resolution: DEFAULT_VIDEO_RESOLUTION,
+    aspectRatio,
+    generateAudio: true,
+  }).aspectRatio;
+  if (ratios.includes(clamped)) return clamped;
+  return ratios[0] ?? DEFAULT_VIDEO_ASPECT;
+}
+
+/** User-selected video aspect, clamped to model; falls back to frame aspect. */
+export function resolveStoryboardVideoAspectRatio(
+  modelId: string,
+  options: { frameAspectRatio?: string; videoAspectRatio?: string }
+): string {
+  const user = options.videoAspectRatio?.trim();
+  const frame = options.frameAspectRatio?.trim();
+
+  if (user) {
+    return clampStoryboardVideoAspectRatio(modelId, user);
+  }
+
+  if (frame) {
+    return clampStoryboardVideoAspectRatio(modelId, frame);
+  }
+
+  return clampStoryboardVideoAspectRatio(modelId, DEFAULT_VIDEO_ASPECT);
+}
+
 /** No second model when primary is already a Veo human-frame model. */
 export function defaultStoryboardVideoFallbackModel(
   primaryModel = STORYBOARD_VIDEO_MODEL
@@ -150,6 +217,83 @@ export function pickStoryboardVideoDuration(
   return clamped.duration;
 }
 
+function pickStoryboardSceneReferences(
+  scenes: StoryboardScene[],
+  maxSceneRefs: number
+): StoryboardScene[] {
+  const ordered = [...scenes].sort((a, b) => a.sceneNumber - b.sceneNumber);
+  if (!ordered.length || maxSceneRefs <= 0) return [];
+
+  const first = ordered[0]!;
+  const last = ordered[ordered.length - 1]!;
+  const middle = ordered.slice(1, -1);
+
+  const extra: StoryboardScene[] = [];
+  if (middle.length === 1) {
+    extra.push(middle[0]!);
+  } else if (middle.length >= 2) {
+    extra.push(middle[0]!, middle[middle.length - 1]!);
+  }
+
+  const candidateScenes =
+    ordered.length === 1 ? [first] : [first, last, ...extra].slice(0, maxSceneRefs);
+  const picked: StoryboardScene[] = [];
+  const seen = new Set<string>();
+  for (const scene of candidateScenes) {
+    if (seen.has(scene.id)) continue;
+    seen.add(scene.id);
+    picked.push(scene);
+  }
+  return picked;
+}
+
+/**
+ * Pack storyboard frames into video API refs (max 4).
+ * When `bridgeFrameUrl` is set (segment 2+), it is the opening frame lock from the prior clip.
+ */
+export async function buildStoryboardSegmentReferences(
+  scenes: StoryboardScene[],
+  options?: {
+    userId?: string;
+    storageConversationId?: string;
+    bridgeFrameUrl?: string;
+    reduced?: boolean;
+  }
+): Promise<ReferenceImagePayload[]> {
+  const ordered = [...scenes].sort((a, b) => a.sceneNumber - b.sceneNumber);
+  if (!ordered.length) return [];
+
+  const refs: ReferenceImagePayload[] = [];
+  const bridge = options?.bridgeFrameUrl?.trim();
+  if (bridge) {
+    refs.push({
+      role: "product",
+      influence: 100,
+      dataUrl: await resolveVideoReferenceSource(bridge),
+      usageMode: "preserve",
+    });
+  }
+
+  const maxSceneRefs = Math.max(
+    0,
+    MAX_REFERENCES_VIDEO - refs.length
+  );
+  const sceneSlots = options?.reduced
+    ? pickStoryboardSceneReferences(ordered, Math.min(2, maxSceneRefs))
+    : pickStoryboardSceneReferences(ordered, maxSceneRefs);
+
+  for (const scene of sceneSlots) {
+    refs.push({
+      role: "product",
+      influence: 100,
+      dataUrl: await resolveSceneFrameHttpUrl(scene, options),
+      usageMode: "preserve",
+    });
+  }
+
+  return refs;
+}
+
 /**
  * Pack all storyboard frames into video API refs (max 4):
  * opening shot, closing shot, plus two evenly-spaced middle frames.
@@ -158,38 +302,22 @@ export async function buildStoryboardAllFrameReferences(
   scenes: StoryboardScene[],
   options?: { userId?: string; storageConversationId?: string }
 ): Promise<ReferenceImagePayload[]> {
-  const ordered = [...scenes].sort((a, b) => a.sceneNumber - b.sceneNumber);
-  if (!ordered.length) return [];
+  return buildStoryboardSegmentReferences(scenes, options);
+}
 
-  const first = ordered[0];
-  const last = ordered[ordered.length - 1];
-  const middle = ordered.slice(1, -1);
-
-  const extra: StoryboardScene[] = [];
-  if (middle.length === 1) {
-    extra.push(middle[0]);
-  } else if (middle.length >= 2) {
-    extra.push(middle[0], middle[middle.length - 1]);
+/** Opening + closing frame only — fewer refs when moderation blocks middle frames. */
+export async function buildStoryboardFirstLastReferences(
+  scenes: StoryboardScene[],
+  options?: {
+    userId?: string;
+    storageConversationId?: string;
+    bridgeFrameUrl?: string;
   }
-
-  const candidateScenes =
-    ordered.length === 1 ? [first] : [first, last, ...extra].slice(0, 4);
-  const picked: StoryboardScene[] = [];
-  const seen = new Set<string>();
-  for (const scene of candidateScenes) {
-    if (seen.has(scene.id)) continue;
-    seen.add(scene.id);
-    picked.push(scene);
-  }
-
-  return Promise.all(
-    picked.map(async (scene) => ({
-      role: "product" as const,
-      influence: 100,
-      dataUrl: await resolveSceneFrameHttpUrl(scene, options),
-      usageMode: "preserve" as const,
-    }))
-  );
+): Promise<ReferenceImagePayload[]> {
+  return buildStoryboardSegmentReferences(scenes, {
+    ...options,
+    reduced: true,
+  });
 }
 
 export async function buildStoryboardClipReferences(

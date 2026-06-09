@@ -19,10 +19,18 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
+  inferAspectRatioFromImageUrl,
+  resolveStoryboardFrameAspectRatio,
+} from "@/lib/storyboard/storyboard-image";
+import {
+  clampStoryboardVideoAspectRatio,
   estimateStoryboardVideoJobCost,
   estimateStoryboardVideoOutputDuration,
   chunkStoryboardScenesForVideo,
+  storyboardVideoAspectRatiosForModel,
 } from "@/lib/storyboard/storyboard-video";
+import { DEFAULT_VIDEO_ASPECT } from "@/lib/openrouter-video-models";
+import type { AspectRatio } from "@/types";
 import { formatStoryboardJobCost } from "@/lib/video-model-pricing";
 import {
   getVideoModelConfig,
@@ -47,8 +55,12 @@ interface StoryboardVideoModelDialogProps {
   mode: StoryboardVideoModelDialogMode;
   primaryModel: string;
   fallbackModel: string | null;
+  videoAspectRatio: string;
+  frameAspectRatio: AspectRatio;
+  /** Persisted from DB — may be missing on older storyboards. */
+  settingsFrameAspectRatio?: AspectRatio;
   scenes: StoryboardScene[];
-  onConfirm: (primary: string, fallback: string) => void;
+  onConfirm: (primary: string, fallback: string, aspectRatio: string) => void;
   onCancel: () => void;
 }
 
@@ -201,6 +213,9 @@ export function StoryboardVideoModelDialog({
   mode,
   primaryModel,
   fallbackModel,
+  videoAspectRatio,
+  frameAspectRatio,
+  settingsFrameAspectRatio,
   scenes,
   onConfirm,
   onCancel,
@@ -210,14 +225,55 @@ export function StoryboardVideoModelDialog({
   const [models, setModels] = useState<VideoModelConfig[]>([]);
   const [primary, setPrimary] = useState(primaryModel);
   const [fallback, setFallback] = useState(fallbackModel);
+  const [aspectRatio, setAspectRatio] = useState(videoAspectRatio);
+  const [inferredFrameAspect, setInferredFrameAspect] =
+    useState<AspectRatio | null>(null);
   const primarySelectedRef = useRef<HTMLButtonElement>(null);
   const fallbackSelectedRef = useRef<HTMLButtonElement>(null);
   const didInitialScrollRef = useRef(false);
+
+  const effectiveFrameAspect = useMemo(
+    () =>
+      resolveStoryboardFrameAspectRatio({
+        inferredFromFrames: inferredFrameAspect,
+        settingsAspect: settingsFrameAspectRatio,
+        storeAspect: frameAspectRatio,
+      }),
+    [
+      inferredFrameAspect,
+      settingsFrameAspectRatio,
+      frameAspectRatio,
+    ]
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    const frameUrl = scenes.find((s) => s.frameImageUrl?.trim())?.frameImageUrl;
+    if (!frameUrl) {
+      setInferredFrameAspect(null);
+      return;
+    }
+    let cancelled = false;
+    void inferAspectRatioFromImageUrl(frameUrl).then((ratio) => {
+      if (!cancelled) setInferredFrameAspect(ratio);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, scenes]);
 
   useEffect(() => {
     if (!open) return;
     setPrimary(primaryModel);
     setFallback(fallbackModel);
+    const modelRatios = storyboardVideoAspectRatiosForModel(primaryModel);
+    setAspectRatio(
+      modelRatios.includes(videoAspectRatio)
+        ? videoAspectRatio
+        : modelRatios.includes(effectiveFrameAspect)
+          ? effectiveFrameAspect
+          : clampStoryboardVideoAspectRatio(primaryModel, videoAspectRatio)
+    );
     let cancelled = false;
     setLoading(true);
     (async () => {
@@ -237,7 +293,13 @@ export function StoryboardVideoModelDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, primaryModel, fallbackModel]);
+  }, [
+    open,
+    primaryModel,
+    fallbackModel,
+    videoAspectRatio,
+    effectiveFrameAspect,
+  ]);
 
   const sorted = useMemo(() => {
     const source = models.length ? models : getVideoModelsCatalog();
@@ -259,6 +321,28 @@ export function StoryboardVideoModelDialog({
   );
 
   const primaryId = isValidVideoModel(primary) ? primary : (sorted[0]?.id ?? "");
+
+  const allAspectOptions = useMemo(
+    () => storyboardVideoAspectRatiosForModel(primaryId),
+    [primaryId]
+  );
+
+  const aspectOptions = allAspectOptions;
+
+  const resolvedAspect = useMemo(() => {
+    if (aspectOptions.includes(aspectRatio)) return aspectRatio;
+    if (aspectOptions.includes(effectiveFrameAspect)) return effectiveFrameAspect;
+    return clampStoryboardVideoAspectRatio(
+      primaryId,
+      aspectRatio || effectiveFrameAspect || DEFAULT_VIDEO_ASPECT
+    );
+  }, [aspectOptions, aspectRatio, effectiveFrameAspect, primaryId]);
+
+  useEffect(() => {
+    if (!aspectOptions.includes(aspectRatio)) {
+      setAspectRatio(resolvedAspect);
+    }
+  }, [aspectOptions, aspectRatio, resolvedAspect]);
 
   const fallbackId = useMemo(
     () =>
@@ -290,11 +374,13 @@ export function StoryboardVideoModelDialog({
   const handlePrimaryChange = (id: string) => {
     setPrimary(id);
     setFallback(pickStoryboardHumanFrameFallback(id, sorted, fallback));
+    const ratios = storyboardVideoAspectRatiosForModel(id);
+    setAspectRatio((current) => clampStoryboardVideoAspectRatio(id, current));
   };
 
   const handleConfirm = () => {
     if (!canConfirm) return;
-    onConfirm(primaryId, fallbackId);
+    onConfirm(primaryId, fallbackId, resolvedAspect);
   };
 
   const primaryOptions = sorted;
@@ -317,10 +403,6 @@ export function StoryboardVideoModelDialog({
         block: "nearest",
         behavior: "instant",
       });
-      fallbackSelectedRef.current?.scrollIntoView({
-        block: "nearest",
-        behavior: "instant",
-      });
       didInitialScrollRef.current = true;
     });
     return () => cancelAnimationFrame(id);
@@ -333,8 +415,8 @@ export function StoryboardVideoModelDialog({
         if (!isOpen) onCancel();
       }}
     >
-      <DialogContent className="w-[min(420px,calc(100vw-2rem))] max-w-[420px] gap-0 overflow-hidden rounded-xl p-0">
-        <DialogHeader className="border-b border-border/60 bg-surface-elevated/40 px-5 pb-4 pt-5">
+      <DialogContent className="flex max-h-[min(85dvh,calc(100dvh-2rem))] w-[min(420px,calc(100vw-2rem))] max-w-[420px] flex-col gap-0 overflow-hidden rounded-xl p-0">
+        <DialogHeader className="shrink-0 border-b border-border/60 bg-surface-elevated/40 px-5 pb-3 pt-5">
           <DialogTitle className="flex items-center gap-2 text-base font-semibold">
             <Film className="h-4 w-4 text-accent-cyan" />
             {isRegenerate ? "Regenerate video" : "Generate video"}
@@ -347,19 +429,19 @@ export function StoryboardVideoModelDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-5 px-5 py-4">
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
           {loading ? (
-            <div className="flex items-center justify-center gap-2 py-12 text-sm text-foreground-muted">
+            <div className="flex items-center justify-center gap-2 py-10 text-sm text-foreground-muted">
               <Loader2 className="h-4 w-4 animate-spin" />
               Loading models…
             </div>
           ) : (
-            <>
+            <div className="space-y-4">
               <ModelSection
                 title="Primary"
                 hint={`Selected: ${primaryLabel} · runs first on every clip`}
               >
-                <div className="max-h-[min(240px,40vh)] space-y-1.5 overflow-y-auto pr-0.5 scroll-smooth">
+                <div className="max-h-[min(168px,28vh)] space-y-1.5 overflow-y-auto pr-0.5 scroll-smooth">
                   {primaryOptions.map((m) => (
                     <ModelRow
                       key={m.id}
@@ -382,7 +464,7 @@ export function StoryboardVideoModelDialog({
                     : "Veo only if the primary rejects real-person frames"
                 }
               >
-                <div className="space-y-1.5">
+                <div className="max-h-[min(120px,18vh)] space-y-1.5 overflow-y-auto pr-0.5 scroll-smooth">
                   {fallbackChoices.map((m) => (
                     <ModelRow
                       key={m.id}
@@ -394,13 +476,47 @@ export function StoryboardVideoModelDialog({
                   ))}
                 </div>
               </ModelSection>
-            </>
+
+              <div className="space-y-2 border-t border-border/50 pt-2">
+                <h3 className="px-0.5 text-xs font-semibold text-foreground">
+                  Aspect ratio
+                </h3>
+                <p className="px-0.5 text-[11px] leading-snug text-foreground-muted">
+                  Frames: {effectiveFrameAspect}
+                  {resolvedAspect !== effectiveFrameAspect
+                    ? ` · output ${resolvedAspect}`
+                    : ""}
+                </p>
+                <div className="flex flex-wrap gap-1.5">
+                  {aspectOptions.map((ratio) => (
+                    <button
+                      key={ratio}
+                      type="button"
+                      onClick={() => setAspectRatio(ratio)}
+                      className={cn(
+                        "rounded-lg px-2.5 py-1.5 text-xs font-medium tabular-nums ring-1 ring-inset transition-colors",
+                        resolvedAspect === ratio
+                          ? "bg-accent-cyan/10 text-foreground ring-accent-cyan/40"
+                          : "bg-surface-elevated text-foreground-muted ring-foreground/10 hover:bg-surface-hover"
+                      )}
+                    >
+                      {ratio}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
           )}
         </div>
 
-        <DialogFooter className="mt-0 shrink-0 flex-col items-stretch gap-3 border-t border-border/60 bg-surface-elevated/20 px-5 py-4">
+        <DialogFooter className="mt-0 shrink-0 flex-col items-stretch gap-2 border-t border-border/60 bg-surface-elevated/20 px-5 py-3">
           <div className="flex w-full flex-wrap items-center gap-x-2 gap-y-1 text-xs text-foreground-muted">
             <span>
+              <span className="font-medium text-foreground">{resolvedAspect}</span>
+              <span aria-hidden className="text-border/80">
+                {" "}
+                ·{" "}
+              </span>
               <span className="tabular-nums">{storyboardDurationSec}s</span> script
               <span className="text-foreground-muted/50"> → </span>
               <span className="font-semibold tabular-nums text-foreground">

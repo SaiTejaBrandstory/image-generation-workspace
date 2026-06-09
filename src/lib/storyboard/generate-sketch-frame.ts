@@ -12,10 +12,15 @@ import {
 } from "@/lib/openrouter-errors";
 import { getFrameStyleConfig } from "@/lib/storyboard/frame-styles";
 import {
+  clampStoryboardImageAspectRatio,
+  STORYBOARD_DEFAULT_IMAGE_ASPECT,
+} from "@/lib/storyboard/storyboard-image";
+import {
   buildStoryboardSketchPrompt,
   resolveStoryboardImageModel,
   type StoryboardSketchSceneInput,
 } from "@/lib/storyboard/sketch-prompt";
+import type { AspectRatio } from "@/types";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
@@ -61,21 +66,38 @@ function extractImageUrl(data: unknown): string | null {
 }
 
 export async function generateStoryboardSketchFrame(
-  scene: StoryboardSketchSceneInput
+  scene: StoryboardSketchSceneInput,
+  options?: { model?: string; aspectRatio?: AspectRatio }
 ): Promise<{ imageUrl: string; model: string }> {
   const apiKey = getApiKey();
-  const model = resolveStoryboardImageModel();
+  const model = resolveStoryboardImageModel(options?.model);
   const config = getModelConfig(model);
-  const aspectRatio = clampImageAspectRatioToModel(model, "16:9");
+  const aspectRatio = clampStoryboardImageAspectRatio(
+    model,
+    options?.aspectRatio ?? scene.aspectRatio ?? STORYBOARD_DEFAULT_IMAGE_ASPECT
+  );
 
-  const referenceUrl = scene.referenceFrameUrl?.trim();
+  const referenceUrls = (
+    scene.referenceFrameUrls?.length
+      ? scene.referenceFrameUrls
+      : scene.referenceFrameUrl?.trim()
+        ? [scene.referenceFrameUrl.trim()]
+        : []
+  )
+    .map((url) => url.trim())
+    .filter(Boolean)
+    .slice(0, config.maxReferenceImages);
+
   const useReference =
-    Boolean(referenceUrl) && config.supportsVisionInput && scene.sceneNumber > 1;
+    referenceUrls.length > 0 &&
+    config.supportsVisionInput &&
+    scene.sceneNumber > 1;
   const styleConfig = getFrameStyleConfig(scene.frameStyle ?? "sketch");
 
   let textPrompt = buildStoryboardSketchPrompt({
     ...scene,
     hasReferenceFrame: useReference,
+    aspectRatio,
   });
   if (!config.supportsAspectConfig) {
     textPrompt = `${textPrompt}\n\nCompose as a single ${mapAspectRatio(aspectRatio)} storyboard panel.`;
@@ -83,12 +105,24 @@ export async function generateStoryboardSketchFrame(
 
   const messageContent = useReference
     ? [
-        { type: "text", text: textPrompt },
         {
           type: "text",
-          text: `REFERENCE FRAME — preserve the same character faces, bodies, clothing, props, and ${styleConfig.referenceHint}. Draw a new shot of the same production:`,
+          text: `PRIMARY ANCHOR (Scene 1) — locked character design. Match these exact faces, costumes, props, and ${styleConfig.referenceHint}:`,
         },
-        { type: "image_url", image_url: { url: referenceUrl } },
+        { type: "image_url", image_url: { url: referenceUrls[0] } },
+        ...(referenceUrls.length > 1
+          ? [
+              {
+                type: "text" as const,
+                text: "PREVIOUS SHOT — continue from this frame; keep the same characters and visual style:",
+              },
+              {
+                type: "image_url" as const,
+                image_url: { url: referenceUrls[1] },
+              },
+            ]
+          : []),
+        { type: "text", text: textPrompt },
       ]
     : textPrompt;
 

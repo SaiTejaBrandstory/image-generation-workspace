@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   formatOpenRouterErrorForUser,
   isRealPersonVideoRejection,
+  isVideoContentFilteredError,
 } from "@/lib/openrouter-errors";
 import { generateVideoWithOpenRouter } from "@/lib/openrouter-video";
 import {
@@ -16,14 +17,21 @@ import {
 } from "@/lib/openrouter-video-models";
 import { buildStoryboardFullVideoPrompt } from "@/lib/storyboard/storyboard-video-prompt";
 import {
-  buildStoryboardAllFrameReferences,
+  extractLastFrameFromMp4,
+} from "@/lib/storyboard/stitch-videos";
+import {
+  buildStoryboardSegmentReferences,
   getStoryboardFullVideoMaxPollMs,
+  resolveStoryboardVideoAspectRatio,
   resolveStoryboardVideoModelChain,
 } from "@/lib/storyboard/storyboard-video";
 import type { StoryboardVideoBatchContext } from "@/lib/storyboard/storyboard-video-prompt";
 import { updateStoryboardOutputs } from "@/lib/supabase/storyboard-db";
 import { createClient } from "@/lib/supabase/server";
-import { uploadGenerationVideoBuffer } from "@/lib/supabase/storage";
+import {
+  uploadGenerationImage,
+  uploadGenerationVideoBuffer,
+} from "@/lib/supabase/storage";
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -46,8 +54,13 @@ interface GenerateStoryboardVideoBody {
   /** Override duration for this segment (batch sum or project total). */
   videoDurationSec?: number;
   batch?: StoryboardVideoBatchContext;
+  /** Last frame of the previous segment — locks visual continuity at the stitch point. */
+  bridgeFrameUrl?: string;
   videoPrimaryModel?: string;
   videoFallbackModel?: string | null;
+  videoAspectRatio?: string;
+  /** Frame image aspect — must match video output when model supports it. */
+  frameAspectRatio?: string;
 }
 
 function buildStoryboardModelChain(body: GenerateStoryboardVideoBody): string[] {
@@ -121,10 +134,14 @@ export async function POST(request: NextRequest) {
       body.storageConversationId?.trim() ||
       body.projectId?.trim() ||
       "storyboard-draft";
-    const references = await buildStoryboardAllFrameReferences(scenes, {
+    const refOptions = {
       userId: user.id,
       storageConversationId: storageFolder,
-    });
+    };
+    const segmentRefOptions = {
+      ...refOptions,
+      bridgeFrameUrl: body.bridgeFrameUrl?.trim(),
+    };
 
     const primaryPick = body.videoPrimaryModel?.trim();
     if (primaryPick && !isValidVideoModel(primaryPick)) {
@@ -138,63 +155,114 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    const aspectOptions = {
+      frameAspectRatio: body.frameAspectRatio?.trim(),
+      videoAspectRatio: body.videoAspectRatio?.trim() || DEFAULT_VIDEO_ASPECT,
+    };
+    console.info(
+      "[storyboard/generate-video] aspect",
+      aspectOptions.videoAspectRatio,
+      "frames",
+      aspectOptions.frameAspectRatio ?? "—"
+    );
     const modelChain = buildStoryboardModelChain(body);
+    /** Ambient/music from Veo on every segment; unified TTS narration is added at stitch for multi-segment jobs. */
+    const segmentGenerateAudio = true;
     let videoModel = modelChain[0]!;
     let videoSettings = clampVideoSettingsToModel(videoModel, {
       duration: requestedDuration,
       resolution: DEFAULT_VIDEO_RESOLUTION,
-      aspectRatio: DEFAULT_VIDEO_ASPECT,
-      generateAudio: true,
+      aspectRatio: resolveStoryboardVideoAspectRatio(videoModel, aspectOptions),
+      generateAudio: segmentGenerateAudio,
     });
     let result: Awaited<ReturnType<typeof generateVideoWithOpenRouter>> | null =
       null;
     let lastError: Error | null = null;
 
-    for (let i = 0; i < modelChain.length; i++) {
-      videoModel = modelChain[i]!;
-      videoSettings = clampVideoSettingsToModel(videoModel, {
+    const runGeneration = async (
+      model: string,
+      reducedRefs: boolean
+    ): Promise<Awaited<ReturnType<typeof generateVideoWithOpenRouter>>> => {
+      const settings = clampVideoSettingsToModel(model, {
         duration: requestedDuration,
         resolution: DEFAULT_VIDEO_RESOLUTION,
-        aspectRatio: DEFAULT_VIDEO_ASPECT,
-        generateAudio: true,
+        aspectRatio: resolveStoryboardVideoAspectRatio(model, aspectOptions),
+        generateAudio: segmentGenerateAudio,
       });
-
+      const batchContext = body.batch
+        ? {
+            ...body.batch,
+            hasBridgeFrame: Boolean(body.bridgeFrameUrl?.trim()),
+          }
+        : undefined;
       const prompt = buildStoryboardFullVideoPrompt({
         scenes,
         script: body.script ?? "",
         settings: body.settings,
         continuity: body.continuity ?? null,
-        videoDurationSec: videoSettings.duration,
-        batch: body.batch,
+        videoDurationSec: settings.duration,
+        batch: batchContext,
+      });
+      const references = await buildStoryboardSegmentReferences(scenes, {
+        ...segmentRefOptions,
+        reduced: reducedRefs,
       });
 
+      videoModel = model;
+      videoSettings = settings;
+
+      return generateVideoWithOpenRouter({
+        model,
+        prompt,
+        duration: settings.duration,
+        resolution: settings.resolution,
+        aspectRatio: settings.aspectRatio,
+        generateAudio: segmentGenerateAudio,
+        references,
+        maxPollMs: getStoryboardFullVideoMaxPollMs(),
+      });
+    };
+
+    modelLoop: for (let i = 0; i < modelChain.length; i++) {
+      const model = modelChain[i]!;
+      const nextModel = modelChain[i + 1];
+
       try {
-        result = await generateVideoWithOpenRouter({
-          model: videoModel,
-          prompt,
-          duration: videoSettings.duration,
-          resolution: videoSettings.resolution,
-          aspectRatio: videoSettings.aspectRatio,
-          generateAudio: true,
-          references,
-          maxPollMs: getStoryboardFullVideoMaxPollMs(),
-        });
+        result = await runGeneration(model, false);
         if (i > 0) {
           console.info(
-            `[storyboard/generate-video] Used fallback model ${videoModel}`
+            `[storyboard/generate-video] Used fallback model ${model}`
           );
         }
-        break;
+        break modelLoop;
       } catch (err) {
         const error = err instanceof Error ? err : new Error(String(err));
         lastError = error;
-        const nextModel = modelChain[i + 1];
+
         if (nextModel && isRealPersonVideoRejection(error.message)) {
           console.warn(
-            `[storyboard/generate-video] ${videoModel} rejected human frames, trying ${nextModel}`
+            `[storyboard/generate-video] ${model} rejected human frames, trying ${nextModel}`
           );
-          continue;
+          continue modelLoop;
         }
+
+        if (isVideoContentFilteredError(error.message)) {
+          console.warn(
+            `[storyboard/generate-video] ${model} safety block, one retry with first/last frames only`
+          );
+          try {
+            result = await runGeneration(model, true);
+            console.info(
+              `[storyboard/generate-video] Succeeded with first/last frames only (${model})`
+            );
+            break modelLoop;
+          } catch (retryErr) {
+            lastError =
+              retryErr instanceof Error ? retryErr : new Error(String(retryErr));
+            throw lastError;
+          }
+        }
+
         throw error;
       }
     }
@@ -231,6 +299,21 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    let bridgeFrameUrl: string | undefined;
+    if (
+      body.batch &&
+      body.batch.index < body.batch.total - 1
+    ) {
+      const frameBuffer = await extractLastFrameFromMp4(result.videoBuffer);
+      const bridgeUpload = await uploadGenerationImage({
+        userId: user.id,
+        conversationId: storageFolder,
+        variantId: `bridge-${projectId}-after-seg${body.batch.index + 1}`,
+        imageSource: `data:image/jpeg;base64,${frameBuffer.toString("base64")}`,
+      });
+      bridgeFrameUrl = bridgeUpload.signedUrl;
+    }
+
     return NextResponse.json({
       videoUrl: uploaded.signedUrl,
       storagePath: uploaded.storagePath,
@@ -238,6 +321,7 @@ export async function POST(request: NextRequest) {
       model: videoModel,
       jobId: result.jobId,
       sceneCount: scenes.length,
+      bridgeFrameUrl,
     });
   } catch (err) {
     const message =

@@ -4,6 +4,8 @@ import { useRef, useState } from "react";
 import { Download, Loader2, Pause, Play, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { downloadVideo } from "@/lib/download-utils";
+import { storyboardVideoAspectRatioCss } from "@/lib/storyboard/storyboard-video";
+import { cn } from "@/lib/utils";
 
 export function StoryboardVideoPlayer({
   title = "Storyboard video",
@@ -15,6 +17,7 @@ export function StoryboardVideoPlayer({
   durationSec,
   storyboardDurationSec,
   sceneCount,
+  aspectRatio = "16:9",
   isGenerating,
   videoProgress = 0,
   onGenerate,
@@ -33,6 +36,7 @@ export function StoryboardVideoPlayer({
   /** Storyboard script timing (may differ from actual generated clip length). */
   storyboardDurationSec?: number;
   sceneCount?: number;
+  aspectRatio?: string;
   isGenerating?: boolean;
   videoProgress?: number;
   onGenerate?: () => void;
@@ -44,6 +48,20 @@ export function StoryboardVideoPlayer({
   const videoRef = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(false);
   const [downloading, setDownloading] = useState(false);
+
+  const aspectCss = storyboardVideoAspectRatioCss(aspectRatio);
+  const isPortrait =
+    aspectRatio === "9:16" ||
+    aspectRatio === "3:4" ||
+    aspectRatio === "2:3" ||
+    aspectRatio === "9:21" ||
+    aspectRatio === "1:4" ||
+    aspectRatio === "1:8";
+
+  const frameClassName = cn(
+    "mx-auto w-full max-h-[min(70vh,560px)] bg-background",
+    isPortrait ? "max-w-[min(100%,calc(min(70vh,560px)*9/16))]" : "max-w-full"
+  );
 
   const togglePlay = () => {
     const el = videoRef.current;
@@ -79,6 +97,7 @@ export function StoryboardVideoPlayer({
               : sceneCount
                 ? `${sceneCount} frames`
                 : "Storyboard animatic")}
+          {!isGenerating && aspectRatio ? ` · ${aspectRatio}` : ""}
           {!isGenerating && durationSec
             ? storyboardDurationSec && storyboardDurationSec !== durationSec
               ? ` · video ${durationSec}s (storyboard ${storyboardDurationSec}s)`
@@ -112,7 +131,13 @@ export function StoryboardVideoPlayer({
 
       <div className="overflow-hidden rounded-lg border border-border bg-background">
         {isGenerating ? (
-          <div className="flex aspect-video max-h-[min(70vh,480px)] w-full flex-col items-center justify-center gap-3 text-foreground-muted">
+          <div
+            className={cn(
+              frameClassName,
+              "flex flex-col items-center justify-center gap-3 text-foreground-muted"
+            )}
+            style={{ aspectRatio: aspectCss }}
+          >
             <Loader2 className="h-10 w-10 animate-spin text-accent-orange" />
             <p className="text-sm">{placeholderText}</p>
             <p className="text-xs text-foreground-muted/80">
@@ -123,14 +148,21 @@ export function StoryboardVideoPlayer({
           <video
             ref={videoRef}
             src={videoUrl}
-            className="aspect-video max-h-[min(70vh,480px)] w-full object-cover"
+            className={cn(frameClassName, "object-contain")}
+            style={{ aspectRatio: aspectCss }}
             playsInline
             controls
             onPlay={() => setPlaying(true)}
             onPause={() => setPlaying(false)}
           />
         ) : (
-          <div className="flex aspect-video max-h-[min(70vh,480px)] w-full flex-col items-center justify-center gap-3 px-6 text-center text-foreground-muted">
+          <div
+            className={cn(
+              frameClassName,
+              "flex flex-col items-center justify-center gap-3 px-6 text-center text-foreground-muted"
+            )}
+            style={{ aspectRatio: aspectCss }}
+          >
             <p className="text-sm">No video yet</p>
             <p className="text-xs text-foreground-muted/80">
               {onGenerate

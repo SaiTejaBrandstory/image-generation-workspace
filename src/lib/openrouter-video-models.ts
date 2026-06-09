@@ -179,11 +179,24 @@ export const STORYBOARD_RECOMMENDED_VIDEO_MODELS = [
   "alibaba/wan-2.7",
 ] as const;
 
-/** Models that accept storyboard frames via OpenRouter `frame_images` (image-to-video). */
+/**
+ * Storyboard video sends opening + closing (+ middle) keyframes in preserve mode.
+ * Requires first and last frame slots — excludes Grok, Wan 2.6, Hailuo, etc.
+ * xAI also rejects frame_images + input_references in the same request.
+ */
 export function storyboardCapableVideoModels(
   models: VideoModelConfig[]
 ): VideoModelConfig[] {
-  return models.filter((m) => m.supportedFrameImages.includes("first_frame"));
+  return models.filter(
+    (m) =>
+      m.supportedFrameImages.includes("first_frame") &&
+      m.supportedFrameImages.includes("last_frame")
+  );
+}
+
+/** Models that cannot mix keyframe + consistency refs in one API call (xAI Grok video). */
+export function videoModelRejectsMixedReferenceModes(modelId: string): boolean {
+  return modelId.startsWith("x-ai/grok-imagine");
 }
 
 /**

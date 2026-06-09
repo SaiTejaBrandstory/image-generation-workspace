@@ -39,24 +39,72 @@ export function buildContinuityPromptBlock(
   if (!parts.length) return "";
 
   return [
-    "VISUAL CONTINUITY BIBLE — apply to this frame:",
+    "VISUAL CONTINUITY BIBLE — highest priority, apply before anything else:",
     ...parts,
+    "Characters must be instantly recognizable as the same people in every frame — same face structure, hair, skin tone, outfit, and body proportions.",
     "This frame must look like it belongs to the same storyboard sequence as all other frames.",
   ].join(" ");
 }
 
+function sceneHasFrame(scene: StoryboardScene): boolean {
+  return Boolean(scene.frameImageUrl?.trim() || scene.frameStoragePath?.trim());
+}
+
+function isUsableReferenceScene(
+  scene: StoryboardScene,
+  currentSceneId: string
+): boolean {
+  return (
+    scene.id !== currentSceneId &&
+    scene.frameStatus === "complete" &&
+    sceneHasFrame(scene)
+  );
+}
+
 /** Scene 01 anchor frame — same character look and sketch style for the whole board. */
+export function getAnchorScene(
+  scenes: StoryboardScene[],
+  currentSceneId: string
+): StoryboardScene | undefined {
+  return scenes.find(
+    (s) =>
+      s.sceneNumber === 1 && isUsableReferenceScene(s, currentSceneId)
+  );
+}
+
+/**
+ * Reference frames for scene 2+: Scene 1 anchor (character lock) + immediate
+ * previous shot when available (reduces style drift on longer boards).
+ */
+export function getStoryboardReferenceScenes(
+  scenes: StoryboardScene[],
+  currentSceneId: string
+): StoryboardScene[] {
+  const current = scenes.find((s) => s.id === currentSceneId);
+  if (!current || current.sceneNumber <= 1) return [];
+
+  const refs: StoryboardScene[] = [];
+  const anchor = getAnchorScene(scenes, currentSceneId);
+  if (anchor) refs.push(anchor);
+
+  if (current.sceneNumber > 2) {
+    const previous = scenes.find(
+      (s) =>
+        s.sceneNumber === current.sceneNumber - 1 &&
+        isUsableReferenceScene(s, currentSceneId)
+    );
+    if (previous && !refs.some((r) => r.id === previous.id)) {
+      refs.push(previous);
+    }
+  }
+
+  return refs;
+}
+
+/** @deprecated Prefer getStoryboardReferenceScenes + server-side URL resolution. */
 export function getAnchorFrameUrl(
   scenes: StoryboardScene[],
   currentSceneId: string
 ): string | undefined {
-  const anchor = scenes.find(
-    (s) =>
-      s.sceneNumber === 1 &&
-      s.id !== currentSceneId &&
-      s.frameStatus === "complete" &&
-      s.frameImageUrl &&
-      !s.frameImageUrl.startsWith("data:")
-  );
-  return anchor?.frameImageUrl;
+  return getAnchorScene(scenes, currentSceneId)?.frameImageUrl;
 }

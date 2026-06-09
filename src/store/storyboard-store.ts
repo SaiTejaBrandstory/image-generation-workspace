@@ -1,11 +1,22 @@
 "use client";
 
 import { create } from "zustand";
-import { getAnchorFrameUrl } from "@/lib/storyboard/continuity";
+import {
+  buildDefaultContinuity,
+  getStoryboardReferenceScenes,
+} from "@/lib/storyboard/continuity";
+import {
+  STORYBOARD_DEFAULT_IMAGE_ASPECT,
+  STORYBOARD_IMAGE_MODEL,
+  clampStoryboardImageAspectRatio,
+} from "@/lib/storyboard/storyboard-image";
+import type { AspectRatio } from "@/types";
 import {
   chunkStoryboardScenesForVideo,
   needsStoryboardVideoBatching,
   pickStoryboardBatchDuration,
+  clampStoryboardVideoAspectRatio,
+  resolveStoryboardVideoAspectRatio,
   defaultStoryboardVideoFallbackModel,
   STORYBOARD_VIDEO_HUMAN_FALLBACK_MODEL,
   STORYBOARD_VIDEO_MODEL,
@@ -72,8 +83,11 @@ interface StoryboardState {
   storyboardVideoDurationSec: number | null;
   /** Model that actually rendered the current storyboard video (from API). */
   storyboardVideoModel: string | null;
+  imagePrimaryModel: string;
+  imageAspectRatio: AspectRatio;
   videoPrimaryModel: string;
   videoFallbackModel: string | null;
+  videoAspectRatio: string;
   isGeneratingStitchedVideo: boolean;
   stitchedVideoProgress: number;
   stitchedVideoStatus: string | null;
@@ -119,11 +133,16 @@ interface StoryboardState {
   generateAllFrames: (onlyMissing?: boolean) => Promise<void>;
   regenerateFrames: (sceneIds?: string[]) => Promise<void>;
   generateFrame: (sceneId: string) => Promise<void>;
+  setStoryboardImageModel: (model: string, aspectRatio?: AspectRatio) => void;
   setStoryboardVideoModels: (
     primary: string,
-    fallback: string | null
+    fallback: string | null,
+    aspectRatio?: string
   ) => void;
-  generateStoryboardVideo: (options?: { replace?: boolean }) => Promise<void>;
+  generateStoryboardVideo: (options?: {
+    replace?: boolean;
+    videoAspectRatio?: string;
+  }) => Promise<void>;
   checkPendingStoryboardVideo: () => Promise<void>;
   isFrameBusy: (sceneId: string) => boolean;
   isAnyVideoGenerating: () => boolean;
@@ -189,6 +208,7 @@ async function fetchStoryboardVideoSegment(
   storagePath: string | null;
   durationSec: number;
   model: string | null;
+  bridgeFrameUrl?: string;
 }> {
   let lastError = "Video generation failed";
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -202,6 +222,7 @@ async function fetchStoryboardVideoSegment(
       storagePath?: string;
       durationSec?: number;
       model?: string;
+      bridgeFrameUrl?: string;
       error?: string;
     };
     if (res.ok && data.videoUrl) {
@@ -210,6 +231,7 @@ async function fetchStoryboardVideoSegment(
         storagePath: data.storagePath ?? null,
         durationSec: data.durationSec ?? 0,
         model: data.model?.trim() ?? null,
+        bridgeFrameUrl: data.bridgeFrameUrl?.trim() || undefined,
       };
     }
     lastError = data.error ?? "Video generation failed";
@@ -233,6 +255,18 @@ function scenesForDraft(scenes: StoryboardScene[]): StoryboardScene[] {
 let sceneEditSyncTimer: ReturnType<typeof setTimeout> | null = null;
 
 export const useStoryboardStore = create<StoryboardState>((set, get) => {
+  const storyboardSettingsForPersist = (): StoryboardProjectSettings => {
+    const s = get();
+    return {
+      ...s.settings,
+      imageAspectRatio: s.imageAspectRatio,
+      imagePrimaryModel: s.imagePrimaryModel,
+      videoAspectRatio: s.videoAspectRatio,
+      videoPrimaryModel: s.videoPrimaryModel,
+      videoFallbackModel: s.videoFallbackModel,
+    };
+  };
+
   const syncStoryboardToHistory = async () => {
     const s = get();
     if (s.isCommitting || !s.script.trim() || !s.scenes.length) return;
@@ -242,7 +276,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
       const { conversationId } = await commitStoryboard({
         conversationId: s.conversationId,
         script: s.script,
-        settings: s.settings,
+        settings: storyboardSettingsForPersist(),
         continuity: s.continuity,
         scenes: s.scenes,
         singleVideoStoragePath: s.singleVideoStoragePath,
@@ -324,8 +358,11 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
   storyboardVideoUrl: null,
   storyboardVideoDurationSec: null,
   storyboardVideoModel: null,
+  imagePrimaryModel: STORYBOARD_IMAGE_MODEL,
+  imageAspectRatio: STORYBOARD_DEFAULT_IMAGE_ASPECT,
   videoPrimaryModel: STORYBOARD_VIDEO_MODEL,
   videoFallbackModel: defaultStoryboardVideoFallbackModel(),
+  videoAspectRatio: STORYBOARD_DEFAULT_IMAGE_ASPECT,
   isGeneratingStitchedVideo: false,
   stitchedVideoProgress: 0,
   stitchedVideoStatus: null,
@@ -701,7 +738,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
       const current = scenes.find((s) => s.id === sceneId);
       if (!current) return;
 
-      const referenceFrameUrl = getAnchorFrameUrl(scenes, sceneId);
+      const referenceScenes = getStoryboardReferenceScenes(scenes, sceneId);
       const { conversationId, storyboardProjectId } = get();
       const res = await fetch("/api/storyboard/generate-frame", {
         method: "POST",
@@ -720,8 +757,13 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
           environment: settings.sceneEnvironment || current.environment,
           genre: settings.genre,
           frameStyle: settings.frameStyle,
-          continuity,
-          referenceFrameUrl,
+          continuity: continuity ?? buildDefaultContinuity(settings),
+          referenceFrames: referenceScenes.map((refScene) => ({
+            frameImageUrl: refScene.frameImageUrl,
+            frameStoragePath: refScene.frameStoragePath,
+          })),
+          imageModel: get().imagePrimaryModel,
+          aspectRatio: get().imageAspectRatio,
         }),
       });
       const data = await res.json();
@@ -764,15 +806,45 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
 
   isAnyVideoGenerating: () => get().isGeneratingVideo,
 
-  setStoryboardVideoModels: (primary, fallback) => {
+  setStoryboardImageModel: (model, aspectRatio) => {
+    const imageAspectRatio = clampStoryboardImageAspectRatio(
+      model,
+      aspectRatio ?? get().imageAspectRatio
+    );
+    set((s) => ({
+      imagePrimaryModel: model,
+      imageAspectRatio,
+      settings: {
+        ...s.settings,
+        imagePrimaryModel: model,
+        imageAspectRatio,
+      },
+    }));
+    get().saveDraft();
+  },
+
+  setStoryboardVideoModels: (primary, fallback, aspectRatio) => {
     const catalog = getVideoModelsCatalog();
     const resolved =
       pickStoryboardHumanFrameFallback(primary, catalog, fallback) ??
       STORYBOARD_VIDEO_HUMAN_FALLBACK_MODEL;
-    set({
+    const frameAspect =
+      get().settings.imageAspectRatio ?? get().imageAspectRatio;
+    const videoAspectRatio = resolveStoryboardVideoAspectRatio(primary, {
+      frameAspectRatio: frameAspect,
+      videoAspectRatio: aspectRatio ?? get().videoAspectRatio,
+    });
+    set((s) => ({
       videoPrimaryModel: primary,
       videoFallbackModel: resolved !== primary ? resolved : null,
-    });
+      videoAspectRatio,
+      settings: {
+        ...s.settings,
+        videoPrimaryModel: primary,
+        videoFallbackModel: resolved !== primary ? resolved : null,
+        videoAspectRatio,
+      },
+    }));
     get().saveDraft();
   },
 
@@ -789,7 +861,15 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
       singleVideoStoragePath,
       videoPrimaryModel,
       videoFallbackModel,
+      videoAspectRatio,
+      imageAspectRatio,
     } = get();
+    const frameAspectRatio =
+      settings.imageAspectRatio ?? imageAspectRatio;
+    const selectedVideoAspect =
+      options?.videoAspectRatio?.trim() ||
+      settings.videoAspectRatio ||
+      videoAspectRatio;
     if (get().isAnyVideoGenerating() || isGeneratingFrames) return;
 
     if (
@@ -842,7 +922,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
       isGeneratingVideo: true,
       videoProgress: 4,
       videoGenerationStatus: batched
-        ? `Generating ${batches.length} segments in parallel…`
+        ? `Generating ${batches.length} segments sequentially for continuity…`
         : "Generating video…",
       error: null,
       ...(options?.replace
@@ -864,13 +944,14 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
 
       set({
         videoGenerationStatus: batched
-          ? `Generating ${batches.length} segments in parallel…`
+          ? `Generating segment 1 of ${batches.length} (sequential for continuity)…`
           : "Generating video…",
         videoProgress: 8,
       });
 
       stopProgress = startEstimatedVideoProgress(
-        estimateVideoGenerationMs(maxBatchDuration, { multiFrameRefs: true }),
+        estimateVideoGenerationMs(maxBatchDuration, { multiFrameRefs: true }) *
+          batches.length,
         (percent) => {
           if (get().isGeneratingVideo && get().videoGenerationEpoch === epoch) {
             set({ videoProgress: Math.min(85, Math.round(8 + percent * 0.77)) });
@@ -879,36 +960,75 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
         () => get().videoProgress
       );
 
-      const segmentResults = await Promise.all(
-        batches.map(async (batch, i) => {
-          const batchDuration = pickStoryboardBatchDuration(batch);
-          const segmentLabel = `Segment ${i + 1} (scenes ${batch[0].sceneNumber}–${batch[batch.length - 1].sceneNumber})`;
-          const result = await fetchStoryboardVideoSegment(
-            {
-              projectId: storyboardProjectId,
-              storageConversationId: storageFolder,
-              scenes: batch,
-              script,
-              settings,
-              continuity,
-              videoDurationSec: batchDuration,
-              videoPrimaryModel,
-              videoFallbackModel,
-              batch: batched
-                ? { index: i, total: batches.length }
-                : undefined,
-            },
-            segmentLabel
-          );
-          return {
-            index: i,
-            videoUrl: result.videoUrl,
-            storagePath: result.storagePath,
-            durationSec: result.durationSec,
-            model: result.model,
-          };
-        })
-      );
+      const segmentResults: {
+        index: number;
+        videoUrl: string;
+        storagePath: string | null;
+        durationSec: number;
+        model: string | null;
+      }[] = [];
+      let bridgeFrameUrl: string | undefined;
+
+      for (let i = 0; i < batches.length; i++) {
+        const batch = batches[i]!;
+        const batchDuration = pickStoryboardBatchDuration(batch);
+        const segmentLabel = `Segment ${i + 1} (scenes ${batch[0].sceneNumber}–${batch[batch.length - 1].sceneNumber})`;
+        const previousBatch = i > 0 ? batches[i - 1] : undefined;
+        const previousScene = previousBatch?.[previousBatch.length - 1];
+
+        if (batched) {
+          set({
+            videoGenerationStatus:
+              i === 0
+                ? `Generating segment 1 of ${batches.length}…`
+                : `Generating segment ${i + 1} of ${batches.length} (matching previous shot)…`,
+          });
+        }
+
+        const result = await fetchStoryboardVideoSegment(
+          {
+            projectId: storyboardProjectId,
+            storageConversationId: storageFolder,
+            scenes: batch,
+            script,
+            settings,
+            continuity,
+            videoDurationSec: batchDuration,
+            videoPrimaryModel,
+            videoFallbackModel,
+            videoAspectRatio: selectedVideoAspect,
+            frameAspectRatio,
+            bridgeFrameUrl,
+            batch: batched
+              ? {
+                  index: i,
+                  total: batches.length,
+                  totalScenes: ordered.length,
+                  previousScene: previousScene
+                    ? {
+                        sceneNumber: previousScene.sceneNumber,
+                        visualDescription: previousScene.visualDescription,
+                        voiceover: previousScene.voiceover,
+                        transition: previousScene.transition,
+                      }
+                    : undefined,
+                }
+              : undefined,
+          },
+          segmentLabel
+        );
+
+        bridgeFrameUrl = result.bridgeFrameUrl;
+        segmentResults.push({
+          index: i,
+          videoUrl: result.videoUrl,
+          storagePath: result.storagePath,
+          durationSec: result.durationSec,
+          model: result.model,
+        });
+
+        if (get().videoGenerationEpoch !== epoch) return;
+      }
 
       if (get().videoGenerationEpoch !== epoch) return;
       stopProgress();
@@ -931,7 +1051,8 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
         uniqueSegmentUrls.length === segmentUrls.length
       ) {
         set({
-          videoGenerationStatus: "Stitching segments into one video…",
+          videoGenerationStatus:
+            "Stitching segments and adding unified voiceover…",
           videoProgress: 90,
         });
 
@@ -944,6 +1065,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
             clipUrls: uniqueSegmentUrls,
             totalDurationSec: finalDuration,
             outputKind: "full",
+            scenes: ordered,
           }),
         });
         const stitchData = (await stitchRes.json()) as {
@@ -1124,6 +1246,30 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
         },
         continuity: loaded.continuity,
         scenes: loaded.scenes,
+        imagePrimaryModel:
+          loaded.settings.imagePrimaryModel ?? STORYBOARD_IMAGE_MODEL,
+        imageAspectRatio: clampStoryboardImageAspectRatio(
+          loaded.settings.imagePrimaryModel ?? STORYBOARD_IMAGE_MODEL,
+          loaded.settings.imageAspectRatio ?? STORYBOARD_DEFAULT_IMAGE_ASPECT
+        ),
+        videoPrimaryModel:
+          loaded.settings.videoPrimaryModel ?? STORYBOARD_VIDEO_MODEL,
+        videoFallbackModel:
+          loaded.settings.videoFallbackModel ??
+          defaultStoryboardVideoFallbackModel(
+            loaded.settings.videoPrimaryModel ?? STORYBOARD_VIDEO_MODEL
+          ),
+        videoAspectRatio: resolveStoryboardVideoAspectRatio(
+          loaded.settings.videoPrimaryModel ?? STORYBOARD_VIDEO_MODEL,
+          {
+            frameAspectRatio:
+              loaded.settings.imageAspectRatio ?? STORYBOARD_DEFAULT_IMAGE_ASPECT,
+            videoAspectRatio:
+              loaded.settings.videoAspectRatio ??
+              loaded.settings.imageAspectRatio ??
+              STORYBOARD_DEFAULT_IMAGE_ASPECT,
+          }
+        ),
         step: 4,
         selectedSceneId: loaded.scenes[0]?.id ?? null,
         viewMode: "grid",
@@ -1208,8 +1354,11 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
       storyboardVideoUrl: null,
       storyboardVideoDurationSec: null,
       storyboardVideoModel: null,
+      imagePrimaryModel: STORYBOARD_IMAGE_MODEL,
+      imageAspectRatio: STORYBOARD_DEFAULT_IMAGE_ASPECT,
       videoPrimaryModel: STORYBOARD_VIDEO_MODEL,
       videoFallbackModel: defaultStoryboardVideoFallbackModel(),
+      videoAspectRatio: STORYBOARD_DEFAULT_IMAGE_ASPECT,
       isGeneratingStitchedVideo: false,
       stitchedVideoProgress: 0,
       stitchedVideoStatus: null,
@@ -1281,6 +1430,15 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
         storyboardVideoModel:
           (draft as { storyboardVideoModel?: string | null })
             .storyboardVideoModel ?? null,
+        imagePrimaryModel:
+          (draft as { imagePrimaryModel?: string }).imagePrimaryModel ??
+          STORYBOARD_IMAGE_MODEL,
+        imageAspectRatio: clampStoryboardImageAspectRatio(
+          (draft as { imagePrimaryModel?: string }).imagePrimaryModel ??
+            STORYBOARD_IMAGE_MODEL,
+          (draft as { imageAspectRatio?: AspectRatio }).imageAspectRatio ??
+            STORYBOARD_DEFAULT_IMAGE_ASPECT
+        ),
         videoPrimaryModel:
           (draft as { videoPrimaryModel?: string }).videoPrimaryModel ??
           STORYBOARD_VIDEO_MODEL,
@@ -1290,6 +1448,19 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
             (draft as { videoPrimaryModel?: string }).videoPrimaryModel ??
               STORYBOARD_VIDEO_MODEL
           ),
+        videoAspectRatio: resolveStoryboardVideoAspectRatio(
+          (draft as { videoPrimaryModel?: string }).videoPrimaryModel ??
+            STORYBOARD_VIDEO_MODEL,
+          {
+            frameAspectRatio:
+              (draft as { imageAspectRatio?: AspectRatio }).imageAspectRatio ??
+              STORYBOARD_DEFAULT_IMAGE_ASPECT,
+            videoAspectRatio:
+              (draft as { videoAspectRatio?: string }).videoAspectRatio ??
+              (draft as { imageAspectRatio?: AspectRatio }).imageAspectRatio ??
+              STORYBOARD_DEFAULT_IMAGE_ASPECT,
+          }
+        ),
         storyboardProjectId:
           (draft as { storyboardProjectId?: string }).storyboardProjectId ??
           crypto.randomUUID(),
@@ -1341,8 +1512,11 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
       storyboardVideoUrl: s.storyboardVideoUrl,
       storyboardVideoDurationSec: s.storyboardVideoDurationSec,
       storyboardVideoModel: s.storyboardVideoModel,
+      imagePrimaryModel: s.imagePrimaryModel,
+      imageAspectRatio: s.imageAspectRatio,
       videoPrimaryModel: s.videoPrimaryModel,
       videoFallbackModel: s.videoFallbackModel,
+      videoAspectRatio: s.videoAspectRatio,
       storyboardStitchedVideoUrl: s.storyboardStitchedVideoUrl,
       storyboardStitchedVideoDurationSec: s.storyboardStitchedVideoDurationSec,
       storyboardProjectId: s.storyboardProjectId,

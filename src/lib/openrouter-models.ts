@@ -1,3 +1,4 @@
+import { parseStoryboardImagePricing } from "@/lib/image-model-pricing";
 import type { AspectRatio } from "@/types";
 
 /** How the model accepts output modalities on OpenRouter */
@@ -7,10 +8,16 @@ export type ImageModelGroup =
   | "Google"
   | "xAI"
   | "OpenAI"
+  | "Microsoft"
   | "ByteDance"
   | "Flux"
   | "Recraft"
   | "Riverflow";
+
+/** OpenRouter image models not offered in storyboard picker. */
+export const STORYBOARD_EXCLUDED_IMAGE_MODEL_IDS = new Set([
+  "openrouter/auto",
+]);
 
 export interface ImageModelConfig {
   id: string;
@@ -39,6 +46,11 @@ export interface ImageModelConfig {
   maxReferenceImages: number;
   /** Max bytes per individual reference file (0 = no image input) */
   maxReferenceFileSizeBytes: number;
+  costPerImageUsd: number | null;
+  /** Short price string, e.g. "$0.04/img" */
+  costLabel: string;
+  pricingDetail: string;
+  isPricingEstimate: boolean;
 }
 
 /**
@@ -67,6 +79,18 @@ export const GEMINI_31_EXTENDED_ASPECT_RATIOS: AspectRatio[] = [
   "8:1",
 ];
 
+/** Aspect ratios for microsoft/mai-image-2.5 (OpenRouter image_config) */
+export const MAI_IMAGE_ASPECT_RATIOS: AspectRatio[] = [
+  "auto",
+  "1:1",
+  "2:3",
+  "3:2",
+  "3:4",
+  "4:3",
+  "9:16",
+  "16:9",
+];
+
 /** Shown in UI for models that apply aspect via prompt hint only (no image_config) */
 export const PROMPT_HINT_IMAGE_ASPECT_RATIOS: AspectRatio[] = [
   "auto",
@@ -82,8 +106,102 @@ export const PROMPT_HINT_IMAGE_ASPECT_RATIOS: AspectRatio[] = [
   "21:9",
 ];
 
+/** Endpoint pricing snapshots for curated models (live fetch merges these). */
+const STATIC_IMAGE_ENDPOINT_PRICING: Record<string, Record<string, string>> = {
+  "google/gemini-2.5-flash-image": {
+    image_output: "0.00003",
+    completion: "0.0000025",
+  },
+  "google/gemini-3.1-flash-image-preview": {
+    completion: "0.000003",
+    prompt: "0.0000005",
+    image_output: "0.00006",
+  },
+  "google/gemini-3-pro-image-preview": {
+    image_output: "0.00012",
+    completion: "0.000012",
+  },
+  "openai/gpt-5-image-mini": {
+    image_output: "0.000008",
+    completion: "0.000002",
+  },
+  "openai/gpt-5-image": {
+    image_output: "0.00004",
+    completion: "0.00001",
+  },
+  "openai/gpt-5.4-image-2": {
+    image_output: "0.00003",
+    completion: "0.000015",
+  },
+  "x-ai/grok-imagine-image-quality": {
+    image: "0.01",
+    prompt: "0",
+    completion: "0",
+  },
+  "black-forest-labs/flux.2-pro": {
+    image_output: "0.00000732421875",
+    completion: "0",
+  },
+  "black-forest-labs/flux.2-klein-4b": {
+    image_output: "0.0000013427734375",
+    completion: "0",
+  },
+  "microsoft/mai-image-2.5": {
+    prompt: "0.000005",
+    completion: "0",
+    image_output: "0.000047",
+    image_token: "0.000047",
+  },
+};
+
+/** Curated models — always priced from /endpoints (list API omits image_output). */
+const CURATED_IMAGE_PRICING_MODEL_IDS = new Set(
+  Object.keys(STATIC_IMAGE_ENDPOINT_PRICING)
+);
+
+type ImageModelPricingInput = Omit<
+  ImageModelConfig,
+  "costPerImageUsd" | "costLabel" | "pricingDetail" | "isPricingEstimate"
+>;
+
+function mergeImageEndpointPricing(
+  modelId: string,
+  pricing?: Record<string, string>
+): Record<string, string> | undefined {
+  const staticPricing = STATIC_IMAGE_ENDPOINT_PRICING[modelId];
+  if (!pricing && !staticPricing) return undefined;
+  if (!staticPricing) return pricing;
+  if (!pricing) return staticPricing;
+  // List API often lacks image_output / image_token; merge curated snapshot.
+  return {
+    ...pricing,
+    ...(staticPricing.image_output
+      ? { image_output: staticPricing.image_output }
+      : {}),
+    ...(staticPricing.image_token
+      ? { image_token: staticPricing.image_token }
+      : {}),
+    ...(staticPricing.image && !pricing.image ? { image: staticPricing.image } : {}),
+  };
+}
+
+function attachImageModelPricing(
+  model: ImageModelPricingInput,
+  pricing?: Record<string, string>
+): ImageModelConfig {
+  const merged = mergeImageEndpointPricing(model.id, pricing);
+  const parsed = parseStoryboardImagePricing(merged);
+  return {
+    ...model,
+    costPerImageUsd: parsed.costPerImageUsd,
+    costLabel: parsed.label,
+    pricingDetail: parsed.detail,
+    isPricingEstimate: parsed.isEstimate,
+  };
+}
+
 /** Curated popular image models from OpenRouter (?output_modalities=image) */
-export const OPENROUTER_IMAGE_MODELS: ImageModelConfig[] = [
+const OPENROUTER_IMAGE_MODELS_BASE = [
   // —— Google Gemini (Nano Banana) ——
   {
     id: "google/gemini-2.5-flash-image",
@@ -136,18 +254,8 @@ export const OPENROUTER_IMAGE_MODELS: ImageModelConfig[] = [
     description: "Photoreal · multilingual text · refs OK",
     modalityMode: "image-only",
     supportsVisionInput: true,
-    supportsAspectConfig: false,
-    // Grok: no image_config on OpenRouter — ratios are prompt hints only
-    supportedAspectRatios: [
-      "auto",
-      "1:1",
-      "2:3",
-      "3:2",
-      "3:4",
-      "4:3",
-      "16:9",
-      "9:16",
-    ],
+    supportsAspectConfig: true,
+    supportedAspectRatios: [...OPENROUTER_STANDARD_IMAGE_ASPECT_RATIOS],
     maxPromptChars: 4_000,
     maxReferenceImages: 4,
     maxReferenceFileSizeBytes: 2_000_000,
@@ -201,12 +309,12 @@ export const OPENROUTER_IMAGE_MODELS: ImageModelConfig[] = [
     group: "ByteDance",
     description: "ByteDance · text-to-image · high quality",
     modalityMode: "image-only",
-    supportsVisionInput: false,
+    supportsVisionInput: true,
     supportsAspectConfig: false,
     supportedAspectRatios: [...PROMPT_HINT_IMAGE_ASPECT_RATIOS],
     maxPromptChars: 2_000,
-    maxReferenceImages: 0,
-    maxReferenceFileSizeBytes: 0,
+    maxReferenceImages: 4,
+    maxReferenceFileSizeBytes: 4_000_000,
   },
 
   // —— Black Forest Labs Flux ——
@@ -216,12 +324,12 @@ export const OPENROUTER_IMAGE_MODELS: ImageModelConfig[] = [
     group: "Flux",
     description: "Photoreal flagship · text-to-image",
     modalityMode: "image-only",
-    supportsVisionInput: false,
+    supportsVisionInput: true,
     supportsAspectConfig: true,
     supportedAspectRatios: [...OPENROUTER_STANDARD_IMAGE_ASPECT_RATIOS],
-    maxPromptChars: 1_000,
-    maxReferenceImages: 0,
-    maxReferenceFileSizeBytes: 0,
+    maxPromptChars: 32_000,
+    maxReferenceImages: 4,
+    maxReferenceFileSizeBytes: 4_000_000,
   },
   {
     id: "black-forest-labs/flux.2-flex",
@@ -229,12 +337,12 @@ export const OPENROUTER_IMAGE_MODELS: ImageModelConfig[] = [
     group: "Flux",
     description: "Flexible quality/speed · text-to-image",
     modalityMode: "image-only",
-    supportsVisionInput: false,
+    supportsVisionInput: true,
     supportsAspectConfig: true,
     supportedAspectRatios: [...OPENROUTER_STANDARD_IMAGE_ASPECT_RATIOS],
-    maxPromptChars: 1_000,
-    maxReferenceImages: 0,
-    maxReferenceFileSizeBytes: 0,
+    maxPromptChars: 32_000,
+    maxReferenceImages: 4,
+    maxReferenceFileSizeBytes: 4_000_000,
   },
   {
     id: "black-forest-labs/flux.2-max",
@@ -242,12 +350,12 @@ export const OPENROUTER_IMAGE_MODELS: ImageModelConfig[] = [
     group: "Flux",
     description: "Highest Flux quality · text-to-image",
     modalityMode: "image-only",
-    supportsVisionInput: false,
+    supportsVisionInput: true,
     supportsAspectConfig: true,
     supportedAspectRatios: [...OPENROUTER_STANDARD_IMAGE_ASPECT_RATIOS],
-    maxPromptChars: 1_000,
-    maxReferenceImages: 0,
-    maxReferenceFileSizeBytes: 0,
+    maxPromptChars: 32_000,
+    maxReferenceImages: 4,
+    maxReferenceFileSizeBytes: 4_000_000,
   },
   {
     id: "black-forest-labs/flux.2-klein-4b",
@@ -255,12 +363,12 @@ export const OPENROUTER_IMAGE_MODELS: ImageModelConfig[] = [
     group: "Flux",
     description: "Fast lightweight Flux · text-to-image",
     modalityMode: "image-only",
-    supportsVisionInput: false,
+    supportsVisionInput: true,
     supportsAspectConfig: true,
     supportedAspectRatios: [...OPENROUTER_STANDARD_IMAGE_ASPECT_RATIOS],
-    maxPromptChars: 1_000,
-    maxReferenceImages: 0,
-    maxReferenceFileSizeBytes: 0,
+    maxPromptChars: 32_000,
+    maxReferenceImages: 4,
+    maxReferenceFileSizeBytes: 4_000_000,
   },
 
   // —— Recraft ——
@@ -270,12 +378,12 @@ export const OPENROUTER_IMAGE_MODELS: ImageModelConfig[] = [
     group: "Recraft",
     description: "Design & illustration · text-to-image",
     modalityMode: "image-only",
-    supportsVisionInput: false,
+    supportsVisionInput: true,
     supportsAspectConfig: false,
     supportedAspectRatios: [...PROMPT_HINT_IMAGE_ASPECT_RATIOS],
     maxPromptChars: 2_000,
-    maxReferenceImages: 0,
-    maxReferenceFileSizeBytes: 0,
+    maxReferenceImages: 4,
+    maxReferenceFileSizeBytes: 4_000_000,
   },
   {
     id: "recraft/recraft-v4",
@@ -283,12 +391,12 @@ export const OPENROUTER_IMAGE_MODELS: ImageModelConfig[] = [
     group: "Recraft",
     description: "Strong text in image · text-to-image",
     modalityMode: "image-only",
-    supportsVisionInput: false,
+    supportsVisionInput: true,
     supportsAspectConfig: false,
     supportedAspectRatios: [...PROMPT_HINT_IMAGE_ASPECT_RATIOS],
     maxPromptChars: 2_000,
-    maxReferenceImages: 0,
-    maxReferenceFileSizeBytes: 0,
+    maxReferenceImages: 4,
+    maxReferenceFileSizeBytes: 4_000_000,
   },
   {
     id: "recraft/recraft-v4.1",
@@ -296,12 +404,12 @@ export const OPENROUTER_IMAGE_MODELS: ImageModelConfig[] = [
     group: "Recraft",
     description: "Latest aesthetic Recraft · text-to-image",
     modalityMode: "image-only",
-    supportsVisionInput: false,
+    supportsVisionInput: true,
     supportsAspectConfig: false,
     supportedAspectRatios: [...PROMPT_HINT_IMAGE_ASPECT_RATIOS],
     maxPromptChars: 2_000,
-    maxReferenceImages: 0,
-    maxReferenceFileSizeBytes: 0,
+    maxReferenceImages: 4,
+    maxReferenceFileSizeBytes: 4_000_000,
   },
   {
     id: "recraft/recraft-v4-pro",
@@ -309,12 +417,12 @@ export const OPENROUTER_IMAGE_MODELS: ImageModelConfig[] = [
     group: "Recraft",
     description: "2K production Recraft · text-to-image",
     modalityMode: "image-only",
-    supportsVisionInput: false,
+    supportsVisionInput: true,
     supportsAspectConfig: false,
     supportedAspectRatios: [...PROMPT_HINT_IMAGE_ASPECT_RATIOS],
     maxPromptChars: 2_000,
-    maxReferenceImages: 0,
-    maxReferenceFileSizeBytes: 0,
+    maxReferenceImages: 4,
+    maxReferenceFileSizeBytes: 4_000_000,
   },
   {
     id: "recraft/recraft-v4.1-pro",
@@ -322,12 +430,12 @@ export const OPENROUTER_IMAGE_MODELS: ImageModelConfig[] = [
     group: "Recraft",
     description: "2K V4.1 · highest Recraft fidelity · text-to-image",
     modalityMode: "image-only",
-    supportsVisionInput: false,
+    supportsVisionInput: true,
     supportsAspectConfig: false,
     supportedAspectRatios: [...PROMPT_HINT_IMAGE_ASPECT_RATIOS],
     maxPromptChars: 2_000,
-    maxReferenceImages: 0,
-    maxReferenceFileSizeBytes: 0,
+    maxReferenceImages: 4,
+    maxReferenceFileSizeBytes: 4_000_000,
   },
 
   // —— Sourceful Riverflow ——
@@ -337,12 +445,12 @@ export const OPENROUTER_IMAGE_MODELS: ImageModelConfig[] = [
     group: "Riverflow",
     description: "Fast commercial · text-to-image",
     modalityMode: "image-only",
-    supportsVisionInput: false,
+    supportsVisionInput: true,
     supportsAspectConfig: false,
     supportedAspectRatios: [...PROMPT_HINT_IMAGE_ASPECT_RATIOS],
     maxPromptChars: 2_000,
-    maxReferenceImages: 0,
-    maxReferenceFileSizeBytes: 0,
+    maxReferenceImages: 4,
+    maxReferenceFileSizeBytes: 4_000_000,
   },
   {
     id: "sourceful/riverflow-v2-standard-preview",
@@ -350,12 +458,12 @@ export const OPENROUTER_IMAGE_MODELS: ImageModelConfig[] = [
     group: "Riverflow",
     description: "Balanced · text-to-image",
     modalityMode: "image-only",
-    supportsVisionInput: false,
+    supportsVisionInput: true,
     supportsAspectConfig: false,
     supportedAspectRatios: [...PROMPT_HINT_IMAGE_ASPECT_RATIOS],
     maxPromptChars: 2_000,
-    maxReferenceImages: 0,
-    maxReferenceFileSizeBytes: 0,
+    maxReferenceImages: 4,
+    maxReferenceFileSizeBytes: 4_000_000,
   },
   {
     id: "sourceful/riverflow-v2-max-preview",
@@ -363,12 +471,12 @@ export const OPENROUTER_IMAGE_MODELS: ImageModelConfig[] = [
     group: "Riverflow",
     description: "Highest Riverflow quality · text-to-image",
     modalityMode: "image-only",
-    supportsVisionInput: false,
+    supportsVisionInput: true,
     supportsAspectConfig: false,
     supportedAspectRatios: [...PROMPT_HINT_IMAGE_ASPECT_RATIOS],
     maxPromptChars: 2_000,
-    maxReferenceImages: 0,
-    maxReferenceFileSizeBytes: 0,
+    maxReferenceImages: 4,
+    maxReferenceFileSizeBytes: 4_000_000,
   },
   {
     id: "sourceful/riverflow-v2-pro",
@@ -376,14 +484,153 @@ export const OPENROUTER_IMAGE_MODELS: ImageModelConfig[] = [
     group: "Riverflow",
     description: "Pro tier · text rendering · text-to-image",
     modalityMode: "image-only",
-    supportsVisionInput: false,
+    supportsVisionInput: true,
     supportsAspectConfig: false,
     supportedAspectRatios: [...PROMPT_HINT_IMAGE_ASPECT_RATIOS],
     maxPromptChars: 2_000,
-    maxReferenceImages: 0,
-    maxReferenceFileSizeBytes: 0,
+    maxReferenceImages: 4,
+    maxReferenceFileSizeBytes: 4_000_000,
+  },
+  {
+    id: "sourceful/riverflow-v2-fast",
+    label: "Riverflow Fast",
+    group: "Riverflow",
+    description: "Fast commercial · image + text",
+    modalityMode: "image-only",
+    supportsVisionInput: true,
+    supportsAspectConfig: false,
+    supportedAspectRatios: [...PROMPT_HINT_IMAGE_ASPECT_RATIOS],
+    maxPromptChars: 2_000,
+    maxReferenceImages: 4,
+    maxReferenceFileSizeBytes: 4_000_000,
+  },
+  {
+    id: "sourceful/riverflow-v2.5-pro:free",
+    label: "Riverflow 2.5 Pro (free)",
+    group: "Riverflow",
+    description: "Riverflow 2.5 pro · free tier",
+    modalityMode: "image-only",
+    supportsVisionInput: true,
+    supportsAspectConfig: false,
+    supportedAspectRatios: [...PROMPT_HINT_IMAGE_ASPECT_RATIOS],
+    maxPromptChars: 2_000,
+    maxReferenceImages: 4,
+    maxReferenceFileSizeBytes: 4_000_000,
+  },
+  {
+    id: "sourceful/riverflow-v2.5-fast:free",
+    label: "Riverflow 2.5 Fast (free)",
+    group: "Riverflow",
+    description: "Riverflow 2.5 fast · free tier",
+    modalityMode: "image-only",
+    supportsVisionInput: true,
+    supportsAspectConfig: false,
+    supportedAspectRatios: [...PROMPT_HINT_IMAGE_ASPECT_RATIOS],
+    maxPromptChars: 2_000,
+    maxReferenceImages: 4,
+    maxReferenceFileSizeBytes: 4_000_000,
+  },
+
+  // —— Microsoft ——
+  {
+    id: "microsoft/mai-image-2.5",
+    label: "MAI Image 2.5",
+    group: "Microsoft",
+    description: "Microsoft image model · refs OK",
+    modalityMode: "image-text",
+    supportsVisionInput: true,
+    supportsAspectConfig: true,
+    supportedAspectRatios: [...MAI_IMAGE_ASPECT_RATIOS],
+    maxPromptChars: 32_000,
+    maxReferenceImages: 4,
+    maxReferenceFileSizeBytes: 4_000_000,
+  },
+
+  // —— Recraft (additional OpenRouter SKUs) ——
+  {
+    id: "recraft/recraft-v4-vector",
+    label: "Recraft V4 Vector",
+    group: "Recraft",
+    description: "Vector output · image + text",
+    modalityMode: "image-only",
+    supportsVisionInput: true,
+    supportsAspectConfig: false,
+    supportedAspectRatios: [...PROMPT_HINT_IMAGE_ASPECT_RATIOS],
+    maxPromptChars: 2_000,
+    maxReferenceImages: 4,
+    maxReferenceFileSizeBytes: 4_000_000,
+  },
+  {
+    id: "recraft/recraft-v4-pro-vector",
+    label: "Recraft V4 Pro Vector",
+    group: "Recraft",
+    description: "Pro vector · image + text",
+    modalityMode: "image-only",
+    supportsVisionInput: true,
+    supportsAspectConfig: false,
+    supportedAspectRatios: [...PROMPT_HINT_IMAGE_ASPECT_RATIOS],
+    maxPromptChars: 2_000,
+    maxReferenceImages: 4,
+    maxReferenceFileSizeBytes: 4_000_000,
+  },
+  {
+    id: "recraft/recraft-v4.1-vector",
+    label: "Recraft V4.1 Vector",
+    group: "Recraft",
+    description: "V4.1 vector · image + text",
+    modalityMode: "image-only",
+    supportsVisionInput: true,
+    supportsAspectConfig: false,
+    supportedAspectRatios: [...PROMPT_HINT_IMAGE_ASPECT_RATIOS],
+    maxPromptChars: 2_000,
+    maxReferenceImages: 4,
+    maxReferenceFileSizeBytes: 4_000_000,
+  },
+  {
+    id: "recraft/recraft-v4.1-pro-vector",
+    label: "Recraft V4.1 Pro Vector",
+    group: "Recraft",
+    description: "V4.1 pro vector · image + text",
+    modalityMode: "image-only",
+    supportsVisionInput: true,
+    supportsAspectConfig: false,
+    supportedAspectRatios: [...PROMPT_HINT_IMAGE_ASPECT_RATIOS],
+    maxPromptChars: 2_000,
+    maxReferenceImages: 4,
+    maxReferenceFileSizeBytes: 4_000_000,
+  },
+  {
+    id: "recraft/recraft-v4.1-utility",
+    label: "Recraft V4.1 Utility",
+    group: "Recraft",
+    description: "Utility tier · image + text",
+    modalityMode: "image-only",
+    supportsVisionInput: true,
+    supportsAspectConfig: false,
+    supportedAspectRatios: [...PROMPT_HINT_IMAGE_ASPECT_RATIOS],
+    maxPromptChars: 2_000,
+    maxReferenceImages: 4,
+    maxReferenceFileSizeBytes: 4_000_000,
+  },
+  {
+    id: "recraft/recraft-v4.1-utility-pro",
+    label: "Recraft V4.1 Utility Pro",
+    group: "Recraft",
+    description: "Utility pro · image + text",
+    modalityMode: "image-only",
+    supportsVisionInput: true,
+    supportsAspectConfig: false,
+    supportedAspectRatios: [...PROMPT_HINT_IMAGE_ASPECT_RATIOS],
+    maxPromptChars: 2_000,
+    maxReferenceImages: 4,
+    maxReferenceFileSizeBytes: 4_000_000,
   },
 ];
+
+export const OPENROUTER_IMAGE_MODELS: ImageModelConfig[] =
+  OPENROUTER_IMAGE_MODELS_BASE.map((model) =>
+    attachImageModelPricing(model as ImageModelPricingInput)
+  );
 
 /** Legacy / renamed OpenRouter slugs → current IDs */
 export const MODEL_ALIASES: Record<string, string> = {
@@ -394,6 +641,7 @@ export const IMAGE_MODEL_GROUPS: ImageModelGroup[] = [
   "Google",
   "xAI",
   "OpenAI",
+  "Microsoft",
   "ByteDance",
   "Flux",
   "Recraft",
@@ -430,22 +678,60 @@ export interface OpenRouterImageModelApiRow {
   id: string;
   name: string;
   description?: string;
+  pricing?: Record<string, string>;
   architecture?: {
     input_modalities?: string[];
     output_modalities?: string[];
   };
 }
 
+interface OpenRouterImageEndpointRow {
+  pricing?: Record<string, string>;
+}
+
 function inferGroup(id: string): ImageModelGroup {
   if (id.startsWith("google/")) return "Google";
   if (id.startsWith("x-ai/")) return "xAI";
   if (id.startsWith("openai/")) return "OpenAI";
+  if (id.startsWith("microsoft/")) return "Microsoft";
   if (id.startsWith("bytedance-seed/") || id.startsWith("bytedance/"))
     return "ByteDance";
   if (id.startsWith("black-forest-labs/")) return "Flux";
   if (id.startsWith("recraft/")) return "Recraft";
   if (id.startsWith("sourceful/")) return "Riverflow";
   return "Flux";
+}
+
+function overlayImageModelArchitecture(
+  model: ImageModelPricingInput,
+  row: OpenRouterImageModelApiRow
+): ImageModelPricingInput {
+  const inputMods = row.architecture?.input_modalities ?? [];
+  const outputMods = row.architecture?.output_modalities ?? [];
+  const supportsVisionInput =
+    inputMods.includes("image") || inputMods.includes("file");
+
+  return {
+    ...model,
+    modalityMode: outputMods.includes("text") ? "image-text" : "image-only",
+    supportsVisionInput,
+    maxReferenceImages: supportsVisionInput
+      ? Math.max(model.maxReferenceImages, 4)
+      : 0,
+    maxReferenceFileSizeBytes: supportsVisionInput
+      ? Math.max(model.maxReferenceFileSizeBytes, 4_000_000)
+      : 0,
+    maxPromptChars: supportsVisionInput
+      ? Math.max(model.maxPromptChars, 32_000)
+      : model.maxPromptChars,
+  };
+}
+
+/** All image-generation models usable in storyboard (live catalog or static fallback). */
+export function storyboardSelectableImageModels(
+  models: ImageModelConfig[]
+): ImageModelConfig[] {
+  return models.filter((m) => !STORYBOARD_EXCLUDED_IMAGE_MODEL_IDS.has(m.id));
 }
 
 function defaultAspectRatiosForGroup(
@@ -458,7 +744,10 @@ function defaultAspectRatiosForGroup(
       ...GEMINI_31_EXTENDED_ASPECT_RATIOS,
     ];
   }
-  if (["Google", "OpenAI", "Flux"].includes(group)) {
+  if (modelId === "microsoft/mai-image-2.5") {
+    return [...MAI_IMAGE_ASPECT_RATIOS];
+  }
+  if (["Google", "OpenAI", "Flux", "xAI"].includes(group)) {
     return [...OPENROUTER_STANDARD_IMAGE_ASPECT_RATIOS];
   }
   return [...PROMPT_HINT_IMAGE_ASPECT_RATIOS];
@@ -481,27 +770,127 @@ export function normalizeOpenRouterImageModel(
   const resolved = MODEL_ALIASES[row.id] ?? row.id;
   const known = STATIC_ENRICHMENT.get(resolved);
   // Return enriched static config (with correct id = resolved) for known models.
-  if (known) return { ...known, id: resolved };
+  if (known) {
+    return attachImageModelPricing(
+      overlayImageModelArchitecture({ ...known, id: resolved }, row),
+      row.pricing ?? STATIC_IMAGE_ENDPOINT_PRICING[resolved]
+    );
+  }
 
   const group = inferGroup(row.id);
-  const outputMods = row.architecture?.output_modalities ?? [];
-  const inputMods = row.architecture?.input_modalities ?? [];
-  const supportsAspectConfig = ["Google", "OpenAI", "Flux"].includes(group);
-  const supportsVisionInput = inputMods.includes("image");
+  const supportsAspectConfig = ["Google", "OpenAI", "Flux", "xAI", "Microsoft"].includes(
+    group
+  );
 
-  return {
-    id: row.id,
-    label: labelFromName(row.name, row.id),
-    group,
-    description: (row.description ?? "").slice(0, 120),
-    modalityMode: outputMods.includes("text") ? "image-text" : "image-only",
-    supportsVisionInput,
-    supportsAspectConfig,
-    supportedAspectRatios: defaultAspectRatiosForGroup(group, row.id),
-    maxPromptChars: supportsVisionInput ? 32_000 : 2_000,
-    maxReferenceImages: supportsVisionInput ? 4 : 0,
-    maxReferenceFileSizeBytes: supportsVisionInput ? 4_000_000 : 0,
-  };
+  return attachImageModelPricing(
+    overlayImageModelArchitecture(
+      {
+        id: row.id,
+        label: labelFromName(row.name, row.id),
+        group,
+        description: (row.description ?? "").slice(0, 120),
+        modalityMode: "image-only",
+        supportsVisionInput: false,
+        supportsAspectConfig,
+        supportedAspectRatios: defaultAspectRatiosForGroup(group, row.id),
+        maxPromptChars: 2_000,
+        maxReferenceImages: 0,
+        maxReferenceFileSizeBytes: 0,
+      },
+      row
+    ),
+    row.pricing
+  );
+}
+
+export function sortImageModelsByCost(
+  models: ImageModelConfig[]
+): ImageModelConfig[] {
+  return [...models].sort((a, b) => {
+    const ac = a.costPerImageUsd ?? Number.POSITIVE_INFINITY;
+    const bc = b.costPerImageUsd ?? Number.POSITIVE_INFINITY;
+    if (ac !== bc) return ac - bc;
+    return a.label.localeCompare(b.label);
+  });
+}
+
+function pickCheapestEndpointPricing(
+  endpoints: OpenRouterImageEndpointRow[]
+): Record<string, string> | undefined {
+  let best: { pricing: Record<string, string>; cost: number } | undefined;
+
+  for (const endpoint of endpoints) {
+    if (!endpoint.pricing) continue;
+    const parsed = parseStoryboardImagePricing(endpoint.pricing);
+    if (parsed.costPerImageUsd == null) continue;
+    if (
+      !best ||
+      parsed.costPerImageUsd < best.cost
+    ) {
+      best = { pricing: endpoint.pricing, cost: parsed.costPerImageUsd };
+    }
+  }
+
+  return best?.pricing;
+}
+
+async function fetchImageEndpointPricing(
+  modelId: string,
+  headers: Record<string, string>
+): Promise<Record<string, string> | undefined> {
+  try {
+    const res = await fetch(
+      `https://openrouter.ai/api/v1/models/${encodeURIComponent(modelId)}/endpoints`,
+      { headers, next: { revalidate: 3600 } }
+    );
+    if (!res.ok) return undefined;
+    const json = (await res.json()) as {
+      data?: { endpoints?: OpenRouterImageEndpointRow[] };
+    };
+    return pickCheapestEndpointPricing(json.data?.endpoints ?? []);
+  } catch {
+    return undefined;
+  }
+}
+
+async function enrichImageModelsPricing(
+  models: ImageModelConfig[],
+  headers: Record<string, string>
+): Promise<ImageModelConfig[]> {
+  const needsEndpoint = models.filter(
+    (m) =>
+      CURATED_IMAGE_PRICING_MODEL_IDS.has(m.id) || m.costPerImageUsd == null
+  );
+  if (!needsEndpoint.length) return models;
+
+  const pricingById = new Map<string, Record<string, string>>();
+  const batchSize = 8;
+  for (let i = 0; i < needsEndpoint.length; i += batchSize) {
+    const batch = needsEndpoint.slice(i, i + batchSize);
+    const results = await Promise.all(
+      batch.map(async (model) => ({
+        id: model.id,
+        pricing: await fetchImageEndpointPricing(model.id, headers),
+      }))
+    );
+    for (const result of results) {
+      if (result.pricing) pricingById.set(result.id, result.pricing);
+    }
+  }
+
+  return models.map((model) => {
+    const endpointPricing = pricingById.get(model.id);
+    if (endpointPricing) {
+      return attachImageModelPricing(model, endpointPricing);
+    }
+    if (CURATED_IMAGE_PRICING_MODEL_IDS.has(model.id)) {
+      return attachImageModelPricing(
+        model,
+        STATIC_IMAGE_ENDPOINT_PRICING[model.id]
+      );
+    }
+    return model;
+  });
 }
 
 // ── Public helpers ────────────────────────────────────────────────────────────
@@ -633,11 +1022,14 @@ export async function fetchImageModelsFromOpenRouter(
 
   // Deduplicate by resolved id (alias rows and canonical rows can both appear).
   const seen = new Set<string>();
-  return rows
+  const models = rows
     .map(normalizeOpenRouterImageModel)
     .filter((m) => {
       if (seen.has(m.id)) return false;
       seen.add(m.id);
       return true;
     });
+
+  const enriched = await enrichImageModelsPricing(models, headers);
+  return enriched.filter((m) => !STORYBOARD_EXCLUDED_IMAGE_MODEL_IDS.has(m.id));
 }

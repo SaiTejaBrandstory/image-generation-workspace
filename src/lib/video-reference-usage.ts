@@ -1,5 +1,8 @@
 import { MAX_REFERENCES_VIDEO } from "@/lib/reference-limits";
-import { getVideoModelConfig } from "@/lib/openrouter-video-models";
+import {
+  getVideoModelConfig,
+  videoModelRejectsMixedReferenceModes,
+} from "@/lib/openrouter-video-models";
 import type { ReferenceImagePayload, ReferenceUsageMode } from "@/types";
 
 const MAX_VIDEO_REFERENCES = MAX_REFERENCES_VIDEO;
@@ -85,6 +88,18 @@ export function buildVideoReferencePayloads(
       if (supportsLast && batch[1]?.dataUrl) {
         pushFrame(batch[1].dataUrl, "last_frame");
       }
+    }
+  }
+
+  if (
+    videoModelRejectsMixedReferenceModes(modelId) &&
+    frameImages.length > 0 &&
+    inputReferences.length > 0
+  ) {
+    if (usageMode === "preserve") {
+      inputReferences.length = 0;
+    } else {
+      frameImages.length = 0;
     }
   }
 

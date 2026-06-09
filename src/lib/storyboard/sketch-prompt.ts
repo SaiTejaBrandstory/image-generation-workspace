@@ -4,6 +4,7 @@ import {
   getFrameStyleConfig,
   normalizeFrameStyle,
 } from "@/lib/storyboard/frame-styles";
+import type { AspectRatio } from "@/types";
 import type {
   StoryboardContinuity,
   StoryboardFrameStyle,
@@ -40,6 +41,27 @@ export interface StoryboardSketchSceneInput {
   continuity?: StoryboardContinuity | null;
   hasReferenceFrame?: boolean;
   referenceFrameUrl?: string;
+  referenceFrameUrls?: string[];
+  aspectRatio?: AspectRatio;
+}
+
+function storyboardAspectCanvasLabel(aspectRatio: AspectRatio): string {
+  switch (aspectRatio) {
+    case "16:9":
+      return "16:9 widescreen";
+    case "9:16":
+      return "9:16 vertical";
+    case "1:1":
+      return "1:1 square";
+    case "4:3":
+      return "4:3";
+    case "3:4":
+      return "3:4 portrait";
+    case "21:9":
+      return "21:9 ultrawide";
+    default:
+      return aspectRatio;
+  }
 }
 
 const UNIVERSAL_NEGATIVE_CONSTRAINTS = [
@@ -86,10 +108,20 @@ export function buildStoryboardSketchPrompt(
 
   const continuityBlock = buildContinuityPromptBlock(scene.continuity);
   const referenceNote = scene.hasReferenceFrame
-    ? `Match the attached reference frame exactly for character appearance, costume, props, and ${styleConfig.referenceHint}. Only change camera angle, composition, and action for this new shot.`
+    ? [
+        "CRITICAL — CHARACTER CONSISTENCY:",
+        "The attached reference image(s) are the visual ground truth for this storyboard.",
+        "Copy the EXACT same character faces, skin tone, hair, age, body type, clothing, accessories, and props from the anchor frame.",
+        `Preserve the same ${styleConfig.referenceHint} across every frame.`,
+        "Do NOT redesign, recast, or age-shift any character. Only change camera angle, framing, pose, and action for this new shot.",
+      ].join(" ")
     : scene.sceneNumber > 1
-      ? "Keep characters and visual style consistent with earlier frames in this same storyboard sequence."
-      : `This is the establishing frame — define the character designs and ${styleConfig.label.toLowerCase()} look that all following frames will match.`;
+      ? "Keep characters and visual style consistent with earlier frames in this same storyboard sequence — identical faces, costumes, and props."
+      : [
+          "CHARACTER LOCK — ESTABLISHING FRAME:",
+          `Define the canonical character designs and ${styleConfig.label.toLowerCase()} look for this entire storyboard.`,
+          "Every following frame must match these exact faces, costumes, props, and art style.",
+        ].join(" ");
 
   const negativeConstraints =
     frameStyle === "sketch"
@@ -97,22 +129,20 @@ export function buildStoryboardSketchPrompt(
       : UNIVERSAL_NEGATIVE_CONSTRAINTS;
 
   return [
+    continuityBlock,
+    referenceNote,
     styleConfig.promptBlock,
     negativeConstraints,
     STORYBOARD_NO_TEXT,
-    continuityBlock,
-    referenceNote,
     `Draw this shot only (scene index ${scene.sceneNumber} for production reference — do not write this number in the image): ${shotDescription}.`,
     moodHint,
-    "Full-bleed 16:9 widescreen storyboard frame — the image must fill the entire canvas edge-to-edge with no white borders or empty space. Pure visual content only.",
+    `Full-bleed ${storyboardAspectCanvasLabel(scene.aspectRatio ?? "16:9")} storyboard frame — the image must fill the entire canvas edge-to-edge with no white borders or empty space. Pure visual content only.`,
   ]
     .filter(Boolean)
     .join(" ");
 }
 
-/** Storyboard sketch frames always use Gemini 3 Pro Image. */
-export const STORYBOARD_IMAGE_MODEL = "google/gemini-3-pro-image-preview";
-
-export function resolveStoryboardImageModel(): string {
-  return STORYBOARD_IMAGE_MODEL;
-}
+export {
+  resolveStoryboardImageModel,
+  STORYBOARD_IMAGE_MODEL,
+} from "@/lib/storyboard/storyboard-image";

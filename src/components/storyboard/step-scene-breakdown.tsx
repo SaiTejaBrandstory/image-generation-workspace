@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   ChevronDown,
   ChevronUp,
@@ -13,6 +13,7 @@ import {
   Undo2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { StoryboardImageModelDialog } from "@/components/storyboard/storyboard-image-model-dialog";
 import { StoryboardSceneEditForm } from "@/components/storyboard/storyboard-scene-edit-form";
 import { useStoryboardStore } from "@/store/storyboard-store";
 import { cn } from "@/lib/utils";
@@ -34,8 +35,13 @@ export function StepSceneBreakdown() {
     prevStep,
     generateAllFrames,
     isGeneratingFrames,
+    imagePrimaryModel,
+    imageAspectRatio,
+    setStoryboardImageModel,
     error,
   } = useStoryboardStore();
+
+  const [imageModelDialogOpen, setImageModelDialogOpen] = useState(false);
 
   const selected =
     scenes.find((s) => s.id === selectedSceneId) ?? scenes[0] ?? null;
@@ -173,7 +179,7 @@ export function StepSceneBreakdown() {
         </Button>
         <Button
           variant="primary"
-          onClick={() => void generateAllFrames()}
+          onClick={() => setImageModelDialogOpen(true)}
           disabled={!scenes.length || isGeneratingFrames}
           className="w-full bg-accent-orange text-white shadow-[0_4px_24px_rgba(251,146,60,0.25)] hover:bg-accent-orange/90 sm:w-auto"
         >
@@ -185,6 +191,20 @@ export function StepSceneBreakdown() {
           Generate storyboards
         </Button>
       </div>
+
+      <StoryboardImageModelDialog
+        open={imageModelDialogOpen}
+        mode="generate"
+        imageModel={imagePrimaryModel}
+        imageAspectRatio={imageAspectRatio}
+        frameCount={scenes.length}
+        onConfirm={(model, aspectRatio) => {
+          setImageModelDialogOpen(false);
+          setStoryboardImageModel(model, aspectRatio);
+          void generateAllFrames();
+        }}
+        onCancel={() => setImageModelDialogOpen(false)}
+      />
     </div>
   );
 }

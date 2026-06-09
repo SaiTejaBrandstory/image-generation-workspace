@@ -39,6 +39,8 @@ export type FrameStatus = "pending" | "generating" | "complete" | "error";
 
 export type StoryboardFrameCount = 4 | 6 | 8 | 10 | 12 | 15 | 18 | 21;
 
+import type { AspectRatio } from "@/types";
+
 export type StoryboardFrameStyle =
   | "sketch"
   | "cinematic"
@@ -62,6 +64,12 @@ export interface StoryboardProjectSettings {
   frameStyle: StoryboardFrameStyle;
   /** Global setting/location for every storyboard frame. */
   sceneEnvironment: string;
+  /** Persisted frame generation prefs (survives reload). */
+  imageAspectRatio?: AspectRatio;
+  imagePrimaryModel?: string;
+  videoAspectRatio?: string;
+  videoPrimaryModel?: string;
+  videoFallbackModel?: string | null;
 }
 
 /** Locked visual bible — same characters, locations, and sketch style in every frame. */

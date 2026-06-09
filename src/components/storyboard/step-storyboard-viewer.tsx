@@ -17,6 +17,7 @@ import {
   RefreshCw,
   Timer,
 } from "lucide-react";
+import { StoryboardImageModelDialog } from "@/components/storyboard/storyboard-image-model-dialog";
 import { StoryboardSceneEditDialog } from "@/components/storyboard/storyboard-scene-edit-dialog";
 import { StoryboardVideoModelDialog } from "@/components/storyboard/storyboard-video-model-dialog";
 import { StoryboardVideoPlayer } from "@/components/storyboard/storyboard-video-player";
@@ -40,6 +41,7 @@ import {
 import { useStoryboardStore } from "@/store/storyboard-store";
 import { cn } from "@/lib/utils";
 import { normalizeSceneFields } from "@/lib/storyboard/scene-fields";
+import type { AspectRatio } from "@/types";
 import type { StoryboardScene, StoryboardViewMode } from "@/types/storyboard";
 
 const VIEW_MODES: {
@@ -78,8 +80,12 @@ export function StepStoryboardViewer() {
     storyboardVideoDurationSec,
     storyboardVideoModel,
     generateStoryboardVideo,
+    imagePrimaryModel,
+    imageAspectRatio,
+    setStoryboardImageModel,
     videoPrimaryModel,
     videoFallbackModel,
+    videoAspectRatio,
     setStoryboardVideoModels,
     isAnyVideoGenerating,
     resetStoryboard,
@@ -108,6 +114,13 @@ export function StepStoryboardViewer() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [exportPdfError, setExportPdfError] = useState<string | null>(null);
+  const [imageModelDialogOpen, setImageModelDialogOpen] = useState(false);
+  const [imageDialogMode, setImageDialogMode] = useState<
+    "regenerate" | "missing"
+  >("regenerate");
+  const [pendingRegenerateIds, setPendingRegenerateIds] = useState<
+    string[] | undefined
+  >(undefined);
   const [videoModelDialogOpen, setVideoModelDialogOpen] = useState(false);
   const [videoReplaceOnConfirm, setVideoReplaceOnConfirm] = useState(false);
   const videoSectionRef = useRef<HTMLDivElement>(null);
@@ -130,10 +143,17 @@ export function StepStoryboardViewer() {
     setVideoModelDialogOpen(true);
   };
 
-  const handleVideoModelConfirm = (primary: string, fallback: string) => {
+  const handleVideoModelConfirm = (
+    primary: string,
+    fallback: string,
+    aspectRatio: string
+  ) => {
     setVideoModelDialogOpen(false);
-    setStoryboardVideoModels(primary, fallback);
-    void generateStoryboardVideo({ replace: videoReplaceOnConfirm });
+    setStoryboardVideoModels(primary, fallback, aspectRatio);
+    void generateStoryboardVideo({
+      replace: videoReplaceOnConfirm,
+      videoAspectRatio: aspectRatio,
+    });
   };
 
   const totalDuration = useMemo(
@@ -162,11 +182,41 @@ export function StepStoryboardViewer() {
     void generateFrame(sceneId);
   };
 
+  const openImageModelDialog = (
+    mode: "regenerate" | "missing",
+    sceneIds?: string[]
+  ) => {
+    setImageDialogMode(mode);
+    setPendingRegenerateIds(sceneIds);
+    setImageModelDialogOpen(true);
+  };
+
   const handleRegenerateSelected = () => {
     if (anyFrameGenerating) return;
     const ids = selectedIds.size ? [...selectedIds] : undefined;
-    void regenerateFrames(ids);
+    openImageModelDialog("regenerate", ids);
   };
+
+  const handleImageModelConfirm = (model: string, aspectRatio: AspectRatio) => {
+    setImageModelDialogOpen(false);
+    setStoryboardImageModel(model, aspectRatio);
+    if (imageDialogMode === "missing") {
+      void generateAllFrames(true);
+      return;
+    }
+    void regenerateFrames(pendingRegenerateIds);
+  };
+
+  const imageDialogFrameCount = useMemo(() => {
+    if (imageDialogMode === "missing") {
+      return scenes.filter(
+        (s) =>
+          !s.frameImageUrl || s.frameStatus === "pending" || s.frameStatus === "error"
+      ).length;
+    }
+    if (pendingRegenerateIds?.length) return pendingRegenerateIds.length;
+    return scenes.length;
+  }, [imageDialogMode, pendingRegenerateIds, scenes]);
 
   const handleExportPdf = async () => {
     setExportPdfError(null);
@@ -314,7 +364,6 @@ export function StepStoryboardViewer() {
                   onRegenerate={() => handleRegenerateOne(scene.id)}
                   isRegenerating={scene.frameStatus === "generating"}
                   actionsDisabled={anyFrameGenerating}
-                  compact
                 />
               </div>
             ))}
@@ -338,7 +387,6 @@ export function StepStoryboardViewer() {
               onRegenerate={() => handleRegenerateOne(presentationScene.id)}
               isRegenerating={presentationScene.frameStatus === "generating"}
               actionsDisabled={anyFrameGenerating}
-              large
             />
             <div className="mt-4 flex items-center justify-center gap-3">
               <Button
@@ -401,7 +449,6 @@ export function StepStoryboardViewer() {
                   onRegenerate={() => handleRegenerateOne(scene.id)}
                   isRegenerating={scene.frameStatus === "generating"}
                   actionsDisabled={anyFrameGenerating}
-                  compact
                 />
               ))}
             </div>
@@ -421,13 +468,16 @@ export function StepStoryboardViewer() {
                     ? "Generation started — checking history for your video"
                     : videoGenerationStatus ??
                       (usesVideoBatching
-                        ? `Generating ${videoSegmentCount} clips (up to 4 frames each), then stitching`
+                        ? `Generating ${videoSegmentCount} linked clips, crossfading, then one narrator voice`
                         : "One AI video from all frames and script")
                   : usesVideoBatching
                     ? `${scenes.length} frames · ${videoSegmentCount} clips${videoSubtitleModelLabel ? ` · ${videoSubtitleModelLabel}` : ""}`
                     : `${scenes.length} frames${videoSubtitleModelLabel ? ` · ${videoSubtitleModelLabel}` : ""}`
               }
               videoUrl={storyboardVideoUrl}
+              aspectRatio={
+                videoAspectRatio || settings.imageAspectRatio || "16:9"
+              }
               durationSec={storyboardVideoDurationSec ?? undefined}
               storyboardDurationSec={totalDuration}
               sceneCount={scenes.length}
@@ -506,7 +556,7 @@ export function StepStoryboardViewer() {
           <Button
             variant="tintViolet"
             size="sm"
-            onClick={() => void generateAllFrames(true)}
+            onClick={() => openImageModelDialog("missing")}
             disabled={anyFrameGenerating || anyVideoGenerating || !scenes.length}
           >
             <LayoutGrid className="h-4 w-4" />
@@ -556,11 +606,24 @@ export function StepStoryboardViewer() {
         </div>
       ) : null}
 
+      <StoryboardImageModelDialog
+        open={imageModelDialogOpen}
+        mode={imageDialogMode}
+        imageModel={imagePrimaryModel}
+        imageAspectRatio={imageAspectRatio}
+        frameCount={imageDialogFrameCount}
+        onConfirm={handleImageModelConfirm}
+        onCancel={() => setImageModelDialogOpen(false)}
+      />
+
       <StoryboardVideoModelDialog
         open={videoModelDialogOpen}
         mode={videoReplaceOnConfirm ? "regenerate" : "generate"}
         primaryModel={videoPrimaryModel}
         fallbackModel={videoFallbackModel}
+        videoAspectRatio={videoAspectRatio}
+        frameAspectRatio={imageAspectRatio}
+        settingsFrameAspectRatio={settings.imageAspectRatio}
         scenes={scenes}
         onConfirm={handleVideoModelConfirm}
         onCancel={() => setVideoModelDialogOpen(false)}
@@ -704,8 +767,8 @@ function StoryboardFramePreviewDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex w-[min(960px,calc(100vw-2rem))] max-h-[min(90vh,880px)] flex-col gap-0 overflow-hidden p-0">
-        <DialogHeader className="shrink-0 border-b border-border/60 px-6 pb-4 pt-6">
+      <DialogContent className="flex h-[80dvh] w-[80vw] max-w-[80vw] flex-col gap-0 overflow-hidden p-0">
+        <DialogHeader className="shrink-0 border-b border-border/60 px-5 pb-3 pt-5">
           <div className="flex items-center justify-between gap-3 pr-8">
             <DialogTitle>
               Scene {String(scene.sceneNumber).padStart(2, "0")} preview
@@ -745,13 +808,13 @@ function StoryboardFramePreviewDialog({
           >
             <ChevronRight className="h-5 w-5" />
           </button>
-          <div className="flex min-h-[min(60vh,520px)] items-center justify-center overflow-auto p-4 px-14">
+          <div className="absolute inset-0 flex items-center justify-center px-12 py-3">
             {scene.frameImageUrl ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={scene.frameImageUrl}
                 alt={`Scene ${scene.sceneNumber} storyboard frame`}
-                className="max-h-[min(75vh,720px)] w-full object-contain"
+                className="h-full w-full object-contain"
               />
             ) : (
               <p className="text-sm text-foreground-muted">No frame image yet</p>
@@ -793,8 +856,6 @@ function StoryboardFrameCard({
   onRegenerate,
   isRegenerating,
   actionsDisabled,
-  compact,
-  large,
 }: {
   scene: StoryboardScene;
   selected: boolean;
@@ -806,8 +867,6 @@ function StoryboardFrameCard({
   onRegenerate: () => void;
   isRegenerating: boolean;
   actionsDisabled: boolean;
-  compact?: boolean;
-  large?: boolean;
 }) {
   const [downloading, setDownloading] = useState(false);
   const camera = normalizeSceneFields(scene);
@@ -840,19 +899,14 @@ function StoryboardFrameCard({
           : "border-border"
       )}
     >
-      <div
-        className={cn(
-          "relative overflow-hidden bg-background",
-          large ? "aspect-video" : compact ? "aspect-[4/3]" : "aspect-video"
-        )}
-      >
+      <div className="relative aspect-video w-full overflow-hidden bg-background">
         {scene.frameImageUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={scene.frameImageUrl}
             alt={`Scene ${scene.sceneNumber}`}
             className={cn(
-              "absolute inset-0 block h-full w-full object-cover object-center transition-opacity",
+              "absolute inset-0 block h-full w-full object-contain object-center transition-opacity",
               isRegenerating && "opacity-35"
             )}
           />

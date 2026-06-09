@@ -8,6 +8,12 @@ import type {
 export interface StoryboardVideoBatchContext {
   index: number;
   total: number;
+  totalScenes?: number;
+  hasBridgeFrame?: boolean;
+  previousScene?: Pick<
+    StoryboardScene,
+    "sceneNumber" | "visualDescription" | "voiceover" | "transition"
+  >;
 }
 
 export function buildStoryboardFullVideoPrompt(options: {
@@ -43,17 +49,43 @@ export function buildStoryboardFullVideoPrompt(options: {
     })
     .join("\n");
 
+  const isMultiSegment = Boolean(batch && batch.total > 1);
+  const firstScene = scenes[0];
+  const lastScene = scenes[scenes.length - 1];
+  const globalSceneCount = batch?.totalScenes ?? scenes.length;
+
   const batchLead =
     batch && batch.total > 1
       ? batch.index === 0
-        ? `This is segment 1 of ${batch.total} in a longer storyboard video. Generate ONE continuous ${videoDurationSec}-second clip covering these ${scenes.length} shots — more segments will be stitched after.`
+        ? `This is segment 1 of ${batch.total} in a ${globalSceneCount}-shot storyboard film. Generate ONE continuous ${videoDurationSec}-second clip covering shots ${firstScene?.sceneNumber}–${lastScene?.sceneNumber} — more footage will be crossfaded after. End smoothly on the closing reference frame; hold composition stable in the final half-second for a seamless edit.`
         : batch.index === batch.total - 1
-          ? `This is the FINAL segment (${batch.index + 1} of ${batch.total}). Continue seamlessly from the previous segment — same characters, style, and mood. Generate ONE continuous ${videoDurationSec}-second clip for these ${scenes.length} shots.`
-          : `This is segment ${batch.index + 1} of ${batch.total}. Continue seamlessly from the previous segment — match characters, lighting, and pacing. Generate ONE continuous ${videoDurationSec}-second clip for these ${scenes.length} shots.`
+          ? `This is the FINAL segment (${batch.index + 1} of ${batch.total}) of a ${globalSceneCount}-shot film. Shots ${firstScene?.sceneNumber}–${lastScene?.sceneNumber} must continue IMMEDIATELY from the previous segment with zero jump-cut feel.`
+          : `This is segment ${batch.index + 1} of ${batch.total} in a ${globalSceneCount}-shot film. Shots ${firstScene?.sceneNumber}–${lastScene?.sceneNumber} continue directly from the previous segment.`
       : `Generate ONE continuous ${videoDurationSec}-second video that plays through ALL ${scenes.length} storyboard shots in order.`;
+
+  const bridgeLead =
+    batch?.hasBridgeFrame && batch.index > 0
+      ? [
+          "CONTINUITY LOCK — highest priority:",
+          "The first attached reference is the EXACT last frame of the previous video segment.",
+          "Open at t=0 matching that bridge frame precisely — same characters, wardrobe, lighting, camera angle, and motion carry-over.",
+          batch.previousScene
+            ? `Previous shot ${batch.previousScene.sceneNumber} ended with: ${batch.previousScene.visualDescription?.trim() || batch.previousScene.voiceover?.trim() || "the prior beat"}. Transition style: ${batch.previousScene.transition || "cut"}.`
+            : "",
+          "This must feel like one uninterrupted camera move and edit — not a new scene or new take.",
+        ]
+          .filter(Boolean)
+          .join(" ")
+      : "";
+
+  const audioLead = isMultiSegment
+    ? "AUDIO: Include cinematic ambient music and sound design. Do NOT include spoken dialogue or narration — a single narrator voice is added in post-production."
+    : "AUDIO: Include ambient music plus one consistent narrator voice. Match the voiceover text in the shot list.";
 
   return [
     batchLead,
+    bridgeLead,
+    audioLead,
     `Genre: ${settings.genre}.`,
     script.trim() ? `Script: ${script.trim().slice(0, 800)}` : "",
     continuity?.characters?.trim()
@@ -64,8 +96,10 @@ export function buildStoryboardFullVideoPrompt(options: {
       : "",
     "SHOT LIST — every frame must appear in sequence with smooth transitions:",
     shotList,
-    "The attached opening reference image is shot 1. The closing reference is the final shot.",
-    "Additional references guide middle beats. Animate through every listed shot in one uninterrupted edit.",
+    batch?.hasBridgeFrame
+      ? "The bridge reference is the opening frame. The next storyboard reference is the target opening composition. The closing reference is the final shot."
+      : "The attached opening reference image is shot 1. The closing reference is the final shot.",
+    "Additional references guide middle beats. Animate through every listed shot in one uninterrupted edit with smooth motivated transitions — match cuts, gentle dissolves, or continuous camera movement only.",
     `Match storyboard ${getFrameStyleLabel(settings.frameStyle).toLowerCase()} character design and cinematic pacing. No on-screen text or graphics.`,
   ]
     .filter(Boolean)

@@ -1,5 +1,4 @@
 import {
-  formatOpenRouterErrorForUser,
   isRetryableOpenRouterError,
   retryDelayMs,
   sleepMs,
@@ -204,7 +203,7 @@ export async function generateVideoWithOpenRouter(
         await sleepMs(retryDelayMs(attempt));
         continue;
       }
-      throw new Error(formatOpenRouterErrorForUser(raw));
+      throw new Error(raw);
     }
 
     jobId = submitJson.id;
@@ -215,7 +214,7 @@ export async function generateVideoWithOpenRouter(
   }
 
   if (!jobId || !pollingUrl) {
-    throw new Error(formatOpenRouterErrorForUser("Failed to start video generation"));
+    throw new Error("Failed to start video generation");
   }
 
   const unlimitedPoll = options.maxPollMs === 0;
@@ -237,7 +236,7 @@ export async function generateVideoWithOpenRouter(
         await sleepMs(retryDelayMs(0));
         continue;
       }
-      throw new Error(formatOpenRouterErrorForUser(raw));
+      throw new Error(raw);
     }
 
     options.onStatus?.(status.status);
@@ -245,7 +244,11 @@ export async function generateVideoWithOpenRouter(
     if (status.status === "completed") {
       const contentUrl = status.unsigned_urls?.[0];
       if (!contentUrl) {
-        throw new Error("Video completed but no download URL was returned.");
+        const raw = formatVideoError(
+          status.error,
+          "Video completed but no download URL was returned."
+        );
+        throw new Error(raw);
       }
 
       const videoRes = await fetchWithRetry(contentUrl, { headers }, "download");
@@ -268,13 +271,9 @@ export async function generateVideoWithOpenRouter(
         status.error,
         `Video generation ${status.status}`
       );
-      throw new Error(formatOpenRouterErrorForUser(raw));
+      throw new Error(raw);
     }
   }
 
-  throw new Error(
-    formatOpenRouterErrorForUser(
-      "Video generation timed out. Try again in a few minutes."
-    )
-  );
+  throw new Error("Video generation timed out. Try again in a few minutes.");
 }

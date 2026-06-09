@@ -36,6 +36,18 @@ export function isRealPersonVideoRejection(message: string): boolean {
   );
 }
 
+/** Job finished but provider returned no video (safety / moderation). Raw API text only. */
+export function isVideoContentFilteredError(message: string): boolean {
+  const text = normalizeProviderErrorText(message).toLowerCase();
+  return (
+    text.includes("no output") ||
+    text.includes("content may have been filtered") ||
+    text.includes("safety system") ||
+    /blocked by (the )?safety/i.test(text) ||
+    text.includes("policy violation")
+  );
+}
+
 /** Pull provider message out of `HTTP 400: {"error":{...}}` style strings. */
 function normalizeProviderErrorText(raw: string): string {
   const jsonStart = raw.indexOf("{");
@@ -83,6 +95,14 @@ export function formatOpenRouterErrorForUser(raw: string): string {
       "This storyboard frame looks like a real person, which Seedance cannot use. " +
       "If Veo fallback also failed, try a more illustrated frame style or set " +
       "STORYBOARD_VIDEO_FALLBACK_MODEL=google/veo-3.1-fast in .env."
+    );
+  }
+
+  if (isVideoContentFilteredError(withoutOpId)) {
+    return (
+      "The video provider blocked this segment — the prompt or frames may have triggered " +
+      "a safety block. Regenerate frames for these scenes with a more illustrated style, " +
+      "shorten voiceover/action text, or try google/veo-3.1-fast as your primary model."
     );
   }
 
