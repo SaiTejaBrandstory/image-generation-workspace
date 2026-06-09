@@ -42,6 +42,17 @@ export async function downloadImage(
   triggerBlobDownload(blob, name);
 }
 
+/** Fetch cross-origin video (e.g. Supabase signed URL) and save as file. */
+export async function downloadVideo(
+  videoUrl: string,
+  filename: string
+): Promise<void> {
+  const blob = await urlToBlob(videoUrl);
+  const ext = blob.type.includes("webm") ? "webm" : "mp4";
+  const name = filename.match(/\.(mp4|webm)$/i) ? filename : `${filename}.${ext}`;
+  triggerBlobDownload(blob, name);
+}
+
 export interface DownloadableImage {
   url: string;
   layoutName: string;

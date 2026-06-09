@@ -3,6 +3,8 @@ import {
   clampVideoSettingsToModel,
   DEFAULT_VIDEO_ASPECT,
   DEFAULT_VIDEO_RESOLUTION,
+  getVideoModelConfig,
+  isStoryboardHumanFrameFallbackModel,
 } from "@/lib/openrouter-video-models";
 import {
   getSignedImageUrl,
@@ -15,11 +17,19 @@ import type { StoryboardScene } from "@/types/storyboard";
 /** Max frame references per video API call — also used as batch size for long storyboards. */
 export const STORYBOARD_VIDEO_BATCH_SIZE = MAX_REFERENCES_VIDEO;
 
-/** Fast + high quality; rejects photorealistic human frame refs. */
-export const STORYBOARD_VIDEO_MODEL = "bytedance/seedance-2.0-fast";
+/** Default storyboard video model (accepts human frame refs). */
+export const STORYBOARD_VIDEO_MODEL = "google/veo-3.1-lite";
 
-/** Fast fallback when Seedance rejects human-looking frames (2-model chain total). */
-export const STORYBOARD_VIDEO_HUMAN_FALLBACK_MODEL = "google/veo-3.1-fast";
+/** Fallback when a non-Veo primary rejects human-looking frames. */
+export const STORYBOARD_VIDEO_HUMAN_FALLBACK_MODEL = "google/veo-3.1-lite";
+
+/** No second model when primary is already a Veo human-frame model. */
+export function defaultStoryboardVideoFallbackModel(
+  primaryModel = STORYBOARD_VIDEO_MODEL
+): string | null {
+  if (isStoryboardHumanFrameFallbackModel(primaryModel)) return null;
+  return STORYBOARD_VIDEO_HUMAN_FALLBACK_MODEL;
+}
 
 /** Next.js route maxDuration cap (seconds) — platform max is 300. */
 export const STORYBOARD_VIDEO_ROUTE_MAX_DURATION_SEC = 300;
@@ -44,16 +54,37 @@ export function getStoryboardVideoModel(): string {
 }
 
 /**
- * Two models max: Seedance (fast) → Veo 3.1 Fast when human frames are rejected.
- * Set STORYBOARD_VIDEO_MODEL to pin a single model (no fallback).
+ * Two models max when chosen in UI. Env STORYBOARD_VIDEO_MODEL overrides everything.
  */
-export function getStoryboardVideoModelChain(): string[] {
-  const override = process.env.STORYBOARD_VIDEO_MODEL?.trim();
-  if (override) return [override];
-  const fallback =
+export function resolveStoryboardVideoModelChain(options?: {
+  primaryModel?: string;
+  fallbackModel?: string | null;
+}): string[] {
+  const envOverride = process.env.STORYBOARD_VIDEO_MODEL?.trim();
+  if (envOverride) return [envOverride];
+
+  const primary =
+    options?.primaryModel?.trim() || STORYBOARD_VIDEO_MODEL;
+  const chain = [primary];
+
+  let fallback =
+    options?.fallbackModel?.trim() ||
     process.env.STORYBOARD_VIDEO_FALLBACK_MODEL?.trim() ||
     STORYBOARD_VIDEO_HUMAN_FALLBACK_MODEL;
-  return [STORYBOARD_VIDEO_MODEL, fallback];
+
+  if (!isStoryboardHumanFrameFallbackModel(fallback)) {
+    fallback = STORYBOARD_VIDEO_HUMAN_FALLBACK_MODEL;
+  }
+
+  if (fallback && fallback !== primary) {
+    chain.push(fallback);
+  }
+  return chain;
+}
+
+/** @deprecated Use resolveStoryboardVideoModelChain */
+export function getStoryboardVideoModelChain(): string[] {
+  return resolveStoryboardVideoModelChain();
 }
 
 export async function imageUrlToDataUrl(url: string): Promise<string> {
@@ -244,4 +275,33 @@ export function pickStoryboardBatchDuration(
 ): number {
   const sum = scenes.reduce((acc, scene) => acc + scene.durationSec, 0);
   return pickStoryboardVideoDuration(sum, modelId);
+}
+
+/** Total output seconds after per-clip duration clamping for a model. */
+export function estimateStoryboardVideoOutputDuration(
+  scenes: StoryboardScene[],
+  modelId: string
+): number {
+  const batches = chunkStoryboardScenesForVideo(scenes);
+  return batches.reduce(
+    (sum, batch) => sum + pickStoryboardBatchDuration(batch, modelId),
+    0
+  );
+}
+
+/** Estimated OpenRouter cost for all clips at a single model (primary path). */
+export function estimateStoryboardVideoJobCost(
+  scenes: StoryboardScene[],
+  modelId: string
+): number | null {
+  const model = getVideoModelConfig(modelId);
+  if (model.costPerSecondUsd == null) return null;
+
+  const batches = chunkStoryboardScenesForVideo(scenes);
+  let total = 0;
+  for (const batch of batches) {
+    const seconds = pickStoryboardBatchDuration(batch, modelId);
+    total += seconds * model.costPerSecondUsd;
+  }
+  return total;
 }

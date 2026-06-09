@@ -6,7 +6,14 @@ import {
   chunkStoryboardScenesForVideo,
   needsStoryboardVideoBatching,
   pickStoryboardBatchDuration,
+  defaultStoryboardVideoFallbackModel,
+  STORYBOARD_VIDEO_HUMAN_FALLBACK_MODEL,
+  STORYBOARD_VIDEO_MODEL,
 } from "@/lib/storyboard/storyboard-video";
+import {
+  getVideoModelsCatalog,
+  pickStoryboardHumanFrameFallback,
+} from "@/lib/openrouter-video-models";
 import { normalizeFrameStyle } from "@/lib/storyboard/frame-styles";
 import { normalizeFrameCount } from "@/lib/storyboard/script-utils";
 import {
@@ -63,6 +70,10 @@ interface StoryboardState {
   videoGenerationStatus: string | null;
   storyboardVideoUrl: string | null;
   storyboardVideoDurationSec: number | null;
+  /** Model that actually rendered the current storyboard video (from API). */
+  storyboardVideoModel: string | null;
+  videoPrimaryModel: string;
+  videoFallbackModel: string | null;
   isGeneratingStitchedVideo: boolean;
   stitchedVideoProgress: number;
   stitchedVideoStatus: string | null;
@@ -108,6 +119,10 @@ interface StoryboardState {
   generateAllFrames: (onlyMissing?: boolean) => Promise<void>;
   regenerateFrames: (sceneIds?: string[]) => Promise<void>;
   generateFrame: (sceneId: string) => Promise<void>;
+  setStoryboardVideoModels: (
+    primary: string,
+    fallback: string | null
+  ) => void;
   generateStoryboardVideo: (options?: { replace?: boolean }) => Promise<void>;
   checkPendingStoryboardVideo: () => Promise<void>;
   isFrameBusy: (sceneId: string) => boolean;
@@ -149,6 +164,23 @@ function isRetryableVideoClientError(message: string): boolean {
   );
 }
 
+function pickStoryboardVideoModelFromSegments(models: string[]): string | null {
+  if (!models.length) return null;
+  const counts = new Map<string, number>();
+  for (const id of models) {
+    counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  let best = models[0]!;
+  let bestCount = 0;
+  for (const [id, count] of counts) {
+    if (count > bestCount) {
+      best = id;
+      bestCount = count;
+    }
+  }
+  return best;
+}
+
 async function fetchStoryboardVideoSegment(
   payload: Record<string, unknown>,
   segmentLabel: string
@@ -156,6 +188,7 @@ async function fetchStoryboardVideoSegment(
   videoUrl: string;
   storagePath: string | null;
   durationSec: number;
+  model: string | null;
 }> {
   let lastError = "Video generation failed";
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -168,6 +201,7 @@ async function fetchStoryboardVideoSegment(
       videoUrl?: string;
       storagePath?: string;
       durationSec?: number;
+      model?: string;
       error?: string;
     };
     if (res.ok && data.videoUrl) {
@@ -175,6 +209,7 @@ async function fetchStoryboardVideoSegment(
         videoUrl: data.videoUrl,
         storagePath: data.storagePath ?? null,
         durationSec: data.durationSec ?? 0,
+        model: data.model?.trim() ?? null,
       };
     }
     lastError = data.error ?? "Video generation failed";
@@ -288,6 +323,9 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
   videoGenerationStatus: null,
   storyboardVideoUrl: null,
   storyboardVideoDurationSec: null,
+  storyboardVideoModel: null,
+  videoPrimaryModel: STORYBOARD_VIDEO_MODEL,
+  videoFallbackModel: defaultStoryboardVideoFallbackModel(),
   isGeneratingStitchedVideo: false,
   stitchedVideoProgress: 0,
   stitchedVideoStatus: null,
@@ -726,6 +764,18 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
 
   isAnyVideoGenerating: () => get().isGeneratingVideo,
 
+  setStoryboardVideoModels: (primary, fallback) => {
+    const catalog = getVideoModelsCatalog();
+    const resolved =
+      pickStoryboardHumanFrameFallback(primary, catalog, fallback) ??
+      STORYBOARD_VIDEO_HUMAN_FALLBACK_MODEL;
+    set({
+      videoPrimaryModel: primary,
+      videoFallbackModel: resolved !== primary ? resolved : null,
+    });
+    get().saveDraft();
+  },
+
   generateStoryboardVideo: async (options) => {
     const {
       scenes,
@@ -737,6 +787,8 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
       isGeneratingFrames,
       storyboardVideoUrl,
       singleVideoStoragePath,
+      videoPrimaryModel,
+      videoFallbackModel,
     } = get();
     if (get().isAnyVideoGenerating() || isGeneratingFrames) return;
 
@@ -797,6 +849,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
         ? {
             storyboardVideoUrl: null,
             storyboardVideoDurationSec: null,
+            storyboardVideoModel: null,
             singleVideoStoragePath: null,
           }
         : {}),
@@ -839,6 +892,8 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
               settings,
               continuity,
               videoDurationSec: batchDuration,
+              videoPrimaryModel,
+              videoFallbackModel,
               batch: batched
                 ? { index: i, total: batches.length }
                 : undefined,
@@ -850,6 +905,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
             videoUrl: result.videoUrl,
             storagePath: result.storagePath,
             durationSec: result.durationSec,
+            model: result.model,
           };
         })
       );
@@ -916,11 +972,16 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
         );
       }
 
+      const segmentModels = segmentResults
+        .map((r) => r.model)
+        .filter((m): m is string => !!m);
+
       stopProgress();
       clearPendingVideo();
       set({
         storyboardVideoUrl: finalVideoUrl,
         storyboardVideoDurationSec: finalDuration,
+        storyboardVideoModel: pickStoryboardVideoModelFromSegments(segmentModels),
         singleVideoStoragePath: finalStoragePath,
         isGeneratingVideo: false,
         videoProgress: 100,
@@ -1146,6 +1207,9 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
       videoGenerationStatus: null,
       storyboardVideoUrl: null,
       storyboardVideoDurationSec: null,
+      storyboardVideoModel: null,
+      videoPrimaryModel: STORYBOARD_VIDEO_MODEL,
+      videoFallbackModel: defaultStoryboardVideoFallbackModel(),
       isGeneratingStitchedVideo: false,
       stitchedVideoProgress: 0,
       stitchedVideoStatus: null,
@@ -1214,6 +1278,18 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
         storyboardVideoDurationSec:
           (draft as { storyboardVideoDurationSec?: number | null })
             .storyboardVideoDurationSec ?? null,
+        storyboardVideoModel:
+          (draft as { storyboardVideoModel?: string | null })
+            .storyboardVideoModel ?? null,
+        videoPrimaryModel:
+          (draft as { videoPrimaryModel?: string }).videoPrimaryModel ??
+          STORYBOARD_VIDEO_MODEL,
+        videoFallbackModel:
+          (draft as { videoFallbackModel?: string | null }).videoFallbackModel ??
+          defaultStoryboardVideoFallbackModel(
+            (draft as { videoPrimaryModel?: string }).videoPrimaryModel ??
+              STORYBOARD_VIDEO_MODEL
+          ),
         storyboardProjectId:
           (draft as { storyboardProjectId?: string }).storyboardProjectId ??
           crypto.randomUUID(),
@@ -1264,6 +1340,9 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
       scenes: scenesForDraft(s.scenes),
       storyboardVideoUrl: s.storyboardVideoUrl,
       storyboardVideoDurationSec: s.storyboardVideoDurationSec,
+      storyboardVideoModel: s.storyboardVideoModel,
+      videoPrimaryModel: s.videoPrimaryModel,
+      videoFallbackModel: s.videoFallbackModel,
       storyboardStitchedVideoUrl: s.storyboardStitchedVideoUrl,
       storyboardStitchedVideoDurationSec: s.storyboardStitchedVideoDurationSec,
       storyboardProjectId: s.storyboardProjectId,

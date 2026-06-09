@@ -1,8 +1,9 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { Download, Loader2, Pause, Play } from "lucide-react";
+import { Download, Loader2, Pause, Play, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { downloadVideo } from "@/lib/download-utils";
 
 export function StoryboardVideoPlayer({
   title = "Storyboard video",
@@ -17,7 +18,9 @@ export function StoryboardVideoPlayer({
   isGenerating,
   videoProgress = 0,
   onGenerate,
+  onRegenerate,
   generateDisabled = false,
+  regenerateDisabled = false,
   generateLabel = "Generate video",
 }: {
   title?: string;
@@ -33,11 +36,14 @@ export function StoryboardVideoPlayer({
   isGenerating?: boolean;
   videoProgress?: number;
   onGenerate?: () => void;
+  onRegenerate?: () => void;
   generateDisabled?: boolean;
+  regenerateDisabled?: boolean;
   generateLabel?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(false);
+  const [downloading, setDownloading] = useState(false);
 
   const togglePlay = () => {
     const el = videoRef.current;
@@ -47,6 +53,18 @@ export function StoryboardVideoPlayer({
       setPlaying(false);
     } else {
       void el.play().then(() => setPlaying(true)).catch(() => setPlaying(false));
+    }
+  };
+
+  const handleDownload = async () => {
+    if (!videoUrl || downloading) return;
+    setDownloading(true);
+    try {
+      await downloadVideo(videoUrl, downloadFilename);
+    } catch {
+      window.alert("Could not download the video. Try again in a moment.");
+    } finally {
+      setDownloading(false);
     }
   };
 
@@ -121,6 +139,7 @@ export function StoryboardVideoPlayer({
             </p>
             {onGenerate && (
               <Button
+                variant="accent"
                 size="sm"
                 onClick={onGenerate}
                 disabled={generateDisabled}
@@ -134,7 +153,7 @@ export function StoryboardVideoPlayer({
 
       {!isGenerating && videoUrl && (
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" size="sm" onClick={togglePlay}>
+          <Button variant="tintViolet" size="sm" onClick={togglePlay}>
             {playing ? (
               <Pause className="h-4 w-4" />
             ) : (
@@ -142,14 +161,30 @@ export function StoryboardVideoPlayer({
             )}
             {playing ? "Pause" : "Play"}
           </Button>
-          <a
-            href={videoUrl}
-            download={downloadFilename}
-            className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border px-3 text-sm font-medium text-foreground-muted transition-colors hover:bg-surface-hover hover:text-foreground"
+          <Button
+            variant="tintCyan"
+            size="sm"
+            onClick={() => void handleDownload()}
+            disabled={downloading}
           >
-            <Download className="h-4 w-4" />
-            Download video
-          </a>
+            {downloading ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Download className="h-4 w-4" />
+            )}
+            {downloading ? "Downloading…" : "Download video"}
+          </Button>
+          {onRegenerate ? (
+            <Button
+              variant="tintOrange"
+              size="sm"
+              onClick={onRegenerate}
+              disabled={regenerateDisabled}
+            >
+              <RefreshCw className="h-4 w-4" />
+              Regenerate video
+            </Button>
+          ) : null}
         </div>
       )}
     </section>

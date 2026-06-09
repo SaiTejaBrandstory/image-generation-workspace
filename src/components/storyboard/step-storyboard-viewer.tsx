@@ -16,9 +16,9 @@ import {
   MonitorPlay,
   RefreshCw,
   Timer,
-  Video,
 } from "lucide-react";
 import { StoryboardSceneEditDialog } from "@/components/storyboard/storyboard-scene-edit-dialog";
+import { StoryboardVideoModelDialog } from "@/components/storyboard/storyboard-video-model-dialog";
 import { StoryboardVideoPlayer } from "@/components/storyboard/storyboard-video-player";
 import { Button } from "@/components/ui/button";
 import {
@@ -32,6 +32,7 @@ import { downloadImage } from "@/lib/download-utils";
 import { exportStoryboardPdf } from "@/lib/storyboard/export";
 import { SCENE_TRANSITIONS } from "@/lib/storyboard/constants";
 import { isPendingVideoForConversation } from "@/lib/storyboard/pending-video";
+import { formatStoryboardVideoModelLabel } from "@/lib/openrouter-video-models";
 import {
   chunkStoryboardScenesForVideo,
   needsStoryboardVideoBatching,
@@ -75,7 +76,11 @@ export function StepStoryboardViewer() {
     videoGenerationStatus,
     storyboardVideoUrl,
     storyboardVideoDurationSec,
+    storyboardVideoModel,
     generateStoryboardVideo,
+    videoPrimaryModel,
+    videoFallbackModel,
+    setStoryboardVideoModels,
     isAnyVideoGenerating,
     resetStoryboard,
     refreshStoryboardVideos,
@@ -103,7 +108,33 @@ export function StepStoryboardViewer() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [exportPdfError, setExportPdfError] = useState<string | null>(null);
+  const [videoModelDialogOpen, setVideoModelDialogOpen] = useState(false);
+  const [videoReplaceOnConfirm, setVideoReplaceOnConfirm] = useState(false);
   const videoSectionRef = useRef<HTMLDivElement>(null);
+
+  const videoModelIdForSubtitle =
+    hasSingleVideo && storyboardVideoModel
+      ? storyboardVideoModel
+      : isGeneratingVideo || pendingSingleVideo
+        ? videoPrimaryModel
+        : null;
+
+  const videoSubtitleModelLabel = videoModelIdForSubtitle
+    ? formatStoryboardVideoModelLabel(videoModelIdForSubtitle, {
+        perClip: usesVideoBatching,
+      })
+    : null;
+
+  const openVideoModelDialog = (replace = false) => {
+    setVideoReplaceOnConfirm(replace);
+    setVideoModelDialogOpen(true);
+  };
+
+  const handleVideoModelConfirm = (primary: string, fallback: string) => {
+    setVideoModelDialogOpen(false);
+    setStoryboardVideoModels(primary, fallback);
+    void generateStoryboardVideo({ replace: videoReplaceOnConfirm });
+  };
 
   const totalDuration = useMemo(
     () => scenes.reduce((sum, s) => sum + s.durationSec, 0),
@@ -393,8 +424,8 @@ export function StepStoryboardViewer() {
                         ? `Generating ${videoSegmentCount} clips (up to 4 frames each), then stitching`
                         : "One AI video from all frames and script")
                   : usesVideoBatching
-                    ? `${scenes.length} frames · ${videoSegmentCount} clips (≤4 frames each)`
-                    : `${scenes.length} frames · single AI generation`
+                    ? `${scenes.length} frames · ${videoSegmentCount} clips${videoSubtitleModelLabel ? ` · ${videoSubtitleModelLabel}` : ""}`
+                    : `${scenes.length} frames${videoSubtitleModelLabel ? ` · ${videoSubtitleModelLabel}` : ""}`
               }
               videoUrl={storyboardVideoUrl}
               durationSec={storyboardVideoDurationSec ?? undefined}
@@ -419,13 +450,26 @@ export function StepStoryboardViewer() {
               downloadFilename="storyboard-video.mp4"
               onGenerate={
                 !hasSingleVideo && !pendingSingleVideo
-                  ? () => void generateStoryboardVideo()
+                  ? () => openVideoModelDialog(false)
+                  : undefined
+              }
+              onRegenerate={
+                hasSingleVideo && !pendingSingleVideo && !isGeneratingVideo
+                  ? () => openVideoModelDialog(true)
                   : undefined
               }
               generateDisabled={
+                !allFramesReady ||
+                anyFrameGenerating ||
+                anyVideoGenerating ||
+                pendingSingleVideo
+              }
+              regenerateDisabled={
                 !allFramesReady || anyFrameGenerating || anyVideoGenerating
               }
-              generateLabel="Generate video"
+              generateLabel={
+                pendingSingleVideo ? "Video in progress…" : "Generate video"
+              }
             />
           </div>
         )}
@@ -447,7 +491,7 @@ export function StepStoryboardViewer() {
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-surface-elevated px-4 py-3">
         <div className="flex flex-wrap gap-2">
           <Button
-            variant="outline"
+            variant="tintViolet"
             size="sm"
             onClick={handleRegenerateSelected}
             disabled={anyFrameGenerating || anyVideoGenerating || !scenes.length}
@@ -460,7 +504,7 @@ export function StepStoryboardViewer() {
             Regenerate {selectedIds.size ? `(${selectedIds.size})` : "all"}
           </Button>
           <Button
-            variant="outline"
+            variant="tintViolet"
             size="sm"
             onClick={() => void generateAllFrames(true)}
             disabled={anyFrameGenerating || anyVideoGenerating || !scenes.length}
@@ -468,46 +512,6 @@ export function StepStoryboardViewer() {
             <LayoutGrid className="h-4 w-4" />
             Generate missing
           </Button>
-          {!hasSingleVideo ? (
-            <Button
-              size="sm"
-              onClick={() => void generateStoryboardVideo()}
-              disabled={
-                !allFramesReady ||
-                anyFrameGenerating ||
-                anyVideoGenerating ||
-                pendingSingleVideo
-              }
-              title={
-                pendingSingleVideo
-                  ? "A generation may still be running — use Check for video"
-                  : allFramesReady
-                    ? usesVideoBatching
-                      ? `${videoSegmentCount} clips (≤4 frames each), then stitched`
-                      : "One AI video from all frames and script"
-                    : "Generate all frame images first"
-              }
-            >
-              {isGeneratingVideo || pendingSingleVideo ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                <Video className="h-4 w-4" />
-              )}
-              {pendingSingleVideo ? "Video in progress…" : "Generate video"}
-            </Button>
-          ) : (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => void generateStoryboardVideo({ replace: true })}
-              disabled={
-                !allFramesReady || anyFrameGenerating || anyVideoGenerating
-              }
-            >
-              <RefreshCw className="h-4 w-4" />
-              Regenerate video
-            </Button>
-          )}
           {pendingSingleVideo && (
             <Button
               variant="ghost"
@@ -520,11 +524,11 @@ export function StepStoryboardViewer() {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button
-            variant="outline"
+            variant="tintCyan"
             size="sm"
             onClick={() => void handleExportPdf()}
             disabled={isExportingPdf || !scenes.length}
-            title="PDF with script and scene table including frame images"
+            title="PDF with script and scene cards including frame images"
           >
             {isExportingPdf ? (
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -533,24 +537,34 @@ export function StepStoryboardViewer() {
             )}
             Download PDF
           </Button>
+          <Button variant="tintViolet" size="sm" onClick={resetStoryboard}>
+            New storyboard
+          </Button>
           {exportPdfError && (
-            <span className="text-xs text-accent-orange">{exportPdfError}</span>
+            <span className="w-full text-xs text-accent-orange">
+              {exportPdfError}
+            </span>
           )}
         </div>
       </div>
 
-      <div className="flex justify-between gap-3">
-        {!wizardLocked ? (
+      {!wizardLocked ? (
+        <div className="flex gap-3">
           <Button variant="outline" onClick={prevStep}>
             Back to scenes
           </Button>
-        ) : (
-          <span />
-        )}
-        <Button variant="outline" onClick={resetStoryboard}>
-          New storyboard
-        </Button>
-      </div>
+        </div>
+      ) : null}
+
+      <StoryboardVideoModelDialog
+        open={videoModelDialogOpen}
+        mode={videoReplaceOnConfirm ? "regenerate" : "generate"}
+        primaryModel={videoPrimaryModel}
+        fallbackModel={videoFallbackModel}
+        scenes={scenes}
+        onConfirm={handleVideoModelConfirm}
+        onCancel={() => setVideoModelDialogOpen(false)}
+      />
 
       <StoryboardFramePreviewDialog
         scenes={scenes}

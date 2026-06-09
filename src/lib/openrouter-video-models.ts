@@ -1,3 +1,8 @@
+import {
+  isLowCostVideoModel,
+  parseStoryboardVideoPricing,
+} from "@/lib/video-model-pricing";
+
 /**
  * Video model catalog aligned with OpenRouter GET /api/v1/videos/models
  * https://openrouter.ai/docs/features/multimodal/video-generation
@@ -29,6 +34,7 @@ export interface OpenRouterVideoModelApiRow {
   supported_durations?: number[];
   supported_frame_images?: VideoFrameType[] | null;
   generate_audio?: boolean | null;
+  pricing_skus?: Record<string, string>;
 }
 
 export interface VideoModelConfig {
@@ -44,6 +50,12 @@ export interface VideoModelConfig {
   supportsInputReferences: boolean;
   /** null = provider default; false = no audio; true = toggle shown */
   generateAudio: boolean | null;
+  pricingSkus?: Record<string, string>;
+  /** USD per second for storyboard settings (720p, frame refs, audio on). */
+  costPerSecondUsd: number | null;
+  costLabel: string;
+  pricingDetail: string;
+  isPricingEstimate: boolean;
 }
 
 const RESOLUTION_ORDER = ["480p", "720p", "1080p", "1K", "2K", "4K"];
@@ -89,6 +101,26 @@ export function pickNearestSupportedDuration(
   return max;
 }
 
+/** Longest clip duration the model allows (seconds). */
+export function getVideoModelMaxDurationSec(modelId: string): number | null {
+  const supported = sortDurations(
+    getVideoModelConfig(modelId).supportedDurations
+  );
+  return supported.length ? supported[supported.length - 1]! : null;
+}
+
+/** Model display name with max clip length, e.g. "Seedance 2.0 Fast · max 15s". */
+export function formatStoryboardVideoModelLabel(
+  modelId: string,
+  options?: { perClip?: boolean }
+): string {
+  const label = getVideoModelConfig(modelId).label;
+  const max = getVideoModelMaxDurationSec(modelId);
+  if (max == null) return label;
+  const unit = options?.perClip ? `${max}s/clip` : `${max}s`;
+  return `${label} · max ${unit}`;
+}
+
 function inferGroup(id: string): VideoModelGroup {
   if (id.startsWith("google/")) return "Google";
   if (id.startsWith("x-ai/")) return "xAI";
@@ -119,6 +151,7 @@ export function normalizeOpenRouterVideoModel(
   row: OpenRouterVideoModelApiRow
 ): VideoModelConfig {
   const frames = row.supported_frame_images ?? [];
+  const pricing = parseStoryboardVideoPricing(row.pricing_skus);
   return {
     id: row.id,
     label: labelFromApiName(row.name, row.id),
@@ -130,7 +163,99 @@ export function normalizeOpenRouterVideoModel(
     supportedFrameImages: frames,
     supportsInputReferences: inferInputReferences(row.id, row.description),
     generateAudio: row.generate_audio ?? null,
+    pricingSkus: row.pricing_skus,
+    costPerSecondUsd: pricing.costPerSecondUsd,
+    costLabel: pricing.label,
+    pricingDetail: pricing.detail,
+    isPricingEstimate: pricing.isEstimate,
   };
+}
+
+/** Storyboard defaults — shown as quick picks in the video model dialog. */
+export const STORYBOARD_RECOMMENDED_VIDEO_MODELS = [
+  "google/veo-3.1-lite",
+  "google/veo-3.1-fast",
+  "bytedance/seedance-2.0-fast",
+  "alibaba/wan-2.7",
+] as const;
+
+/** Models that accept storyboard frames via OpenRouter `frame_images` (image-to-video). */
+export function storyboardCapableVideoModels(
+  models: VideoModelConfig[]
+): VideoModelConfig[] {
+  return models.filter((m) => m.supportedFrameImages.includes("first_frame"));
+}
+
+/**
+ * Google Veo models that accept photorealistic human frame refs when Seedance
+ * rejects (SensitiveContent / real-person). Do not use Seedance/Kling/Wan here.
+ */
+export const STORYBOARD_HUMAN_FRAME_FALLBACK_MODEL_IDS = [
+  "google/veo-3.1-lite",
+  "google/veo-3.1-fast",
+  "google/veo-3.1",
+] as const;
+
+export function isStoryboardHumanFrameFallbackModel(modelId: string): boolean {
+  return (
+    STORYBOARD_HUMAN_FRAME_FALLBACK_MODEL_IDS as readonly string[]
+  ).includes(modelId);
+}
+
+export function storyboardHumanFrameFallbackModels(
+  models: VideoModelConfig[]
+): VideoModelConfig[] {
+  const allowed = new Set<string>(STORYBOARD_HUMAN_FRAME_FALLBACK_MODEL_IDS);
+  return sortVideoModelsByCost(
+    models.filter(
+      (m) =>
+        allowed.has(m.id) && m.supportedFrameImages.includes("first_frame")
+    )
+  );
+}
+
+/** Pick a valid human-frame fallback, or null if primary is the only Veo left. */
+export function pickStoryboardHumanFrameFallback(
+  primaryId: string,
+  models: VideoModelConfig[],
+  preferred?: string | null
+): string | null {
+  const options = storyboardHumanFrameFallbackModels(models).filter(
+    (m) => m.id !== primaryId
+  );
+  if (!options.length) return null;
+
+  if (
+    preferred &&
+    preferred !== primaryId &&
+    options.some((m) => m.id === preferred)
+  ) {
+    return preferred;
+  }
+
+  const defaultId = "google/veo-3.1-lite";
+  return options.find((m) => m.id === defaultId)?.id ?? options[0]!.id;
+}
+
+export function sortVideoModelsByCost(
+  models: VideoModelConfig[]
+): VideoModelConfig[] {
+  return [...models].sort((a, b) => {
+    const ac = a.costPerSecondUsd ?? Number.POSITIVE_INFINITY;
+    const bc = b.costPerSecondUsd ?? Number.POSITIVE_INFINITY;
+    if (ac !== bc) return ac - bc;
+    return a.label.localeCompare(b.label);
+  });
+}
+
+export function videoModelShowsLowCostBadge(
+  model: VideoModelConfig,
+  models: VideoModelConfig[]
+): boolean {
+  const costs = models
+    .map((m) => m.costPerSecondUsd)
+    .filter((c): c is number => c != null);
+  return isLowCostVideoModel(model.costPerSecondUsd, costs);
 }
 
 /** Static snapshot from OpenRouter videos/models (fallback if API unavailable) */
@@ -144,6 +269,10 @@ export const OPENROUTER_VIDEO_MODELS: VideoModelConfig[] = [
     supported_durations: [4, 6, 8],
     supported_frame_images: ["first_frame", "last_frame"],
     generate_audio: true,
+    pricing_skus: {
+      duration_seconds_with_audio: "0.40",
+      duration_seconds_without_audio: "0.20",
+    },
   }),
   normalizeOpenRouterVideoModel({
     id: "google/veo-3.1-fast",
@@ -154,6 +283,10 @@ export const OPENROUTER_VIDEO_MODELS: VideoModelConfig[] = [
     supported_durations: [4, 6, 8],
     supported_frame_images: ["first_frame", "last_frame"],
     generate_audio: true,
+    pricing_skus: {
+      duration_seconds_with_audio_720p: "0.10",
+      duration_seconds_without_audio_720p: "0.08",
+    },
   }),
   normalizeOpenRouterVideoModel({
     id: "google/veo-3.1-lite",
@@ -164,6 +297,10 @@ export const OPENROUTER_VIDEO_MODELS: VideoModelConfig[] = [
     supported_durations: [4, 6, 8],
     supported_frame_images: ["first_frame", "last_frame"],
     generate_audio: true,
+    pricing_skus: {
+      duration_seconds_with_audio_720p: "0.05",
+      duration_seconds_without_audio_720p: "0.03",
+    },
   }),
   normalizeOpenRouterVideoModel({
     id: "openai/sora-2-pro",
@@ -174,6 +311,7 @@ export const OPENROUTER_VIDEO_MODELS: VideoModelConfig[] = [
     supported_durations: [4, 8, 12, 16, 20],
     supported_frame_images: null,
     generate_audio: true,
+    pricing_skus: { duration_seconds_720p: "0.30" },
   }),
   normalizeOpenRouterVideoModel({
     id: "x-ai/grok-imagine-video",
@@ -194,6 +332,10 @@ export const OPENROUTER_VIDEO_MODELS: VideoModelConfig[] = [
     ],
     supported_frame_images: ["first_frame"],
     generate_audio: null,
+    pricing_skus: {
+      cents_per_video_output_second_720p: "7",
+      cents_per_video_output_second_480p: "5",
+    },
   }),
   normalizeOpenRouterVideoModel({
     id: "alibaba/wan-2.7",
@@ -204,6 +346,7 @@ export const OPENROUTER_VIDEO_MODELS: VideoModelConfig[] = [
     supported_durations: [2, 3, 4, 5, 6, 7, 8, 9, 10],
     supported_frame_images: ["first_frame", "last_frame"],
     generate_audio: true,
+    pricing_skus: { duration_seconds: "0.1" },
   }),
   normalizeOpenRouterVideoModel({
     id: "alibaba/wan-2.6",
@@ -214,6 +357,10 @@ export const OPENROUTER_VIDEO_MODELS: VideoModelConfig[] = [
     supported_durations: [5, 10],
     supported_frame_images: ["first_frame"],
     generate_audio: true,
+    pricing_skus: {
+      image_to_video_duration_seconds_720p: "0.10",
+      text_to_video_duration_seconds_720p: "0.08",
+    },
   }),
   normalizeOpenRouterVideoModel({
     id: "bytedance/seedance-2.0",
@@ -234,6 +381,10 @@ export const OPENROUTER_VIDEO_MODELS: VideoModelConfig[] = [
     ],
     supported_frame_images: ["first_frame", "last_frame"],
     generate_audio: true,
+    pricing_skus: {
+      video_tokens: "0.000007",
+      video_tokens_without_audio: "0.000007",
+    },
   }),
   normalizeOpenRouterVideoModel({
     id: "bytedance/seedance-2.0-fast",
@@ -254,6 +405,10 @@ export const OPENROUTER_VIDEO_MODELS: VideoModelConfig[] = [
     ],
     supported_frame_images: ["first_frame", "last_frame"],
     generate_audio: true,
+    pricing_skus: {
+      video_tokens: "0.0000056",
+      video_tokens_without_audio: "0.0000056",
+    },
   }),
   normalizeOpenRouterVideoModel({
     id: "bytedance/seedance-1-5-pro",
@@ -272,6 +427,10 @@ export const OPENROUTER_VIDEO_MODELS: VideoModelConfig[] = [
     supported_durations: [4, 5, 6, 7, 8, 9, 10, 11, 12],
     supported_frame_images: ["first_frame", "last_frame"],
     generate_audio: true,
+    pricing_skus: {
+      video_tokens: "0.0000024",
+      video_tokens_without_audio: "0.0000012",
+    },
   }),
   normalizeOpenRouterVideoModel({
     id: "kwaivgi/kling-v3.0-pro",
@@ -284,6 +443,10 @@ export const OPENROUTER_VIDEO_MODELS: VideoModelConfig[] = [
     ],
     supported_frame_images: ["first_frame", "last_frame"],
     generate_audio: true,
+    pricing_skus: {
+      duration_seconds_with_audio: "0.168",
+      image_to_video_duration_seconds_720p: "0.112",
+    },
   }),
   normalizeOpenRouterVideoModel({
     id: "kwaivgi/kling-v3.0-std",
@@ -296,6 +459,10 @@ export const OPENROUTER_VIDEO_MODELS: VideoModelConfig[] = [
     ],
     supported_frame_images: ["first_frame", "last_frame"],
     generate_audio: true,
+    pricing_skus: {
+      duration_seconds_with_audio: "0.126",
+      image_to_video_duration_seconds_720p: "0.084",
+    },
   }),
   normalizeOpenRouterVideoModel({
     id: "kwaivgi/kling-video-o1",
@@ -306,6 +473,7 @@ export const OPENROUTER_VIDEO_MODELS: VideoModelConfig[] = [
     supported_durations: [5, 10],
     supported_frame_images: ["first_frame", "last_frame"],
     generate_audio: true,
+    pricing_skus: { duration_seconds: "0.1120" },
   }),
   normalizeOpenRouterVideoModel({
     id: "minimax/hailuo-2.3",
@@ -316,6 +484,7 @@ export const OPENROUTER_VIDEO_MODELS: VideoModelConfig[] = [
     supported_durations: [6, 10],
     supported_frame_images: ["first_frame"],
     generate_audio: false,
+    pricing_skus: { duration_seconds: "0.0817" },
   }),
 ];
 

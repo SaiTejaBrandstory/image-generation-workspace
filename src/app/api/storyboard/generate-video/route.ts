@@ -8,12 +8,17 @@ import {
   clampVideoSettingsToModel,
   DEFAULT_VIDEO_ASPECT,
   DEFAULT_VIDEO_RESOLUTION,
+  fetchVideoModelsFromOpenRouter,
+  isValidVideoModel,
+  setVideoModelsCatalog,
+  isStoryboardHumanFrameFallbackModel,
+  supportsFrameImages,
 } from "@/lib/openrouter-video-models";
 import { buildStoryboardFullVideoPrompt } from "@/lib/storyboard/storyboard-video-prompt";
 import {
   buildStoryboardAllFrameReferences,
   getStoryboardFullVideoMaxPollMs,
-  getStoryboardVideoModelChain,
+  resolveStoryboardVideoModelChain,
 } from "@/lib/storyboard/storyboard-video";
 import type { StoryboardVideoBatchContext } from "@/lib/storyboard/storyboard-video-prompt";
 import { updateStoryboardOutputs } from "@/lib/supabase/storyboard-db";
@@ -41,6 +46,33 @@ interface GenerateStoryboardVideoBody {
   /** Override duration for this segment (batch sum or project total). */
   videoDurationSec?: number;
   batch?: StoryboardVideoBatchContext;
+  videoPrimaryModel?: string;
+  videoFallbackModel?: string | null;
+}
+
+function buildStoryboardModelChain(body: GenerateStoryboardVideoBody): string[] {
+  const primary = body.videoPrimaryModel?.trim();
+  if (
+    primary &&
+    isValidVideoModel(primary) &&
+    supportsFrameImages(primary)
+  ) {
+    const chain = [primary];
+    const fallback = body.videoFallbackModel?.trim();
+    if (
+      fallback &&
+      fallback !== primary &&
+      isValidVideoModel(fallback) &&
+      isStoryboardHumanFrameFallbackModel(fallback)
+    ) {
+      chain.push(fallback);
+    }
+    return chain;
+  }
+  return resolveStoryboardVideoModelChain({
+    primaryModel: body.videoPrimaryModel,
+    fallbackModel: body.videoFallbackModel,
+  });
 }
 
 export async function POST(request: NextRequest) {
@@ -94,7 +126,19 @@ export async function POST(request: NextRequest) {
       storageConversationId: storageFolder,
     });
 
-    const modelChain = getStoryboardVideoModelChain();
+    const primaryPick = body.videoPrimaryModel?.trim();
+    if (primaryPick && !isValidVideoModel(primaryPick)) {
+      try {
+        const models = await fetchVideoModelsFromOpenRouter(
+          process.env.OPENROUTER_API_KEY
+        );
+        setVideoModelsCatalog(models);
+      } catch {
+        /* static catalog */
+      }
+    }
+
+    const modelChain = buildStoryboardModelChain(body);
     let videoModel = modelChain[0]!;
     let videoSettings = clampVideoSettingsToModel(videoModel, {
       duration: requestedDuration,
