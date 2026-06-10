@@ -12,6 +12,7 @@ export function StoryboardVideoPlayer({
   subtitle,
   progressLabel = "Generating video — this can take several minutes",
   placeholderText = "Your video will appear here when ready",
+  emptyStateHint,
   downloadFilename = "storyboard-video.mp4",
   videoUrl,
   durationSec,
@@ -31,6 +32,8 @@ export function StoryboardVideoPlayer({
   subtitle?: string;
   progressLabel?: string;
   placeholderText?: string;
+  /** Secondary line in the empty state (below “No video yet”). */
+  emptyStateHint?: string;
   downloadFilename?: string;
   videoUrl?: string | null;
   durationSec?: number;
@@ -165,11 +168,12 @@ export function StoryboardVideoPlayer({
             )}
             style={{ aspectRatio: aspectCss }}
           >
-            <p className="text-sm">No video yet</p>
+            <p className="text-sm">{placeholderText || "No video yet"}</p>
             <p className="text-xs text-foreground-muted/80">
-              {onGenerate
-                ? "Generate a single AI video from all frames and your script."
-                : "Keep this tab open until generation finishes."}
+              {emptyStateHint ??
+                (onGenerate
+                  ? "Generate a single AI video from all frames and your script."
+                  : "Keep this tab open until generation finishes.")}
             </p>
             {onGenerate && (
               <Button

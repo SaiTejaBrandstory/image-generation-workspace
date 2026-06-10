@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getModelConfig } from "@/lib/openrouter-models";
+import { resolveStoryboardImageModel } from "@/lib/storyboard/storyboard-image";
 import { formatOpenRouterErrorForUser } from "@/lib/openrouter-errors";
+import { buildStoryboardFrameReferenceImages } from "@/lib/storyboard/build-frame-reference-images";
 import { generateStoryboardSketchFrame } from "@/lib/storyboard/generate-sketch-frame";
+import { resolveStoryboardInputReferences } from "@/lib/storyboard/resolve-input-references";
+import { buildInputReferencesPromptBlock } from "@/lib/storyboard/storyboard-input-references";
 import { resolveStoryboardFrameReferences } from "@/lib/storyboard/resolve-frame-references";
 import { createClient } from "@/lib/supabase/server";
 import {
@@ -12,6 +17,7 @@ import type {
   StoryboardContinuity,
   StoryboardFrameStyle,
   StoryboardGenre,
+  StoryboardInputReference,
 } from "@/types/storyboard";
 
 export const maxDuration = 120;
@@ -39,6 +45,7 @@ interface GenerateFrameBody {
   referenceFrameStoragePath?: string;
   imageModel?: string;
   aspectRatio?: AspectRatio;
+  inputReferences?: StoryboardInputReference[];
 }
 
 export async function POST(request: NextRequest) {
@@ -83,13 +90,43 @@ export async function POST(request: NextRequest) {
             ]
           : [];
 
-    const referenceFrameUrls =
+    const storageFolder = body.storageConversationId?.trim();
+    const resolveOptions = {
+      userId: user.id,
+      storageConversationId: storageFolder,
+    };
+
+    const inputRefs = body.inputReferences?.length
+      ? await resolveStoryboardInputReferences(body.inputReferences, resolveOptions)
+      : [];
+
+    const generatedFrameUrls =
       sceneNumber > 1 && referenceInputs.length
-        ? await resolveStoryboardFrameReferences(referenceInputs, {
-            userId: user.id,
-            storageConversationId: body.storageConversationId?.trim(),
-          })
+        ? await resolveStoryboardFrameReferences(referenceInputs, resolveOptions)
         : [];
+
+    const modelId = resolveStoryboardImageModel(body.imageModel);
+    const modelConfig = getModelConfig(modelId);
+    if (body.inputReferences?.length && !modelConfig.supportsVisionInput) {
+      return NextResponse.json(
+        {
+          error:
+            "This image model cannot use reference uploads. Choose a vision-capable model in the frame settings.",
+        },
+        { status: 400 }
+      );
+    }
+    const maxRefs = modelConfig.maxReferenceImages;
+    const referenceImages = buildStoryboardFrameReferenceImages({
+      sceneNumber,
+      frameStyle: body.frameStyle,
+      inputRefs,
+      generatedFrameUrls,
+      maxRefs,
+    });
+    const inputReferencePromptBlock = buildInputReferencesPromptBlock(
+      body.inputReferences ?? []
+    );
 
     const result = await generateStoryboardSketchFrame(
       {
@@ -103,7 +140,8 @@ export async function POST(request: NextRequest) {
         frameStyle: body.frameStyle,
         visualStyle: body.visualStyle,
         continuity: body.continuity,
-        referenceFrameUrls,
+        referenceImages,
+        inputReferencePromptBlock: inputReferencePromptBlock || undefined,
         aspectRatio: body.aspectRatio,
       },
       { model: body.imageModel, aspectRatio: body.aspectRatio }

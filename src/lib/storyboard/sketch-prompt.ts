@@ -42,6 +42,9 @@ export interface StoryboardSketchSceneInput {
   hasReferenceFrame?: boolean;
   referenceFrameUrl?: string;
   referenceFrameUrls?: string[];
+  referenceImages?: Array<{ url: string; label: string }>;
+  /** User-defined names/roles for uploaded reference images. */
+  inputReferencePromptBlock?: string;
   aspectRatio?: AspectRatio;
 }
 
@@ -109,9 +112,10 @@ export function buildStoryboardSketchPrompt(
   const continuityBlock = buildContinuityPromptBlock(scene.continuity);
   const referenceNote = scene.hasReferenceFrame
     ? [
-        "CRITICAL — CHARACTER CONSISTENCY:",
-        "The attached reference image(s) are the visual ground truth for this storyboard.",
-        "Copy the EXACT same character faces, skin tone, hair, age, body type, clothing, accessories, and props from the anchor frame.",
+        "CRITICAL — VISUAL CONSISTENCY:",
+        "The attached reference image(s) are the ground truth for this storyboard.",
+        "User-uploaded character, product, and environment references must be reproduced faithfully in every frame.",
+        "Copy the EXACT same character faces, skin tone, hair, age, body type, clothing, accessories, products, and setting details from the references.",
         `Preserve the same ${styleConfig.referenceHint} across every frame.`,
         "Do NOT redesign, recast, or age-shift any character. Only change camera angle, framing, pose, and action for this new shot.",
       ].join(" ")
@@ -130,6 +134,7 @@ export function buildStoryboardSketchPrompt(
 
   return [
     continuityBlock,
+    scene.inputReferencePromptBlock,
     referenceNote,
     styleConfig.promptBlock,
     negativeConstraints,

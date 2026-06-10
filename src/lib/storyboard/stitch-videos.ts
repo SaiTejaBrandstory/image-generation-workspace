@@ -7,6 +7,60 @@ import { promisify } from "util";
 
 const execFileAsync = promisify(execFile);
 
+/** User-facing stitch errors — never mention OpenRouter or other providers. */
+export function formatStitchVideoErrorForUser(raw: string): string {
+  const message = raw.trim();
+  const lower = message.toLowerCase();
+
+  if (lower.includes("ffmpeg missing")) {
+    return "Video stitching is not available on this server. Please try again later.";
+  }
+  if (lower.includes("no video clips")) {
+    return "No scene clips to stitch. Animate all scenes first.";
+  }
+  if (
+    lower.includes("failed to fetch video") ||
+    lower.includes("fetch failed") ||
+    lower.includes("econnreset") ||
+    lower.includes("socket hang up")
+  ) {
+    return (
+      "Could not download one or more scene clips. Refresh the page and try again."
+    );
+  }
+  if (
+    lower.includes("timeout") ||
+    lower.includes("timed out") ||
+    lower.includes("service unavailable") ||
+    lower.includes("function_invocation")
+  ) {
+    return (
+      "Stitching took too long. Try again, or stitch fewer scenes at a time."
+    );
+  }
+  if (
+    lower.includes("rate limit") ||
+    lower.includes("high load") ||
+    lower.includes("temporarily unavailable")
+  ) {
+    return "The server is busy. Wait a minute and try stitching again.";
+  }
+  if (
+    lower.includes("xfade") &&
+    (lower.includes("do not match") || lower.includes("failed to configure"))
+  ) {
+    return (
+      "Scene clips have different sizes and could not be joined. " +
+      "Try stitching again — we now normalize clip sizes automatically."
+    );
+  }
+  if (lower.includes("command failed") && lower.includes("ffmpeg")) {
+    return "Could not join scene clips. Try again, or re-animate scenes with the same video aspect ratio.";
+  }
+
+  return message || "Could not stitch clips. Please try again.";
+}
+
 /** Crossfade between stitched segments so cuts feel like one continuous edit. */
 export const STORYBOARD_STITCH_CROSSFADE_SEC = 0.35;
 /** Fade out picture + sound at the end so the video does not stop on a hard cut. */
@@ -130,6 +184,38 @@ function ffmpegProbeStderr(filePath: string): Promise<string> {
   );
 }
 
+async function probeMp4VideoDimensions(
+  filePath: string
+): Promise<{ width: number; height: number } | null> {
+  const stderr = await ffmpegProbeStderr(filePath);
+  const match = stderr.match(/Video:[^\n]*?,\s*(\d{2,5})x(\d{2,5})/);
+  if (!match) return null;
+  const width = Number.parseInt(match[1]!, 10);
+  const height = Number.parseInt(match[2]!, 10);
+  if (!width || !height) return null;
+  return { width, height };
+}
+
+function evenDimension(value: number): number {
+  const rounded = Math.max(2, Math.round(value));
+  return rounded % 2 === 0 ? rounded : rounded + 1;
+}
+
+function pickCrossfadeTargetSize(
+  sizes: Array<{ width: number; height: number }>
+): { width: number; height: number } {
+  if (!sizes.length) {
+    return { width: 1920, height: 1080 };
+  }
+  let width = sizes[0]!.width;
+  let height = sizes[0]!.height;
+  for (const size of sizes) {
+    width = Math.max(width, size.width);
+    height = Math.max(height, size.height);
+  }
+  return { width: evenDimension(width), height: evenDimension(height) };
+}
+
 async function clipHasAudioStream(filePath: string): Promise<boolean> {
   try {
     await execFileAsync(ffmpegPath(), [
@@ -152,18 +238,28 @@ async function clipHasAudioStream(filePath: string): Promise<boolean> {
   }
 }
 
-/** Re-encode clip to h264 + stereo AAC so crossfade audio filters work reliably. */
-async function prepareClipForAudioCrossfade(
+/**
+ * Scale every clip to the same frame size and re-encode to h264 (+ stereo AAC when needed)
+ * so xfade / acrossfade filters receive matching streams.
+ */
+async function normalizeClipForCrossfade(
   inputPath: string,
   outputPath: string,
-  durationSec: number
+  durationSec: number,
+  targetWidth: number,
+  targetHeight: number,
+  options: { ensureAudio?: boolean } = {}
 ): Promise<void> {
+  const vf = `scale=${targetWidth}:${targetHeight}:flags=lanczos,setsar=1`;
   const hasAudio = await clipHasAudioStream(inputPath);
+
   if (hasAudio) {
     await execFileAsync(ffmpegPath(), [
       "-y",
       "-i",
       inputPath,
+      "-vf",
+      vf,
       "-c:v",
       "libx264",
       "-preset",
@@ -185,31 +281,54 @@ async function prepareClipForAudioCrossfade(
     return;
   }
 
+  if (options.ensureAudio) {
+    await execFileAsync(ffmpegPath(), [
+      "-y",
+      "-i",
+      inputPath,
+      "-f",
+      "lavfi",
+      "-t",
+      durationSec.toFixed(3),
+      "-i",
+      "anullsrc=r=48000:cl=stereo",
+      "-vf",
+      vf,
+      "-map",
+      "0:v",
+      "-map",
+      "1:a",
+      "-c:v",
+      "libx264",
+      "-preset",
+      "fast",
+      "-crf",
+      "23",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "192k",
+      "-shortest",
+      "-movflags",
+      "+faststart",
+      outputPath,
+    ]);
+    return;
+  }
+
   await execFileAsync(ffmpegPath(), [
     "-y",
     "-i",
     inputPath,
-    "-f",
-    "lavfi",
-    "-t",
-    durationSec.toFixed(3),
-    "-i",
-    "anullsrc=r=48000:cl=stereo",
-    "-map",
-    "0:v",
-    "-map",
-    "1:a",
+    "-vf",
+    vf,
     "-c:v",
     "libx264",
     "-preset",
     "fast",
     "-crf",
     "23",
-    "-c:a",
-    "aac",
-    "-b:a",
-    "192k",
-    "-shortest",
+    "-an",
     "-movflags",
     "+faststart",
     outputPath,
@@ -466,25 +585,28 @@ export async function concatMp4BuffersWithCrossfade(
     }
 
     const durations: number[] = [];
+    const dimensions: Array<{ width: number; height: number }> = [];
     for (const clipPath of rawPaths) {
       durations.push((await probeMp4FileDurationFloat(clipPath)) ?? 8);
+      const size = await probeMp4VideoDimensions(clipPath);
+      if (size) dimensions.push(size);
     }
 
+    const targetSize = pickCrossfadeTargetSize(dimensions);
     const inputPaths: string[] = [];
-    if (options.preserveClipAudio) {
-      for (let i = 0; i < rawPaths.length; i++) {
-        const preparedPath = path.join(dir, `clip-${i}.mp4`);
-        await prepareClipForAudioCrossfade(
-          rawPaths[i]!,
-          preparedPath,
-          durations[i]!
-        );
-        inputPaths.push(preparedPath);
-        durations[i] =
-          (await probeMp4FileDurationFloat(preparedPath)) ?? durations[i]!;
-      }
-    } else {
-      inputPaths.push(...rawPaths);
+    for (let i = 0; i < rawPaths.length; i++) {
+      const preparedPath = path.join(dir, `clip-${i}.mp4`);
+      await normalizeClipForCrossfade(
+        rawPaths[i]!,
+        preparedPath,
+        durations[i]!,
+        targetSize.width,
+        targetSize.height,
+        { ensureAudio: options.preserveClipAudio }
+      );
+      inputPaths.push(preparedPath);
+      durations[i] =
+        (await probeMp4FileDurationFloat(preparedPath)) ?? durations[i]!;
     }
 
     const fade = Math.min(

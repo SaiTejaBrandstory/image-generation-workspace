@@ -87,6 +87,70 @@ export async function ensureReferenceMinDimensions(
   };
 }
 
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result as string);
+    reader.onerror = () => reject(new Error("Could not read image file."));
+    reader.readAsDataURL(file);
+  });
+}
+
+function dataUrlToFile(dataUrl: string, filename: string): File {
+  const [header, base64] = dataUrl.split(",");
+  const mime = header.match(/data:([^;]+)/i)?.[1]?.toLowerCase() ?? "image/jpeg";
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  const ext =
+    mime === "image/png" ? ".png" : mime === "image/webp" ? ".webp" : ".jpg";
+  const baseName = filename.replace(/\.[^.]+$/i, "") || "reference";
+  return new File([bytes], `${baseName}${ext}`, { type: mime });
+}
+
+/**
+ * Upscale a File below provider minimums (browser-only). Returns the original
+ * file when dimensions already meet the minimum.
+ */
+export async function ensureFileMinDimensions(
+  file: File,
+  minSize = MIN_VIDEO_REFERENCE_DIMENSION
+): Promise<{
+  file: File;
+  resized: boolean;
+  width: number;
+  height: number;
+  originalWidth: number;
+  originalHeight: number;
+}> {
+  const { width, height } = await getFileImageDimensions(file);
+  if (dimensionsMeetMinimum(width, height, minSize)) {
+    return {
+      file,
+      resized: false,
+      width,
+      height,
+      originalWidth: width,
+      originalHeight: height,
+    };
+  }
+
+  const dataUrl = await fileToDataUrl(file);
+  const normalized = await ensureReferenceMinDimensions(dataUrl, minSize);
+  const outFile = dataUrlToFile(normalized.dataUrl, file.name);
+
+  return {
+    file: outFile,
+    resized: true,
+    width: normalized.width,
+    height: normalized.height,
+    originalWidth: width,
+    originalHeight: height,
+  };
+}
+
 export async function getFileImageDimensions(
   file: File
 ): Promise<{ width: number; height: number }> {

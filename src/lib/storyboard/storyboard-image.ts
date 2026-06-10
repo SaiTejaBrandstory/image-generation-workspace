@@ -137,7 +137,6 @@ const STORYBOARD_REFERENCE_FRAME_GROUPS = new Set<ImageModelGroup>([
   "Google",
   "xAI",
   "OpenAI",
-  "Microsoft",
 ]);
 
 /**

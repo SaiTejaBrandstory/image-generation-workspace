@@ -14,9 +14,10 @@ export type ImageModelGroup =
   | "Recraft"
   | "Riverflow";
 
-/** OpenRouter image models not offered in storyboard picker. */
+/** Image models hidden from the app catalog (storyboard + workspace). */
 export const STORYBOARD_EXCLUDED_IMAGE_MODEL_IDS = new Set([
   "openrouter/auto",
+  "microsoft/mai-image-2.5",
 ]);
 
 export interface ImageModelConfig {
@@ -79,18 +80,6 @@ export const GEMINI_31_EXTENDED_ASPECT_RATIOS: AspectRatio[] = [
   "8:1",
 ];
 
-/** Aspect ratios for microsoft/mai-image-2.5 (OpenRouter image_config) */
-export const MAI_IMAGE_ASPECT_RATIOS: AspectRatio[] = [
-  "auto",
-  "1:1",
-  "2:3",
-  "3:2",
-  "3:4",
-  "4:3",
-  "9:16",
-  "16:9",
-];
-
 /** Shown in UI for models that apply aspect via prompt hint only (no image_config) */
 export const PROMPT_HINT_IMAGE_ASPECT_RATIOS: AspectRatio[] = [
   "auto",
@@ -145,12 +134,6 @@ const STATIC_IMAGE_ENDPOINT_PRICING: Record<string, Record<string, string>> = {
   "black-forest-labs/flux.2-klein-4b": {
     image_output: "0.0000013427734375",
     completion: "0",
-  },
-  "microsoft/mai-image-2.5": {
-    prompt: "0.000005",
-    completion: "0",
-    image_output: "0.000047",
-    image_token: "0.000047",
   },
 };
 
@@ -531,21 +514,6 @@ const OPENROUTER_IMAGE_MODELS_BASE = [
     maxReferenceFileSizeBytes: 4_000_000,
   },
 
-  // —— Microsoft ——
-  {
-    id: "microsoft/mai-image-2.5",
-    label: "MAI Image 2.5",
-    group: "Microsoft",
-    description: "Microsoft image model · refs OK",
-    modalityMode: "image-text",
-    supportsVisionInput: true,
-    supportsAspectConfig: true,
-    supportedAspectRatios: [...MAI_IMAGE_ASPECT_RATIOS],
-    maxPromptChars: 32_000,
-    maxReferenceImages: 4,
-    maxReferenceFileSizeBytes: 4_000_000,
-  },
-
   // —— Recraft (additional OpenRouter SKUs) ——
   {
     id: "recraft/recraft-v4-vector",
@@ -711,12 +679,23 @@ function overlayImageModelArchitecture(
   const supportsVisionInput =
     inputMods.includes("image") || inputMods.includes("file");
 
+  // Respect curated image-only models — OpenRouter may list text output in architecture
+  // but no endpoint accepts modalities: ["image", "text"] together.
+  const modalityMode: ModalityMode =
+    model.modalityMode === "image-only"
+      ? "image-only"
+      : outputMods.includes("text")
+        ? "image-text"
+        : "image-only";
+
   return {
     ...model,
-    modalityMode: outputMods.includes("text") ? "image-text" : "image-only",
+    modalityMode,
     supportsVisionInput,
     maxReferenceImages: supportsVisionInput
-      ? Math.max(model.maxReferenceImages, 4)
+      ? model.maxReferenceImages > 0
+        ? model.maxReferenceImages
+        : 4
       : 0,
     maxReferenceFileSizeBytes: supportsVisionInput
       ? Math.max(model.maxReferenceFileSizeBytes, 4_000_000)
@@ -743,9 +722,6 @@ function defaultAspectRatiosForGroup(
       ...OPENROUTER_STANDARD_IMAGE_ASPECT_RATIOS,
       ...GEMINI_31_EXTENDED_ASPECT_RATIOS,
     ];
-  }
-  if (modelId === "microsoft/mai-image-2.5") {
-    return [...MAI_IMAGE_ASPECT_RATIOS];
   }
   if (["Google", "OpenAI", "Flux", "xAI"].includes(group)) {
     return [...OPENROUTER_STANDARD_IMAGE_ASPECT_RATIOS];

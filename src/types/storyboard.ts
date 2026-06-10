@@ -55,6 +55,27 @@ export type StoryboardFrameStyle =
   | "vintage"
   | "pixel-art";
 
+export type StoryboardInputReferenceKind =
+  | "character"
+  | "product"
+  | "environment";
+
+/** User-uploaded visual anchors from step 1 (max 4 total across all kinds). */
+export interface StoryboardInputReference {
+  id: string;
+  kind: StoryboardInputReferenceKind;
+  /** Original filename — not sent to the image model. */
+  name: string;
+  /** Optional name/role caption (e.g. "Ravi", "Brand logo") — sent with the image to the model. */
+  label?: string;
+  /** UI preview — blob or signed HTTPS URL. */
+  previewUrl: string;
+  /** HTTPS or storage-backed URL for generation. */
+  imageUrl?: string;
+  storagePath?: string;
+  sizeBytes: number;
+}
+
 export interface StoryboardProjectSettings {
   genre: StoryboardGenre;
   durationSec: number;
@@ -64,6 +85,8 @@ export interface StoryboardProjectSettings {
   frameStyle: StoryboardFrameStyle;
   /** Global setting/location for every storyboard frame. */
   sceneEnvironment: string;
+  /** Optional character / product / scene reference uploads (max 4 total). */
+  inputReferences?: StoryboardInputReference[];
   /** Persisted frame generation prefs (survives reload). */
   imageAspectRatio?: AspectRatio;
   imagePrimaryModel?: string;

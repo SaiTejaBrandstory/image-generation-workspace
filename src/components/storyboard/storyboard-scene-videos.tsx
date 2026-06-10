@@ -474,7 +474,8 @@ export function StoryboardSceneVideos() {
             progressLabel={
               stitchedVideoStatus ?? "Stitching scene clips — usually under a minute"
             }
-            placeholderText="Stitched video will appear here"
+            placeholderText="No stitched video yet"
+            emptyStateHint="Join your scene animation clips into one video with crossfades."
             downloadFilename="storyboard-scene-stitch.mp4"
             videoUrl={sceneStitchedVideoUrl}
             durationSec={sceneStitchedVideoDurationSec ?? undefined}

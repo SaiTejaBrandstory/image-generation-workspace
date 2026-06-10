@@ -9,6 +9,8 @@ import {
   STORYBOARD_DEFAULT_IMAGE_ASPECT,
   STORYBOARD_IMAGE_MODEL,
   clampStoryboardImageAspectRatio,
+  isStoryboardReferenceFrameImageModel,
+  resolveStoryboardImageModel,
 } from "@/lib/storyboard/storyboard-image";
 import type { AspectRatio } from "@/types";
 import {
@@ -44,10 +46,16 @@ import {
 } from "@/lib/storyboard/pending-video";
 import { createEmptyScene, renumberScenes } from "@/lib/storyboard/scene-engine";
 import { normalizeSceneFields } from "@/lib/storyboard/scene-fields";
+import {
+  inputReferencesForDraft,
+  sanitizeStoryboardInputReferenceLabel,
+  storyboardInputReferenceSlotsLeft,
+} from "@/lib/storyboard/storyboard-input-references";
 import { useWorkspaceStore } from "@/store/workspace-store";
 import type {
   StoryboardContinuity,
   StoryboardProjectSettings,
+  StoryboardInputReferenceKind,
   StoryboardScene,
   StoryboardViewMode,
   StoryboardWizardStep,
@@ -117,6 +125,12 @@ interface StoryboardState {
   setScript: (script: string) => void;
   generateScriptWithAi: () => Promise<void>;
   patchSettings: (patch: Partial<StoryboardProjectSettings>) => void;
+  addInputReference: (
+    kind: StoryboardInputReferenceKind,
+    file: File
+  ) => Promise<void>;
+  removeInputReference: (id: string) => void;
+  updateInputReferenceLabel: (id: string, label: string) => void;
   setSelectedSceneId: (id: string | null) => void;
   setViewMode: (mode: StoryboardViewMode) => void;
   updateScene: (id: string, patch: Partial<StoryboardScene>) => void;
@@ -510,6 +524,121 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
     get().saveDraft();
   },
 
+  addInputReference: async (kind, file) => {
+    const state = get();
+    const refs = state.settings.inputReferences ?? [];
+    if (storyboardInputReferenceSlotsLeft(refs) <= 0) return;
+
+    const id = crypto.randomUUID();
+    const previewUrl = URL.createObjectURL(file);
+    const optimistic = {
+      id,
+      kind,
+      name: file.name,
+      previewUrl,
+      sizeBytes: file.size,
+    };
+
+    set((s) => ({
+      error: null,
+      settings: {
+        ...s.settings,
+        inputReferences: [...(s.settings.inputReferences ?? []), optimistic],
+      },
+    }));
+
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("projectId", state.storyboardProjectId);
+      form.append("refId", id);
+      form.append("kind", kind);
+      form.append("currentCount", String(refs.length));
+      form.append(
+        "currentTotalBytes",
+        String(refs.reduce((sum, ref) => sum + ref.sizeBytes, 0))
+      );
+
+      const res = await fetch("/api/storyboard/upload-reference", {
+        method: "POST",
+        body: form,
+      });
+      const data = (await res.json()) as {
+        signedUrl?: string;
+        storagePath?: string;
+        error?: string;
+      };
+      if (!res.ok) {
+        throw new Error(data.error ?? "Reference upload failed");
+      }
+
+      URL.revokeObjectURL(previewUrl);
+      set((s) => ({
+        settings: {
+          ...s.settings,
+          inputReferences: (s.settings.inputReferences ?? []).map((ref) =>
+            ref.id === id
+              ? {
+                  ...ref,
+                  previewUrl: data.signedUrl as string,
+                  imageUrl: data.signedUrl as string,
+                  storagePath: data.storagePath as string,
+                }
+              : ref
+          ),
+        },
+      }));
+      get().saveDraft();
+      const resolvedModel = resolveStoryboardImageModel(get().imagePrimaryModel);
+      if (resolvedModel !== get().imagePrimaryModel) {
+        get().setStoryboardImageModel(resolvedModel);
+      }
+    } catch (err) {
+      URL.revokeObjectURL(previewUrl);
+      set((s) => ({
+        settings: {
+          ...s.settings,
+          inputReferences: (s.settings.inputReferences ?? []).filter(
+            (ref) => ref.id !== id
+          ),
+        },
+        error:
+          err instanceof Error ? err.message : "Reference upload failed",
+      }));
+    }
+  },
+
+  removeInputReference: (id) => {
+    const ref = (get().settings.inputReferences ?? []).find(
+      (item) => item.id === id
+    );
+    if (ref?.previewUrl.startsWith("blob:")) {
+      URL.revokeObjectURL(ref.previewUrl);
+    }
+    set((s) => ({
+      settings: {
+        ...s.settings,
+        inputReferences: (s.settings.inputReferences ?? []).filter(
+          (item) => item.id !== id
+        ),
+      },
+    }));
+    get().saveDraft();
+  },
+
+  updateInputReferenceLabel: (id, label) => {
+    const next = sanitizeStoryboardInputReferenceLabel(label);
+    set((s) => ({
+      settings: {
+        ...s.settings,
+        inputReferences: (s.settings.inputReferences ?? []).map((ref) =>
+          ref.id === id ? { ...ref, label: next || undefined } : ref
+        ),
+      },
+    }));
+    get().saveDraft();
+  },
+
   setSelectedSceneId: (id) => set({ selectedSceneId: id }),
   setViewMode: (mode) => set({ viewMode: mode }),
 
@@ -778,8 +907,9 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
             frameImageUrl: refScene.frameImageUrl,
             frameStoragePath: refScene.frameStoragePath,
           })),
-          imageModel: get().imagePrimaryModel,
+          imageModel: resolveStoryboardImageModel(get().imagePrimaryModel),
           aspectRatio: get().imageAspectRatio,
+          inputReferences: settings.inputReferences ?? [],
         }),
       });
       const data = await res.json();
@@ -995,6 +1125,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
     });
 
     const clipUrls = ordered.map((scene) => scene.sceneVideoUrl as string);
+    const clipStoragePaths = ordered.map((scene) => scene.sceneVideoStoragePath);
     const totalDurationSec = ordered.reduce(
       (sum, scene) => sum + (scene.sceneVideoDurationSec ?? scene.durationSec),
       0
@@ -1011,6 +1142,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
           projectId: storyboardProjectId,
           storageConversationId: storageFolder,
           clipUrls,
+          clipStoragePaths,
           totalDurationSec,
           outputKind: "scene-stitch",
         }),
@@ -1061,16 +1193,17 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
   },
 
   setStoryboardImageModel: (model, aspectRatio) => {
+    const resolved = resolveStoryboardImageModel(model);
     const imageAspectRatio = clampStoryboardImageAspectRatio(
-      model,
+      resolved,
       aspectRatio ?? get().imageAspectRatio
     );
     set((s) => ({
-      imagePrimaryModel: model,
+      imagePrimaryModel: resolved,
       imageAspectRatio,
       settings: {
         ...s.settings,
-        imagePrimaryModel: model,
+        imagePrimaryModel: resolved,
         imageAspectRatio,
       },
     }));
@@ -1501,10 +1634,11 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
         },
         continuity: loaded.continuity,
         scenes: loaded.scenes,
-        imagePrimaryModel:
-          loaded.settings.imagePrimaryModel ?? STORYBOARD_IMAGE_MODEL,
+        imagePrimaryModel: resolveStoryboardImageModel(
+          loaded.settings.imagePrimaryModel
+        ),
         imageAspectRatio: clampStoryboardImageAspectRatio(
-          loaded.settings.imagePrimaryModel ?? STORYBOARD_IMAGE_MODEL,
+          resolveStoryboardImageModel(loaded.settings.imagePrimaryModel),
           loaded.settings.imageAspectRatio ?? STORYBOARD_DEFAULT_IMAGE_ASPECT
         ),
         videoPrimaryModel:
@@ -1711,12 +1845,13 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
         storyboardVideoModel:
           (draft as { storyboardVideoModel?: string | null })
             .storyboardVideoModel ?? null,
-        imagePrimaryModel:
-          (draft as { imagePrimaryModel?: string }).imagePrimaryModel ??
-          STORYBOARD_IMAGE_MODEL,
+        imagePrimaryModel: resolveStoryboardImageModel(
+          (draft as { imagePrimaryModel?: string }).imagePrimaryModel
+        ),
         imageAspectRatio: clampStoryboardImageAspectRatio(
-          (draft as { imagePrimaryModel?: string }).imagePrimaryModel ??
-            STORYBOARD_IMAGE_MODEL,
+          resolveStoryboardImageModel(
+            (draft as { imagePrimaryModel?: string }).imagePrimaryModel
+          ),
           (draft as { imageAspectRatio?: AspectRatio }).imageAspectRatio ??
             STORYBOARD_DEFAULT_IMAGE_ASPECT
         ),
@@ -1792,7 +1927,10 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
     const payload = {
       step: s.step,
       script: s.script,
-      settings: s.settings,
+      settings: {
+        ...s.settings,
+        inputReferences: inputReferencesForDraft(s.settings.inputReferences ?? []),
+      },
       continuity: s.continuity,
       scenes: scenesForDraft(s.scenes),
       storyboardVideoUrl: s.storyboardVideoUrl,

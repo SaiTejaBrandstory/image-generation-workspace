@@ -281,8 +281,8 @@ export function StoryboardImageModelDialog({
             {copy.title}
           </DialogTitle>
           <DialogDescription className="text-xs text-foreground-muted">
-            {sorted.length} ref-frame models · {frameCount} frames · cheapest
-            first
+            {sorted.length} vision models (support reference images) ·{" "}
+            {frameCount} frames · cheapest first
           </DialogDescription>
         </DialogHeader>
 

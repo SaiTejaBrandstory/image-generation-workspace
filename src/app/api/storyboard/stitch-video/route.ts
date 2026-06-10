@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { formatOpenRouterErrorForUser } from "@/lib/openrouter-errors";
 import { buildStoryboardAmbientBed } from "@/lib/storyboard/storyboard-ambient-bed";
 import { buildStoryboardVoiceoverTrack } from "@/lib/storyboard/storyboard-voiceover";
 import { scaleScenesToVideoDuration } from "@/lib/storyboard/voiceover-timing";
@@ -7,6 +6,7 @@ import {
   applySmoothEndingToMp4,
   concatMp4Buffers,
   concatMp4BuffersWithCrossfade,
+  formatStitchVideoErrorForUser,
   mixStoryboardFinalAudio,
   probeMp4DurationFloat,
   probeMp4DurationSec,
@@ -15,6 +15,7 @@ import type { StoryboardGenre, StoryboardScene } from "@/types/storyboard";
 import { updateStoryboardOutputs } from "@/lib/supabase/storyboard-db";
 import { createClient } from "@/lib/supabase/server";
 import {
+  getSignedMediaUrl,
   uploadGenerationVideoBuffer,
   videoSourceToBuffer,
 } from "@/lib/supabase/storage";
@@ -28,6 +29,8 @@ interface StitchVideoBody {
   projectId: string;
   storageConversationId?: string;
   clipUrls: string[];
+  /** Prefer storage paths — fresh signed URLs avoid expired clip links. */
+  clipStoragePaths?: (string | null | undefined)[];
   totalDurationSec?: number;
   /** All storyboard scenes — used to synthesize one narrator track after stitching. */
   scenes?: StoryboardScene[];
@@ -56,8 +59,14 @@ export async function POST(request: NextRequest) {
     }
 
     const buffers: Buffer[] = [];
-    for (const url of body.clipUrls) {
-      const { buffer } = await videoSourceToBuffer(url);
+    for (let i = 0; i < body.clipUrls.length; i++) {
+      const storagePath = body.clipStoragePaths?.[i]?.trim();
+      let source = body.clipUrls[i]!;
+      if (storagePath) {
+        const signed = await getSignedMediaUrl(storagePath);
+        if (signed) source = signed;
+      }
+      const { buffer } = await videoSourceToBuffer(source);
       buffers.push(buffer);
     }
 
@@ -190,8 +199,8 @@ export async function POST(request: NextRequest) {
   } catch (err) {
     const message =
       err instanceof Error
-        ? formatOpenRouterErrorForUser(err.message)
-        : "Video stitching failed";
+        ? formatStitchVideoErrorForUser(err.message)
+        : "Could not stitch clips. Please try again.";
     console.error("[storyboard/stitch-video]", message);
     return NextResponse.json({ error: message }, { status: 500 });
   }

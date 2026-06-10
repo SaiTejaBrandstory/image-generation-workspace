@@ -65,6 +65,24 @@ function extractImageUrl(data: unknown): string | null {
   return null;
 }
 
+function buildVisionMessageContent(
+  referenceImages: Array<{ url: string; label: string }>,
+  textPrompt: string
+) {
+  const parts: Array<
+    | { type: "text"; text: string }
+    | { type: "image_url"; image_url: { url: string } }
+  > = [];
+
+  for (const ref of referenceImages) {
+    parts.push({ type: "text", text: ref.label });
+    parts.push({ type: "image_url", image_url: { url: ref.url } });
+  }
+
+  parts.push({ type: "text", text: textPrompt });
+  return parts;
+}
+
 export async function generateStoryboardSketchFrame(
   scene: StoryboardSketchSceneInput,
   options?: { model?: string; aspectRatio?: AspectRatio }
@@ -77,7 +95,11 @@ export async function generateStoryboardSketchFrame(
     options?.aspectRatio ?? scene.aspectRatio ?? STORYBOARD_DEFAULT_IMAGE_ASPECT
   );
 
-  const referenceUrls = (
+  const referenceImages = (scene.referenceImages ?? [])
+    .filter((ref) => ref.url?.trim())
+    .slice(0, config.maxReferenceImages);
+
+  const legacyReferenceUrls = (
     scene.referenceFrameUrls?.length
       ? scene.referenceFrameUrls
       : scene.referenceFrameUrl?.trim()
@@ -88,11 +110,19 @@ export async function generateStoryboardSketchFrame(
     .filter(Boolean)
     .slice(0, config.maxReferenceImages);
 
+  const visionRefs =
+    referenceImages.length > 0
+      ? referenceImages
+      : legacyReferenceUrls.map((url, index) => ({
+          url,
+          label:
+            index === 0
+              ? `PRIMARY ANCHOR (Scene 1) — locked character design. Match these exact faces, costumes, props, and ${getFrameStyleConfig(scene.frameStyle ?? "sketch").referenceHint}:`
+              : "PREVIOUS SHOT — continue from this frame; keep the same characters and visual style:",
+        }));
+
   const useReference =
-    referenceUrls.length > 0 &&
-    config.supportsVisionInput &&
-    scene.sceneNumber > 1;
-  const styleConfig = getFrameStyleConfig(scene.frameStyle ?? "sketch");
+    visionRefs.length > 0 && config.supportsVisionInput;
 
   let textPrompt = buildStoryboardSketchPrompt({
     ...scene,
@@ -104,26 +134,7 @@ export async function generateStoryboardSketchFrame(
   }
 
   const messageContent = useReference
-    ? [
-        {
-          type: "text",
-          text: `PRIMARY ANCHOR (Scene 1) — locked character design. Match these exact faces, costumes, props, and ${styleConfig.referenceHint}:`,
-        },
-        { type: "image_url", image_url: { url: referenceUrls[0] } },
-        ...(referenceUrls.length > 1
-          ? [
-              {
-                type: "text" as const,
-                text: "PREVIOUS SHOT — continue from this frame; keep the same characters and visual style:",
-              },
-              {
-                type: "image_url" as const,
-                image_url: { url: referenceUrls[1] },
-              },
-            ]
-          : []),
-        { type: "text", text: textPrompt },
-      ]
+    ? buildVisionMessageContent(visionRefs, textPrompt)
     : textPrompt;
 
   const body: Record<string, unknown> = {

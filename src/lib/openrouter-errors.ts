@@ -92,35 +92,52 @@ export function formatOpenRouterErrorForUser(raw: string): string {
 
   if (isRealPersonVideoRejection(withoutOpId)) {
     return (
-      "This storyboard frame looks like a real person, which Seedance cannot use. " +
-      "If Veo fallback also failed, try a more illustrated frame style or set " +
-      "STORYBOARD_VIDEO_FALLBACK_MODEL=google/veo-3.1-fast in .env."
+      "This frame looks like a real person, which some video models cannot use. " +
+      "Try a more illustrated frame style or switch to a different video model."
+    );
+  }
+
+  if (
+    /only one reference image/i.test(withoutOpId) ||
+    /single image per request/i.test(withoutOpId)
+  ) {
+    return (
+      "This image model accepts only one reference image per frame. " +
+      "Use Gemini or GPT Image for multiple references, or remove extra uploads."
     );
   }
 
   if (isVideoContentFilteredError(withoutOpId)) {
     return (
-      "The video provider blocked this segment — the prompt or frames may have triggered " +
-      "a safety block. Regenerate frames for these scenes with a more illustrated style, " +
-      "shorten voiceover/action text, or try google/veo-3.1-fast as your primary model."
+      "The video was blocked by a safety filter — the prompt or frames may have triggered it. " +
+      "Regenerate frames with a more illustrated style, shorten voiceover text, " +
+      "or try a different video model."
     );
   }
 
   if (/fetch failed|econnreset|socket hang up/i.test(withoutOpId)) {
     return (
-      "Network error while contacting the video API. This often happens when " +
-      "reference images are too large — we retried automatically. Please try again."
+      "Network error during generation. Please check your connection and try again."
     );
   }
 
   if (isRetryableOpenRouterError(undefined, withoutOpId)) {
     return (
-      "OpenRouter is busy right now (high load). Wait a minute and try again, " +
-      "or switch to a different model. We already retried automatically."
+      "The AI service is busy right now. Wait a minute and try again, " +
+      "or switch to a different model."
     );
   }
 
-  return withoutOpId || "Generation failed. Please try again.";
+  return sanitizeProviderErrorForUser(withoutOpId) || "Generation failed. Please try again.";
+}
+
+/** Hide provider names and dev-only details from user-visible errors. */
+export function sanitizeProviderErrorForUser(raw: string): string {
+  return raw
+    .replace(/\bopenrouter\b/gi, "the AI service")
+    .replace(/\s*Operation ID:\s*[a-f0-9-]+\.?/gi, "")
+    .replace(/STORYBOARD_VIDEO_FALLBACK_MODEL=[^\s.]+/gi, "a different video model")
+    .trim();
 }
 
 export async function sleepMs(ms: number): Promise<void> {

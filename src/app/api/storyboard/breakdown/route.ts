@@ -20,6 +20,7 @@ import {
   normalizeScenesToTimeline,
 } from "@/lib/storyboard/voiceover-timing";
 import { formatOpenRouterErrorForUser } from "@/lib/openrouter-errors";
+import { buildInputReferencesPromptBlock } from "@/lib/storyboard/storyboard-input-references";
 import { createClient } from "@/lib/supabase/server";
 import type {
   StoryboardContinuity,
@@ -63,6 +64,10 @@ async function breakdownWithLlm(
     settings.durationSec
   );
 
+  const referenceLabelsBlock = buildInputReferencesPromptBlock(
+    settings.inputReferences ?? []
+  );
+
   const system = `You are a professional storyboard supervisor for film production. Return ONLY valid JSON with "continuity" and "scenes".
 
 "continuity" object (visual bible for the ENTIRE storyboard — must stay identical across every frame):
@@ -90,7 +95,8 @@ BRIEF INPUT RULES: The user brief may mention runtime (e.g. "45-second ad") — 
 voiceover: Spoken narration for THIS scene only — short lines that fit the scene's second slot and word limit above. Natural pace; never cram extra sentences. Not ad-format meta.
 visualDescription: What the camera sees in this single shot — subject, action, setting, mood. Not ad-length meta or the brief preamble.
 
-Use the SAME character names and physical descriptions in every scene. For imagePrompt: ${frameStyleConfig.breakdownHint}. Reference continuity bible characters by name. Never include scene numbers, shot labels, or any text that could appear in the image. No text, labels, UI, timelines, collages, or multi-panel layouts.`;
+Use the SAME character names and physical descriptions in every scene. For imagePrompt: ${frameStyleConfig.breakdownHint}. Reference continuity bible characters by name. Never include scene numbers, shot labels, or any text that could appear in the image. No text, labels, UI, timelines, collages, or multi-panel layouts.
+${referenceLabelsBlock ? `\n${referenceLabelsBlock}` : ""}`;
 
   let raw: string;
   try {

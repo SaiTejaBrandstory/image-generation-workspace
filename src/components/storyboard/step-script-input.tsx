@@ -2,6 +2,7 @@
 
 import { Clapperboard, Loader2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { StoryboardInputReferences } from "@/components/storyboard/storyboard-input-references";
 import { STORYBOARD_SAMPLE_PROMPTS } from "@/lib/storyboard/sample-prompts";
 import { countWords, detectScriptLanguage } from "@/lib/storyboard/script-utils";
 import { useStoryboardStore } from "@/store/storyboard-store";
@@ -112,6 +113,8 @@ export function StepScriptInput() {
           </Button>
         </div>
       </div>
+
+      <StoryboardInputReferences />
 
       {error && (
         <p className="rounded-md border border-accent-orange/30 bg-accent-orange/5 px-4 py-3 text-center text-sm text-accent-orange">
