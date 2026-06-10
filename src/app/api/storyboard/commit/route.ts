@@ -15,8 +15,10 @@ interface CommitBody {
   scenes: StoryboardScene[];
   singleVideoStoragePath?: string | null;
   stitchedVideoStoragePath?: string | null;
+  sceneStitchedVideoStoragePath?: string | null;
   singleVideoDurationSec?: number | null;
   stitchedVideoDurationSec?: number | null;
+  sceneStitchedVideoDurationSec?: number | null;
 }
 
 export async function POST(request: NextRequest) {
@@ -46,8 +48,10 @@ export async function POST(request: NextRequest) {
       scenes: body.scenes,
       singleVideoStoragePath: body.singleVideoStoragePath,
       stitchedVideoStoragePath: body.stitchedVideoStoragePath,
+      sceneStitchedVideoStoragePath: body.sceneStitchedVideoStoragePath,
       singleVideoDurationSec: body.singleVideoDurationSec,
       stitchedVideoDurationSec: body.stitchedVideoDurationSec,
+      sceneStitchedVideoDurationSec: body.sceneStitchedVideoDurationSec,
     });
 
     return NextResponse.json({ conversationId: result.conversationId });

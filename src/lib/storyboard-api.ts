@@ -14,8 +14,10 @@ export async function commitStoryboard(
     scenes: StoryboardScene[];
     singleVideoStoragePath?: string | null;
     stitchedVideoStoragePath?: string | null;
+    sceneStitchedVideoStoragePath?: string | null;
     singleVideoDurationSec?: number | null;
     stitchedVideoDurationSec?: number | null;
+    sceneStitchedVideoDurationSec?: number | null;
   }
 ): Promise<{ conversationId: string }> {
   const res = await fetch("/api/storyboard/commit", {
@@ -42,8 +44,10 @@ export async function patchStoryboardOutputs(
   patch: {
     singleVideoStoragePath?: string | null;
     stitchedVideoStoragePath?: string | null;
+    sceneStitchedVideoStoragePath?: string | null;
     singleVideoDurationSec?: number | null;
     stitchedVideoDurationSec?: number | null;
+    sceneStitchedVideoDurationSec?: number | null;
   }
 ): Promise<void> {
   const res = await fetch(`/api/storyboard/${conversationId}`, {

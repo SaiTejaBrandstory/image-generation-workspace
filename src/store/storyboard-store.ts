@@ -91,8 +91,8 @@ interface StoryboardState {
   isGeneratingStitchedVideo: boolean;
   stitchedVideoProgress: number;
   stitchedVideoStatus: string | null;
-  storyboardStitchedVideoUrl: string | null;
-  storyboardStitchedVideoDurationSec: number | null;
+  sceneStitchedVideoUrl: string | null;
+  sceneStitchedVideoDurationSec: number | null;
   storyboardProjectId: string;
   /** Set after all frames are saved to conversations history. */
   conversationId: string | null;
@@ -100,8 +100,10 @@ interface StoryboardState {
   isCommitting: boolean;
   singleVideoStoragePath: string | null;
   stitchedVideoStoragePath: string | null;
+  sceneStitchedVideoStoragePath: string | null;
   /** Bumps per scene — stale API responses are ignored when epoch mismatches. */
   frameGenerationEpoch: Record<string, number>;
+  sceneVideoGenerationEpoch: Record<string, number>;
   videoGenerationEpoch: number;
   stitchedVideoGenerationEpoch: number;
   error: string | null;
@@ -143,8 +145,14 @@ interface StoryboardState {
     replace?: boolean;
     videoAspectRatio?: string;
   }) => Promise<void>;
+  generateSceneVideos: (
+    sceneIds: string[],
+    options?: { videoAspectRatio?: string }
+  ) => Promise<void>;
+  stitchSceneAnimations: () => Promise<void>;
   checkPendingStoryboardVideo: () => Promise<void>;
   isFrameBusy: (sceneId: string) => boolean;
+  isSceneVideoBusy: (sceneId: string) => boolean;
   isAnyVideoGenerating: () => boolean;
   resetStoryboard: () => void;
   loadStoryboardConversation: (id: string) => Promise<void>;
@@ -281,8 +289,10 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
         scenes: s.scenes,
         singleVideoStoragePath: s.singleVideoStoragePath,
         stitchedVideoStoragePath: s.stitchedVideoStoragePath,
+        sceneStitchedVideoStoragePath: s.sceneStitchedVideoStoragePath,
         singleVideoDurationSec: s.storyboardVideoDurationSec,
-        stitchedVideoDurationSec: s.storyboardStitchedVideoDurationSec,
+        stitchedVideoDurationSec: null,
+        sceneStitchedVideoDurationSec: s.sceneStitchedVideoDurationSec,
       });
 
       useWorkspaceStore.getState().upsertConversationInList({
@@ -329,6 +339,10 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
           patch.stitchedVideoStoragePath !== undefined
             ? patch.stitchedVideoStoragePath
             : s.stitchedVideoStoragePath,
+        sceneStitchedVideoStoragePath:
+          patch.sceneStitchedVideoStoragePath !== undefined
+            ? patch.sceneStitchedVideoStoragePath
+            : s.sceneStitchedVideoStoragePath,
       }));
       get().saveDraft();
     } catch (err) {
@@ -366,15 +380,17 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
   isGeneratingStitchedVideo: false,
   stitchedVideoProgress: 0,
   stitchedVideoStatus: null,
-  storyboardStitchedVideoUrl: null,
-  storyboardStitchedVideoDurationSec: null,
+  sceneStitchedVideoUrl: null,
+  sceneStitchedVideoDurationSec: null,
   storyboardProjectId: crypto.randomUUID(),
   conversationId: null,
   wizardLocked: false,
   isCommitting: false,
   singleVideoStoragePath: null,
   stitchedVideoStoragePath: null,
+  sceneStitchedVideoStoragePath: null,
   frameGenerationEpoch: {},
+  sceneVideoGenerationEpoch: {},
   videoGenerationEpoch: 0,
   stitchedVideoGenerationEpoch: 0,
   error: null,
@@ -804,7 +820,245 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
     }
   },
 
-  isAnyVideoGenerating: () => get().isGeneratingVideo,
+  isSceneVideoBusy: (sceneId) => {
+    const scene = get().scenes.find((item) => item.id === sceneId);
+    return scene?.sceneVideoStatus === "generating";
+  },
+
+  isAnyVideoGenerating: () => {
+    const s = get();
+    if (s.isGeneratingVideo) return true;
+    return s.scenes.some((scene) => scene.sceneVideoStatus === "generating");
+  },
+
+  generateSceneVideos: async (sceneIds, options) => {
+    const uniqueIds = [...new Set(sceneIds)].filter(Boolean);
+    if (!uniqueIds.length) return;
+
+    const ordered = get()
+      .scenes.filter((scene) => uniqueIds.includes(scene.id))
+      .sort((a, b) => a.sceneNumber - b.sceneNumber);
+
+    if (!ordered.length) return;
+
+    const blocked = ordered.find(
+      (scene) =>
+        !scene.frameImageUrl ||
+        scene.frameStatus !== "complete" ||
+        scene.sceneVideoStatus === "generating"
+    );
+    if (blocked) {
+      if (!blocked.frameImageUrl || blocked.frameStatus !== "complete") {
+        set({
+          error: `Scene ${blocked.sceneNumber} needs a frame image before animation.`,
+        });
+      }
+      return;
+    }
+
+    const {
+      script,
+      settings,
+      continuity,
+      storyboardProjectId,
+      conversationId,
+      videoPrimaryModel,
+      videoFallbackModel,
+      videoAspectRatio,
+      imageAspectRatio,
+    } = get();
+
+    const storageFolder = storageFolderId(conversationId, storyboardProjectId);
+    const totalScenes = get().scenes.length;
+    const aspect =
+      options?.videoAspectRatio?.trim() ||
+      videoAspectRatio ||
+      settings.videoAspectRatio ||
+      imageAspectRatio;
+
+    set({ error: null });
+
+    for (const scene of ordered) {
+      const epoch = (get().sceneVideoGenerationEpoch[scene.id] ?? 0) + 1;
+      set((s) => ({
+        sceneVideoGenerationEpoch: {
+          ...s.sceneVideoGenerationEpoch,
+          [scene.id]: epoch,
+        },
+        scenes: s.scenes.map((item) =>
+          item.id === scene.id
+            ? {
+                ...item,
+                sceneVideoStatus: "generating" as const,
+                sceneVideoError: undefined,
+              }
+            : item
+        ),
+      }));
+
+      try {
+        const res = await fetch("/api/storyboard/generate-scene-video", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sceneId: scene.id,
+            scene,
+            script,
+            settings,
+            continuity,
+            totalScenes,
+            storageConversationId: storageFolder,
+            projectId: storyboardProjectId,
+            videoPrimaryModel,
+            videoFallbackModel,
+            videoAspectRatio: aspect,
+            frameAspectRatio: imageAspectRatio,
+          }),
+        });
+        const data = (await res.json()) as {
+          videoUrl?: string;
+          storagePath?: string;
+          durationSec?: number;
+          model?: string;
+          error?: string;
+        };
+        if (!res.ok) {
+          throw new Error(data.error ?? "Scene animation failed");
+        }
+
+        if (get().sceneVideoGenerationEpoch[scene.id] !== epoch) continue;
+
+        set((s) => ({
+          scenes: s.scenes.map((item) =>
+            item.id === scene.id
+              ? {
+                  ...item,
+                  sceneVideoUrl: data.videoUrl as string,
+                  sceneVideoStoragePath:
+                    (data.storagePath as string | undefined) ??
+                    item.sceneVideoStoragePath,
+                  sceneVideoDurationSec: data.durationSec ?? item.durationSec,
+                  sceneVideoStatus: "complete" as const,
+                  sceneVideoModel: data.model ?? item.sceneVideoModel,
+                }
+              : item
+          ),
+        }));
+        get().saveDraft();
+        if (get().wizardLocked && get().conversationId) {
+          await syncStoryboardToHistory();
+        }
+      } catch (err) {
+        if (get().sceneVideoGenerationEpoch[scene.id] !== epoch) continue;
+        const message =
+          err instanceof Error ? err.message : "Scene animation failed";
+        set((s) => ({
+          scenes: s.scenes.map((item) =>
+            item.id === scene.id
+              ? {
+                  ...item,
+                  sceneVideoStatus: "error" as const,
+                  sceneVideoError: message,
+                }
+              : item
+          ),
+          error: `Scene ${scene.sceneNumber}: ${message}`,
+        }));
+      }
+    }
+  },
+
+  stitchSceneAnimations: async () => {
+    const ordered = [...get().scenes].sort(
+      (a, b) => a.sceneNumber - b.sceneNumber
+    );
+    if (!ordered.length) return;
+
+    const missing = ordered.filter(
+      (scene) =>
+        !scene.sceneVideoUrl || scene.sceneVideoStatus !== "complete"
+    );
+    if (missing.length) {
+      set({
+        error: `Animate all scenes before stitching (${missing.length} still missing).`,
+      });
+      return;
+    }
+
+    const epoch = get().stitchedVideoGenerationEpoch + 1;
+    set({
+      stitchedVideoGenerationEpoch: epoch,
+      isGeneratingStitchedVideo: true,
+      stitchedVideoProgress: 10,
+      stitchedVideoStatus: "Stitching scene clips…",
+      error: null,
+    });
+
+    const clipUrls = ordered.map((scene) => scene.sceneVideoUrl as string);
+    const totalDurationSec = ordered.reduce(
+      (sum, scene) => sum + (scene.sceneVideoDurationSec ?? scene.durationSec),
+      0
+    );
+    const { storyboardProjectId, conversationId } = get();
+    const storageFolder = storageFolderId(conversationId, storyboardProjectId);
+
+    try {
+      set({ stitchedVideoProgress: 35 });
+      const stitchRes = await fetch("/api/storyboard/stitch-video", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectId: storyboardProjectId,
+          storageConversationId: storageFolder,
+          clipUrls,
+          totalDurationSec,
+          outputKind: "scene-stitch",
+        }),
+      });
+      const stitchData = (await stitchRes.json()) as {
+        videoUrl?: string;
+        storagePath?: string;
+        durationSec?: number | null;
+        error?: string;
+      };
+      if (!stitchRes.ok) {
+        throw new Error(stitchData.error ?? "Scene stitch failed");
+      }
+      if (get().stitchedVideoGenerationEpoch !== epoch) return;
+
+      const durationSec =
+        stitchData.durationSec != null && stitchData.durationSec > 0
+          ? stitchData.durationSec
+          : totalDurationSec;
+
+      const storagePath = stitchData.storagePath as string | undefined;
+
+      set({
+        sceneStitchedVideoUrl: stitchData.videoUrl as string,
+        sceneStitchedVideoDurationSec: durationSec,
+        sceneStitchedVideoStoragePath: storagePath ?? get().sceneStitchedVideoStoragePath,
+        isGeneratingStitchedVideo: false,
+        stitchedVideoProgress: 100,
+        stitchedVideoStatus: null,
+      });
+      get().saveDraft();
+
+      if (storagePath && get().conversationId) {
+        await persistVideoOutputs({
+          sceneStitchedVideoStoragePath: storagePath,
+          sceneStitchedVideoDurationSec: durationSec,
+        });
+      }
+    } catch (err) {
+      if (get().stitchedVideoGenerationEpoch !== epoch) return;
+      set({
+        isGeneratingStitchedVideo: false,
+        stitchedVideoProgress: 0,
+        stitchedVideoStatus: null,
+        error: err instanceof Error ? err.message : "Scene stitch failed",
+      });
+    }
+  },
 
   setStoryboardImageModel: (model, aspectRatio) => {
     const imageAspectRatio = clampStoryboardImageAspectRatio(
@@ -1066,6 +1320,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
             totalDurationSec: finalDuration,
             outputKind: "full",
             scenes: ordered,
+            genre: settings.genre,
           }),
         });
         const stitchData = (await stitchRes.json()) as {
@@ -1280,13 +1535,15 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
         videoProgress: 0,
         storyboardVideoUrl: loaded.storyboardVideoUrl,
         storyboardVideoDurationSec: loaded.storyboardVideoDurationSec,
+        singleVideoStoragePath: loaded.singleVideoStoragePath,
         isGeneratingStitchedVideo: false,
         stitchedVideoProgress: 0,
         stitchedVideoStatus: null,
-        storyboardStitchedVideoUrl: loaded.storyboardStitchedVideoUrl,
-        storyboardStitchedVideoDurationSec:
-          loaded.storyboardStitchedVideoDurationSec,
+        sceneStitchedVideoUrl: loaded.sceneStitchedVideoUrl,
+        sceneStitchedVideoDurationSec: loaded.sceneStitchedVideoDurationSec,
+        sceneStitchedVideoStoragePath: loaded.sceneStitchedVideoStoragePath,
         frameGenerationEpoch: {},
+        sceneVideoGenerationEpoch: {},
         history: [cloneScenes(loaded.scenes)],
         historyIndex: 0,
         isCommitting: false,
@@ -1319,13 +1576,35 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
     try {
       const loaded = await fetchStoryboard(conversationId);
       set({
-        storyboardVideoUrl: loaded.storyboardVideoUrl,
-        storyboardVideoDurationSec: loaded.storyboardVideoDurationSec,
-        storyboardStitchedVideoUrl: loaded.storyboardStitchedVideoUrl,
-        storyboardStitchedVideoDurationSec:
-          loaded.storyboardStitchedVideoDurationSec,
+        storyboardVideoUrl:
+          loaded.storyboardVideoUrl ?? get().storyboardVideoUrl,
+        storyboardVideoDurationSec:
+          loaded.storyboardVideoDurationSec ?? get().storyboardVideoDurationSec,
+        singleVideoStoragePath:
+          loaded.singleVideoStoragePath ?? get().singleVideoStoragePath,
+        sceneStitchedVideoUrl:
+          loaded.sceneStitchedVideoUrl ?? get().sceneStitchedVideoUrl,
+        sceneStitchedVideoDurationSec:
+          loaded.sceneStitchedVideoDurationSec ??
+          get().sceneStitchedVideoDurationSec,
+        sceneStitchedVideoStoragePath:
+          loaded.sceneStitchedVideoStoragePath ??
+          get().sceneStitchedVideoStoragePath,
+        scenes: get().scenes.map((scene) => {
+          const fromDb = loaded.scenes.find((item) => item.id === scene.id);
+          if (!fromDb) return scene;
+          return {
+            ...scene,
+            sceneVideoUrl: fromDb.sceneVideoUrl,
+            sceneVideoStoragePath: fromDb.sceneVideoStoragePath,
+            sceneVideoDurationSec: fromDb.sceneVideoDurationSec,
+            sceneVideoStatus: fromDb.sceneVideoStatus,
+            sceneVideoError: fromDb.sceneVideoError,
+            sceneVideoModel: fromDb.sceneVideoModel,
+          };
+        }),
       });
-      if (loaded.storyboardVideoUrl || loaded.storyboardStitchedVideoUrl) {
+      if (loaded.storyboardVideoUrl || loaded.sceneStitchedVideoUrl) {
         clearPendingVideo();
       }
       get().saveDraft();
@@ -1362,15 +1641,17 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
       isGeneratingStitchedVideo: false,
       stitchedVideoProgress: 0,
       stitchedVideoStatus: null,
-      storyboardStitchedVideoUrl: null,
-      storyboardStitchedVideoDurationSec: null,
+      sceneStitchedVideoUrl: null,
+      sceneStitchedVideoDurationSec: null,
       storyboardProjectId: crypto.randomUUID(),
       conversationId: null,
       wizardLocked: false,
       isCommitting: false,
       singleVideoStoragePath: null,
       stitchedVideoStoragePath: null,
+      sceneStitchedVideoStoragePath: null,
       frameGenerationEpoch: {},
+      sceneVideoGenerationEpoch: {},
       videoGenerationEpoch: 0,
       stitchedVideoGenerationEpoch: 0,
       error: null,
@@ -1468,12 +1749,17 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
         isGeneratingStitchedVideo: false,
         stitchedVideoProgress: 0,
         stitchedVideoStatus: null,
-        storyboardStitchedVideoUrl:
+        sceneStitchedVideoUrl:
+          (draft as { sceneStitchedVideoUrl?: string | null }).sceneStitchedVideoUrl ??
           (draft as { storyboardStitchedVideoUrl?: string | null })
-            .storyboardStitchedVideoUrl ?? null,
-        storyboardStitchedVideoDurationSec:
+            .storyboardStitchedVideoUrl ??
+          null,
+        sceneStitchedVideoDurationSec:
+          (draft as { sceneStitchedVideoDurationSec?: number | null })
+            .sceneStitchedVideoDurationSec ??
           (draft as { storyboardStitchedVideoDurationSec?: number | null })
-            .storyboardStitchedVideoDurationSec ?? null,
+            .storyboardStitchedVideoDurationSec ??
+          null,
         selectedSceneId: draft.selectedSceneId ?? null,
         viewMode: draft.viewMode ?? "grid",
         history: [cloneScenes(draft.scenes ?? [])],
@@ -1517,8 +1803,8 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
       videoPrimaryModel: s.videoPrimaryModel,
       videoFallbackModel: s.videoFallbackModel,
       videoAspectRatio: s.videoAspectRatio,
-      storyboardStitchedVideoUrl: s.storyboardStitchedVideoUrl,
-      storyboardStitchedVideoDurationSec: s.storyboardStitchedVideoDurationSec,
+      sceneStitchedVideoUrl: s.sceneStitchedVideoUrl,
+      sceneStitchedVideoDurationSec: s.sceneStitchedVideoDurationSec,
       storyboardProjectId: s.storyboardProjectId,
       selectedSceneId: s.selectedSceneId,
       viewMode: s.viewMode,

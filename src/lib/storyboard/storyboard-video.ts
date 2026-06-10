@@ -217,39 +217,59 @@ export function pickStoryboardVideoDuration(
   return clamped.duration;
 }
 
-function pickStoryboardSceneReferences(
+/**
+ * Our video API layer maps ref[0] → first_frame and ref[1] → last_frame (see buildVideoReferencePayloads).
+ * We were wrongly putting [bridge, shot4, …] so shot 4 became the closing keyframe instead of shot 6.
+ */
+function storyboardUsesKeyframePairOnly(modelId: string): boolean {
+  const config = getVideoModelConfig(modelId);
+  return (
+    config.supportedFrameImages.includes("first_frame") &&
+    config.supportedFrameImages.includes("last_frame") &&
+    !config.supportsInputReferences
+  );
+}
+
+/** Human-readable keyframe mapping for the video prompt. */
+export function describeStoryboardSegmentReferences(
   scenes: StoryboardScene[],
-  maxSceneRefs: number
-): StoryboardScene[] {
+  options?: {
+    bridgeFrameUrl?: string;
+    modelId?: string;
+  }
+): string {
   const ordered = [...scenes].sort((a, b) => a.sceneNumber - b.sceneNumber);
-  if (!ordered.length || maxSceneRefs <= 0) return [];
-
-  const first = ordered[0]!;
-  const last = ordered[ordered.length - 1]!;
+  const opening = ordered[0]!;
+  const closing = ordered[ordered.length - 1]!;
   const middle = ordered.slice(1, -1);
+  const modelId = options?.modelId ?? STORYBOARD_VIDEO_MODEL;
+  const keyframePair = storyboardUsesKeyframePairOnly(modelId);
 
-  const extra: StoryboardScene[] = [];
-  if (middle.length === 1) {
-    extra.push(middle[0]!);
-  } else if (middle.length >= 2) {
-    extra.push(middle[0]!, middle[middle.length - 1]!);
+  const parts: string[] = [
+    `first_frame (opening keyframe): Shot ${opening.sceneNumber} — clip MUST open on this composition`,
+    `last_frame (closing keyframe): Shot ${closing.sceneNumber} — clip MUST end on this composition; never end on an earlier shot`,
+  ];
+
+  if (middle.length) {
+    parts.push(
+      `Middle shots ${middle.map((s) => s.sceneNumber).join(", ")} are described in the shot list only (animate between opening and closing keyframes in order)`
+    );
   }
 
-  const candidateScenes =
-    ordered.length === 1 ? [first] : [first, last, ...extra].slice(0, maxSceneRefs);
-  const picked: StoryboardScene[] = [];
-  const seen = new Set<string>();
-  for (const scene of candidateScenes) {
-    if (seen.has(scene.id)) continue;
-    seen.add(scene.id);
-    picked.push(scene);
+  if (options?.bridgeFrameUrl?.trim()) {
+    parts.push(
+      keyframePair
+        ? "Continue seamlessly from the previous segment (bridge continuity is in the prompt — keyframes are still this segment's first and last storyboard frames)"
+        : "Bridge frame from previous segment included as a style reference"
+    );
   }
-  return picked;
+
+  return parts.join(". ");
 }
 
 /**
- * Pack storyboard frames into video API refs (max 4).
- * When `bridgeFrameUrl` is set (segment 2+), it is the opening frame lock from the prior clip.
+ * Pack storyboard frames for the video API.
+ * Always puts [first scene of segment, last scene of segment] in slots 0 & 1 (opening/closing keyframes).
  */
 export async function buildStoryboardSegmentReferences(
   scenes: StoryboardScene[],
@@ -258,37 +278,48 @@ export async function buildStoryboardSegmentReferences(
     storageConversationId?: string;
     bridgeFrameUrl?: string;
     reduced?: boolean;
+    modelId?: string;
   }
 ): Promise<ReferenceImagePayload[]> {
   const ordered = [...scenes].sort((a, b) => a.sceneNumber - b.sceneNumber);
   if (!ordered.length) return [];
 
+  const modelId = options?.modelId ?? STORYBOARD_VIDEO_MODEL;
+  const config = getVideoModelConfig(modelId);
+  const supportsRefs = config.supportsInputReferences;
+  const openingScene = ordered[0]!;
+  const closingScene = ordered[ordered.length - 1]!;
+
+  const sceneRef = async (
+    scene: StoryboardScene
+  ): Promise<ReferenceImagePayload> => ({
+    role: "product",
+    influence: 100,
+    dataUrl: await resolveSceneFrameHttpUrl(scene, options),
+    usageMode: "preserve",
+  });
+
   const refs: ReferenceImagePayload[] = [];
-  const bridge = options?.bridgeFrameUrl?.trim();
-  if (bridge) {
-    refs.push({
-      role: "product",
-      influence: 100,
-      dataUrl: await resolveVideoReferenceSource(bridge),
-      usageMode: "preserve",
-    });
+
+  // Slots 0 & 1 map to first_frame / last_frame — never put bridge or middle scenes here.
+  refs.push(await sceneRef(openingScene));
+  if (closingScene.id !== openingScene.id) {
+    refs.push(await sceneRef(closingScene));
   }
 
-  const maxSceneRefs = Math.max(
-    0,
-    MAX_REFERENCES_VIDEO - refs.length
-  );
-  const sceneSlots = options?.reduced
-    ? pickStoryboardSceneReferences(ordered, Math.min(2, maxSceneRefs))
-    : pickStoryboardSceneReferences(ordered, maxSceneRefs);
-
-  for (const scene of sceneSlots) {
-    refs.push({
-      role: "product",
-      influence: 100,
-      dataUrl: await resolveSceneFrameHttpUrl(scene, options),
-      usageMode: "preserve",
-    });
+  if (supportsRefs) {
+    const bridge = options?.bridgeFrameUrl?.trim();
+    if (bridge) {
+      refs.push({
+        role: "product",
+        influence: 100,
+        dataUrl: await resolveVideoReferenceSource(bridge),
+        usageMode: "preserve",
+      });
+    }
+    for (const scene of ordered.slice(1, -1)) {
+      refs.push(await sceneRef(scene));
+    }
   }
 
   return refs;
@@ -413,6 +444,32 @@ export function estimateStoryboardVideoOutputDuration(
   const batches = chunkStoryboardScenesForVideo(scenes);
   return batches.reduce(
     (sum, batch) => sum + pickStoryboardBatchDuration(batch, modelId),
+    0
+  );
+}
+
+/** Total seconds for one clip per scene (scene-by-scene animation). */
+export function estimateStoryboardSceneClipsDuration(
+  scenes: StoryboardScene[],
+  modelId: string
+): number {
+  return scenes.reduce(
+    (sum, scene) => sum + pickStoryboardClipDuration(scene.durationSec, modelId),
+    0
+  );
+}
+
+/** Estimated cost for animating each scene as its own clip. */
+export function estimateStoryboardSceneClipsCost(
+  scenes: StoryboardScene[],
+  modelId: string
+): number | null {
+  const model = getVideoModelConfig(modelId);
+  const rate = model.costPerSecondUsd;
+  if (rate == null) return null;
+  return scenes.reduce(
+    (sum, scene) =>
+      sum + pickStoryboardClipDuration(scene.durationSec, modelId) * rate,
     0
   );
 }

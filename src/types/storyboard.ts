@@ -99,6 +99,13 @@ export interface StoryboardScene {
   frameStoragePath?: string;
   frameStatus: FrameStatus;
   frameError?: string;
+  /** Per-scene animated clip (not stitched into storyboard video). */
+  sceneVideoUrl?: string;
+  sceneVideoStoragePath?: string;
+  sceneVideoDurationSec?: number;
+  sceneVideoStatus?: FrameStatus;
+  sceneVideoError?: string;
+  sceneVideoModel?: string;
 }
 
 export interface StoryboardDraft {

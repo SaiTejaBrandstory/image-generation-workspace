@@ -7,6 +7,7 @@ import {
 import { getFrameStyleConfig } from "@/lib/storyboard/frame-styles";
 import { normalizeSceneFields } from "@/lib/storyboard/scene-fields";
 import { distributeDurations } from "@/lib/storyboard/scene-engine";
+import { fitVoiceoverToSceneDuration } from "@/lib/storyboard/voiceover-timing";
 import type {
   StoryboardProjectSettings,
   StoryboardScene,
@@ -55,12 +56,13 @@ function createSceneFromBeat(
     cameraMovement: CAMERA_MOVEMENTS[index % CAMERA_MOVEMENTS.length],
   });
   const visual = buildVisualDescription(beat, sceneNumber);
+  const voiceover = fitVoiceoverToSceneDuration(beat, durationSec);
 
   return {
     id: crypto.randomUUID(),
     sceneNumber,
     durationSec,
-    voiceover: beat,
+    voiceover,
     visualDescription: visual,
     ...camera,
     characterActions: `Distinct action for scene ${sceneNumber} — advance the story, do not repeat prior shots`,

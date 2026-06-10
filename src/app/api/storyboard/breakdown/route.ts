@@ -15,6 +15,10 @@ import { sanitizeScenes } from "@/lib/storyboard/brief-meta";
 import { applyGlobalSceneEnvironment } from "@/lib/storyboard/scene-environment";
 import { storyboardChatCompletion } from "@/lib/storyboard/openrouter-text";
 import { getTargetSceneCount } from "@/lib/storyboard/script-utils";
+import {
+  formatVoiceoverBudgetPrompt,
+  normalizeScenesToTimeline,
+} from "@/lib/storyboard/voiceover-timing";
 import { formatOpenRouterErrorForUser } from "@/lib/openrouter-errors";
 import { createClient } from "@/lib/supabase/server";
 import type {
@@ -54,6 +58,10 @@ async function breakdownWithLlm(
 
   const targetScenes = getTargetSceneCount(settings);
   const frameStyleConfig = getFrameStyleConfig(settings.frameStyle);
+  const voiceoverBudget = formatVoiceoverBudgetPrompt(
+    targetScenes,
+    settings.durationSec
+  );
 
   const system = `You are a professional storyboard supervisor for film production. Return ONLY valid JSON with "continuity" and "scenes".
 
@@ -65,7 +73,9 @@ async function breakdownWithLlm(
 
 "scenes" array — each scene must have: voiceover, visualDescription, cameraDirection (shot type e.g. Wide Shot, Close Up), cameraAngle (e.g. Eye Level, Low Angle), cameraMovement (e.g. Static, Pan, Dolly In, Tracking), characterActions, environment, emotion (neutral|joy|tension|sadness|excitement|calm|urgency|hope), transition (cut|fade|dissolve|wipe|match-cut|jump-cut), imagePrompt, durationSec (integer).
 Return EXACTLY ${targetScenes} scenes in the array — no more, no fewer.
-Total duration must sum to approximately ${settings.durationSec} seconds across all ${targetScenes} scenes.
+Total duration must be EXACTLY ${settings.durationSec} seconds across all ${targetScenes} scenes.
+Use these per-scene voiceover time budgets (do not exceed word limits — narration is recorded at natural speed):
+${voiceoverBudget}
 Genre: ${settings.genre}.
 ${
   settings.sceneEnvironment?.trim()
@@ -77,7 +87,7 @@ CRITICAL: Every scene must be UNIQUE. Different voiceover, visualDescription, ca
 
 BRIEF INPUT RULES: The user brief may mention runtime (e.g. "45-second ad") — IGNORE that completely. Total duration is ${settings.durationSec}s from project settings only. Do NOT copy the brief's opening sentence into voiceover or visualDescription. Do NOT repeat "A 45-second ad for…", duration labels, or format meta in any scene field.
 
-voiceover: Spoken narration for THIS scene only — natural lines the narrator or character would say. Not a description of the ad format.
+voiceover: Spoken narration for THIS scene only — short lines that fit the scene's second slot and word limit above. Natural pace; never cram extra sentences. Not ad-format meta.
 visualDescription: What the camera sees in this single shot — subject, action, setting, mood. Not ad-length meta or the brief preamble.
 
 Use the SAME character names and physical descriptions in every scene. For imagePrompt: ${frameStyleConfig.breakdownHint}. Reference continuity bible characters by name. Never include scene numbers, shot labels, or any text that could appear in the image. No text, labels, UI, timelines, collages, or multi-panel layouts.`;
@@ -178,15 +188,7 @@ export async function POST(request: NextRequest) {
     );
     scenes = dedupeSceneContent(scenes, body.script, settings);
     scenes = sanitizeScenes(scenes);
-
-    const total = scenes.reduce((sum, s) => sum + s.durationSec, 0);
-    if (total !== settings.durationSec && scenes.length > 0) {
-      const ratio = settings.durationSec / total;
-      scenes = scenes.map((s) => ({
-        ...s,
-        durationSec: Math.max(2, Math.round(s.durationSec * ratio)),
-      }));
-    }
+    scenes = normalizeScenesToTimeline(scenes, settings.durationSec);
 
     return NextResponse.json({
       scenes: applyGlobalSceneEnvironment(scenes, settings.sceneEnvironment),

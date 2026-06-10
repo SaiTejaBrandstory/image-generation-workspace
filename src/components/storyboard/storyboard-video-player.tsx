@@ -25,6 +25,7 @@ export function StoryboardVideoPlayer({
   generateDisabled = false,
   regenerateDisabled = false,
   generateLabel = "Generate video",
+  regenerateLabel = "Regenerate video",
 }: {
   title?: string;
   subtitle?: string;
@@ -44,6 +45,7 @@ export function StoryboardVideoPlayer({
   generateDisabled?: boolean;
   regenerateDisabled?: boolean;
   generateLabel?: string;
+  regenerateLabel?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(false);
@@ -214,7 +216,7 @@ export function StoryboardVideoPlayer({
               disabled={regenerateDisabled}
             >
               <RefreshCw className="h-4 w-4" />
-              Regenerate video
+              {regenerateLabel}
             </Button>
           ) : null}
         </div>

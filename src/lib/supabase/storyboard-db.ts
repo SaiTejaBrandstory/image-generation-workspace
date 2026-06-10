@@ -46,6 +46,11 @@ export interface DbStoryboardSceneRow {
   frame_storage_path: string | null;
   frame_status: StoryboardScene["frameStatus"];
   frame_error: string | null;
+  scene_video_storage_path: string | null;
+  scene_video_duration_sec: number | null;
+  scene_video_status: StoryboardScene["sceneVideoStatus"] | null;
+  scene_video_error: string | null;
+  scene_video_model: string | null;
   sort_index: number;
 }
 
@@ -56,8 +61,10 @@ export interface DbStoryboardOutputsRow {
   settings: StoryboardProjectSettings;
   single_video_storage_path: string | null;
   stitched_video_storage_path: string | null;
+  scene_stitched_video_storage_path: string | null;
   single_video_duration_sec: number | null;
   stitched_video_duration_sec: number | null;
+  scene_stitched_video_duration_sec: number | null;
   wizard_locked: boolean;
 }
 
@@ -69,8 +76,10 @@ export interface StoryboardPersistPayload {
   scenes: StoryboardScene[];
   singleVideoStoragePath?: string | null;
   stitchedVideoStoragePath?: string | null;
+  sceneStitchedVideoStoragePath?: string | null;
   singleVideoDurationSec?: number | null;
   stitchedVideoDurationSec?: number | null;
+  sceneStitchedVideoDurationSec?: number | null;
 }
 
 export interface LoadedStoryboard {
@@ -82,9 +91,12 @@ export interface LoadedStoryboard {
   scenes: StoryboardScene[];
   wizardLocked: boolean;
   storyboardVideoUrl: string | null;
-  storyboardStitchedVideoUrl: string | null;
+  /** Stitched scene animation clips — not the main storyboard video. */
+  sceneStitchedVideoUrl: string | null;
   storyboardVideoDurationSec: number | null;
-  storyboardStitchedVideoDurationSec: number | null;
+  sceneStitchedVideoDurationSec: number | null;
+  singleVideoStoragePath: string | null;
+  sceneStitchedVideoStoragePath: string | null;
 }
 
 function sceneToRow(
@@ -114,6 +126,11 @@ function sceneToRow(
     frame_storage_path: scene.frameStoragePath ?? null,
     frame_status: scene.frameStatus,
     frame_error: scene.frameError ?? null,
+    scene_video_storage_path: scene.sceneVideoStoragePath ?? null,
+    scene_video_duration_sec: scene.sceneVideoDurationSec ?? null,
+    scene_video_status: scene.sceneVideoStatus ?? null,
+    scene_video_error: scene.sceneVideoError ?? null,
+    scene_video_model: scene.sceneVideoModel ?? null,
     sort_index: index,
   };
 }
@@ -123,6 +140,12 @@ async function mapSceneRow(row: DbStoryboardSceneRow): Promise<StoryboardScene> 
   if (row.frame_storage_path) {
     frameImageUrl =
       (await getSignedImageUrl(row.frame_storage_path)) ?? undefined;
+  }
+
+  let sceneVideoUrl: string | undefined;
+  if (row.scene_video_storage_path) {
+    sceneVideoUrl =
+      (await getSignedImageUrl(row.scene_video_storage_path)) ?? undefined;
   }
 
   return {
@@ -143,6 +166,12 @@ async function mapSceneRow(row: DbStoryboardSceneRow): Promise<StoryboardScene> 
     frameImageUrl,
     frameStatus: row.frame_status,
     frameError: row.frame_error ?? undefined,
+    sceneVideoStoragePath: row.scene_video_storage_path ?? undefined,
+    sceneVideoUrl,
+    sceneVideoDurationSec: row.scene_video_duration_sec ?? undefined,
+    sceneVideoStatus: row.scene_video_status ?? undefined,
+    sceneVideoError: row.scene_video_error ?? undefined,
+    sceneVideoModel: row.scene_video_model ?? undefined,
   };
 }
 
@@ -212,15 +241,41 @@ export async function persistStoryboard(
     if (scenesError) throw new Error(scenesError.message);
   }
 
+  const { data: existingOutputs } = await supabase
+    .from("storyboard_outputs")
+    .select(
+      "single_video_storage_path, stitched_video_storage_path, scene_stitched_video_storage_path, single_video_duration_sec, stitched_video_duration_sec, scene_stitched_video_duration_sec"
+    )
+    .eq("conversation_id", conversationId)
+    .maybeSingle();
+
+  const prev = existingOutputs as DbStoryboardOutputsRow | null;
+
   const outputsRow = {
     conversation_id: conversationId,
     user_id: userId,
     continuity: payload.continuity,
     settings: payload.settings,
-    single_video_storage_path: payload.singleVideoStoragePath ?? null,
-    stitched_video_storage_path: payload.stitchedVideoStoragePath ?? null,
-    single_video_duration_sec: payload.singleVideoDurationSec ?? null,
-    stitched_video_duration_sec: payload.stitchedVideoDurationSec ?? null,
+    single_video_storage_path:
+      payload.singleVideoStoragePath ?? prev?.single_video_storage_path ?? null,
+    stitched_video_storage_path:
+      payload.stitchedVideoStoragePath ??
+      prev?.stitched_video_storage_path ??
+      null,
+    scene_stitched_video_storage_path:
+      payload.sceneStitchedVideoStoragePath ??
+      prev?.scene_stitched_video_storage_path ??
+      null,
+    single_video_duration_sec:
+      payload.singleVideoDurationSec ?? prev?.single_video_duration_sec ?? null,
+    stitched_video_duration_sec:
+      payload.stitchedVideoDurationSec ??
+      prev?.stitched_video_duration_sec ??
+      null,
+    scene_stitched_video_duration_sec:
+      payload.sceneStitchedVideoDurationSec ??
+      prev?.scene_stitched_video_duration_sec ??
+      null,
     wizard_locked: true,
     updated_at: new Date().toISOString(),
   };
@@ -270,14 +325,17 @@ export async function loadStoryboardByConversationId(
   );
 
   let storyboardVideoUrl: string | null = null;
-  let storyboardStitchedVideoUrl: string | null = null;
+  let sceneStitchedVideoUrl: string | null = null;
+  const sceneStitchPath =
+    out?.scene_stitched_video_storage_path ?? out?.stitched_video_storage_path;
+
   if (out?.single_video_storage_path) {
     storyboardVideoUrl =
       (await getSignedImageUrl(out.single_video_storage_path)) ?? null;
   }
-  if (out?.stitched_video_storage_path) {
-    storyboardStitchedVideoUrl =
-      (await getSignedImageUrl(out.stitched_video_storage_path)) ?? null;
+  if (sceneStitchPath) {
+    sceneStitchedVideoUrl =
+      (await getSignedImageUrl(sceneStitchPath)) ?? null;
   }
 
   return {
@@ -289,11 +347,57 @@ export async function loadStoryboardByConversationId(
     scenes: mappedScenes,
     wizardLocked: out?.wizard_locked ?? true,
     storyboardVideoUrl,
-    storyboardStitchedVideoUrl,
+    sceneStitchedVideoUrl,
     storyboardVideoDurationSec: out?.single_video_duration_sec ?? null,
-    storyboardStitchedVideoDurationSec:
-      out?.stitched_video_duration_sec ?? null,
+    sceneStitchedVideoDurationSec:
+      out?.scene_stitched_video_duration_sec ??
+      out?.stitched_video_duration_sec ??
+      null,
+    singleVideoStoragePath: out?.single_video_storage_path ?? null,
+    sceneStitchedVideoStoragePath: sceneStitchPath ?? null,
   };
+}
+
+export async function updateStoryboardSceneVideo(
+  supabase: SupabaseClient,
+  userId: string,
+  conversationId: string,
+  sceneId: string,
+  patch: {
+    sceneVideoStoragePath?: string | null;
+    sceneVideoDurationSec?: number | null;
+    sceneVideoStatus?: StoryboardScene["sceneVideoStatus"] | null;
+    sceneVideoError?: string | null;
+    sceneVideoModel?: string | null;
+  }
+): Promise<void> {
+  const row: Record<string, unknown> = {
+    updated_at: new Date().toISOString(),
+  };
+  if (patch.sceneVideoStoragePath !== undefined) {
+    row.scene_video_storage_path = patch.sceneVideoStoragePath;
+  }
+  if (patch.sceneVideoDurationSec !== undefined) {
+    row.scene_video_duration_sec = patch.sceneVideoDurationSec;
+  }
+  if (patch.sceneVideoStatus !== undefined) {
+    row.scene_video_status = patch.sceneVideoStatus;
+  }
+  if (patch.sceneVideoError !== undefined) {
+    row.scene_video_error = patch.sceneVideoError;
+  }
+  if (patch.sceneVideoModel !== undefined) {
+    row.scene_video_model = patch.sceneVideoModel;
+  }
+
+  const { error } = await supabase
+    .from("storyboard_scenes")
+    .update(row)
+    .eq("conversation_id", conversationId)
+    .eq("user_id", userId)
+    .eq("id", sceneId);
+
+  if (error) throw new Error(error.message);
 }
 
 export async function updateStoryboardOutputs(
@@ -303,8 +407,10 @@ export async function updateStoryboardOutputs(
   patch: Partial<{
     singleVideoStoragePath: string | null;
     stitchedVideoStoragePath: string | null;
+    sceneStitchedVideoStoragePath: string | null;
     singleVideoDurationSec: number | null;
     stitchedVideoDurationSec: number | null;
+    sceneStitchedVideoDurationSec: number | null;
   }>
 ): Promise<void> {
   const row: Record<string, unknown> = {
@@ -316,11 +422,17 @@ export async function updateStoryboardOutputs(
   if (patch.stitchedVideoStoragePath !== undefined) {
     row.stitched_video_storage_path = patch.stitchedVideoStoragePath;
   }
+  if (patch.sceneStitchedVideoStoragePath !== undefined) {
+    row.scene_stitched_video_storage_path = patch.sceneStitchedVideoStoragePath;
+  }
   if (patch.singleVideoDurationSec !== undefined) {
     row.single_video_duration_sec = patch.singleVideoDurationSec;
   }
   if (patch.stitchedVideoDurationSec !== undefined) {
     row.stitched_video_duration_sec = patch.stitchedVideoDurationSec;
+  }
+  if (patch.sceneStitchedVideoDurationSec !== undefined) {
+    row.scene_stitched_video_duration_sec = patch.sceneStitchedVideoDurationSec;
   }
 
   const { error } = await supabase

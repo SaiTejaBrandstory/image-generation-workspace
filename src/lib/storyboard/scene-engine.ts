@@ -1,4 +1,5 @@
 import { stripBriefMeta, stripOpeningBoilerplate } from "@/lib/storyboard/brief-meta";
+import { fitVoiceoverToSceneDuration } from "@/lib/storyboard/voiceover-timing";
 import { CAMERA_ANGLES, CAMERA_MOVEMENTS, SHOT_TYPES } from "@/lib/storyboard/constants";
 import { getFrameStyleConfig } from "@/lib/storyboard/frame-styles";
 import { normalizeSceneFields } from "@/lib/storyboard/scene-fields";
@@ -60,15 +61,17 @@ export function generateScenesFromScript(
     const narrativeBeat = stripBriefMeta(
       beat.replace(/^[^:]+:\s*/, "").trim() || beat
     );
-    const voiceover =
+    const rawVoiceover =
       sceneNumber === 1
         ? narrativeBeat
         : stripOpeningBoilerplate(narrativeBeat);
-    const visualDescription = voiceover;
+    const durationSec = durations[index] ?? 3;
+    const voiceover = fitVoiceoverToSceneDuration(rawVoiceover, durationSec);
+    const visualDescription = voiceover || rawVoiceover;
     return {
       id: crypto.randomUUID(),
       sceneNumber,
-      durationSec: durations[index] ?? 3,
+      durationSec,
       voiceover,
       visualDescription,
       ...camera,
@@ -102,6 +105,7 @@ export function createEmptyScene(sceneNumber: number): StoryboardScene {
     transition: "cut",
     imagePrompt: "",
     frameStatus: "pending",
+    sceneVideoStatus: undefined,
   };
 }
 

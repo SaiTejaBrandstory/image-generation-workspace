@@ -24,6 +24,8 @@ import {
 } from "@/lib/storyboard/storyboard-image";
 import {
   clampStoryboardVideoAspectRatio,
+  estimateStoryboardSceneClipsCost,
+  estimateStoryboardSceneClipsDuration,
   estimateStoryboardVideoJobCost,
   estimateStoryboardVideoOutputDuration,
   chunkStoryboardScenesForVideo,
@@ -49,10 +51,12 @@ import { cn } from "@/lib/utils";
 import type { StoryboardScene } from "@/types/storyboard";
 
 export type StoryboardVideoModelDialogMode = "generate" | "regenerate";
+export type StoryboardVideoModelDialogVariant = "full" | "scene";
 
 interface StoryboardVideoModelDialogProps {
   open: boolean;
   mode: StoryboardVideoModelDialogMode;
+  variant?: StoryboardVideoModelDialogVariant;
   primaryModel: string;
   fallbackModel: string | null;
   videoAspectRatio: string;
@@ -211,6 +215,7 @@ function ModelSection({
 export function StoryboardVideoModelDialog({
   open,
   mode,
+  variant = "full",
   primaryModel,
   fallbackModel,
   videoAspectRatio,
@@ -221,6 +226,7 @@ export function StoryboardVideoModelDialog({
   onCancel,
 }: StoryboardVideoModelDialogProps) {
   const isRegenerate = mode === "regenerate";
+  const isSceneClips = variant === "scene";
   const [loading, setLoading] = useState(true);
   const [models, setModels] = useState<VideoModelConfig[]>([]);
   const [primary, setPrimary] = useState(primaryModel);
@@ -356,13 +362,19 @@ export function StoryboardVideoModelDialog({
   );
 
   const outputDurationSec = useMemo(
-    () => estimateStoryboardVideoOutputDuration(scenes, primaryId),
-    [scenes, primaryId]
+    () =>
+      isSceneClips
+        ? estimateStoryboardSceneClipsDuration(scenes, primaryId)
+        : estimateStoryboardVideoOutputDuration(scenes, primaryId),
+    [scenes, primaryId, isSceneClips]
   );
 
   const primaryCost = useMemo(
-    () => estimateStoryboardVideoJobCost(scenes, primaryId),
-    [scenes, primaryId]
+    () =>
+      isSceneClips
+        ? estimateStoryboardSceneClipsCost(scenes, primaryId)
+        : estimateStoryboardVideoJobCost(scenes, primaryId),
+    [scenes, primaryId, isSceneClips]
   );
 
   const canConfirm =
@@ -419,13 +431,18 @@ export function StoryboardVideoModelDialog({
         <DialogHeader className="shrink-0 border-b border-border/60 bg-surface-elevated/40 px-5 pb-3 pt-5">
           <DialogTitle className="flex items-center gap-2 text-base font-semibold">
             <Film className="h-4 w-4 text-accent-cyan" />
-            {isRegenerate ? "Regenerate video" : "Generate video"}
+            {isSceneClips
+              ? isRegenerate
+                ? "Re-animate scenes"
+                : "Animate scenes"
+              : isRegenerate
+                ? "Regenerate video"
+                : "Generate video"}
           </DialogTitle>
           <DialogDescription className="text-xs text-foreground-muted">
-            {scenes.length} frames
-            {segmentCount > 1 ? ` · ${segmentCount} clips` : ""}
-            {" · "}
-            cheapest first
+            {isSceneClips
+              ? `${scenes.length} scene clip${scenes.length === 1 ? "" : "s"} · model voice + music · not stitched`
+              : `${scenes.length} frames${segmentCount > 1 ? ` · ${segmentCount} clips` : ""} · cheapest first`}
           </DialogDescription>
         </DialogHeader>
 

@@ -16,11 +16,18 @@ import {
   supportsFrameImages,
 } from "@/lib/openrouter-video-models";
 import { buildStoryboardFullVideoPrompt } from "@/lib/storyboard/storyboard-video-prompt";
+import { buildStoryboardAmbientBed } from "@/lib/storyboard/storyboard-ambient-bed";
+import { buildStoryboardVoiceoverTrack } from "@/lib/storyboard/storyboard-voiceover";
 import {
+  applySmoothEndingToMp4,
   extractLastFrameFromMp4,
+  mixStoryboardFinalAudio,
+  probeMp4DurationFloat,
 } from "@/lib/storyboard/stitch-videos";
+import { scaleScenesToVideoDuration } from "@/lib/storyboard/voiceover-timing";
 import {
   buildStoryboardSegmentReferences,
+  describeStoryboardSegmentReferences,
   getStoryboardFullVideoMaxPollMs,
   resolveStoryboardVideoAspectRatio,
   resolveStoryboardVideoModelChain,
@@ -195,6 +202,10 @@ export async function POST(request: NextRequest) {
             hasBridgeFrame: Boolean(body.bridgeFrameUrl?.trim()),
           }
         : undefined;
+      const segmentRefOpts = {
+        ...segmentRefOptions,
+        reduced: reducedRefs,
+      };
       const prompt = buildStoryboardFullVideoPrompt({
         scenes,
         script: body.script ?? "",
@@ -202,10 +213,14 @@ export async function POST(request: NextRequest) {
         continuity: body.continuity ?? null,
         videoDurationSec: settings.duration,
         batch: batchContext,
+        referenceGuide: describeStoryboardSegmentReferences(scenes, {
+          bridgeFrameUrl: body.bridgeFrameUrl,
+          modelId: model,
+        }),
       });
       const references = await buildStoryboardSegmentReferences(scenes, {
-        ...segmentRefOptions,
-        reduced: reducedRefs,
+        ...segmentRefOpts,
+        modelId: model,
       });
 
       videoModel = model;
@@ -275,16 +290,61 @@ export async function POST(request: NextRequest) {
     const segmentKey = body.batch
       ? `seg-${body.batch.index + 1}of${body.batch.total}`
       : "full";
+    const isSingleGeneration = !body.batch || body.batch.total === 1;
+    let outputBuffer = result.videoBuffer;
+
+    if (isSingleGeneration) {
+      try {
+        const videoDur =
+          (await probeMp4DurationFloat(outputBuffer)) ?? videoSettings.duration;
+        const timedScenes = scaleScenesToVideoDuration(scenes, videoDur);
+        const [voiceover, ambientBed] = await Promise.all([
+          scenes.some((s) => s.voiceover?.trim())
+            ? buildStoryboardVoiceoverTrack(timedScenes, {
+                targetDurationSec: videoDur,
+              })
+            : Promise.resolve(null),
+          buildStoryboardAmbientBed(videoDur, body.settings.genre),
+        ]);
+        if (voiceover || ambientBed) {
+          outputBuffer = await mixStoryboardFinalAudio(outputBuffer, {
+            narrationBuffer: voiceover?.buffer,
+            ambientBedBuffer: ambientBed,
+          });
+          console.info(
+            "[storyboard/generate-video] Mixed final audio onto single-segment video",
+            voiceover ? "narration" : "",
+            "music bed"
+          );
+        }
+      } catch (audioErr) {
+        console.error(
+          "[storyboard/generate-video] Final audio mix failed — using model audio only",
+          audioErr instanceof Error ? audioErr.message : audioErr
+        );
+      }
+    }
+
+    if (isSingleGeneration) {
+      try {
+        outputBuffer = await applySmoothEndingToMp4(outputBuffer);
+      } catch (fadeErr) {
+        console.warn(
+          "[storyboard/generate-video] End fade skipped",
+          fadeErr instanceof Error ? fadeErr.message : fadeErr
+        );
+      }
+    }
+
     const uploaded = await uploadGenerationVideoBuffer({
       userId: user.id,
       conversationId: storageFolder,
       variantId: `video-${projectId}-${segmentKey}`,
-      buffer: result.videoBuffer,
+      buffer: outputBuffer,
       mime: result.mime,
     });
 
     const conversationId = storageFolder;
-    const isSingleGeneration = !body.batch || body.batch.total === 1;
     if (UUID_RE.test(conversationId) && isSingleGeneration) {
       try {
         await updateStoryboardOutputs(supabase, user.id, conversationId, {

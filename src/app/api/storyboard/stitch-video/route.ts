@@ -1,14 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { formatOpenRouterErrorForUser } from "@/lib/openrouter-errors";
+import { buildStoryboardAmbientBed } from "@/lib/storyboard/storyboard-ambient-bed";
 import { buildStoryboardVoiceoverTrack } from "@/lib/storyboard/storyboard-voiceover";
+import { scaleScenesToVideoDuration } from "@/lib/storyboard/voiceover-timing";
 import {
+  applySmoothEndingToMp4,
   concatMp4Buffers,
   concatMp4BuffersWithCrossfade,
-  mixNarrationOntoVideo,
+  mixStoryboardFinalAudio,
   probeMp4DurationFloat,
   probeMp4DurationSec,
 } from "@/lib/storyboard/stitch-videos";
-import type { StoryboardScene } from "@/types/storyboard";
+import type { StoryboardGenre, StoryboardScene } from "@/types/storyboard";
 import { updateStoryboardOutputs } from "@/lib/supabase/storyboard-db";
 import { createClient } from "@/lib/supabase/server";
 import {
@@ -28,8 +31,9 @@ interface StitchVideoBody {
   totalDurationSec?: number;
   /** All storyboard scenes — used to synthesize one narrator track after stitching. */
   scenes?: StoryboardScene[];
-  /** Distinguish full storyboard video vs per-frame stitched output in storage. */
-  outputKind?: "full" | "stitched";
+  genre?: StoryboardGenre;
+  /** full = multi-segment storyboard video; scene-stitch = scene animation clips; stitched = legacy */
+  outputKind?: "full" | "stitched" | "scene-stitch";
 }
 
 export async function POST(request: NextRequest) {
@@ -57,34 +61,75 @@ export async function POST(request: NextRequest) {
       buffers.push(buffer);
     }
 
-    const useCrossfade = body.outputKind === "full" && buffers.length > 1;
+    const useCrossfade =
+      (body.outputKind === "full" || body.outputKind === "scene-stitch") &&
+      buffers.length > 1;
     let stitched = useCrossfade
-      ? await concatMp4BuffersWithCrossfade(buffers)
+      ? await concatMp4BuffersWithCrossfade(
+          buffers,
+          undefined,
+          body.outputKind === "scene-stitch"
+            ? { preserveClipAudio: true }
+            : {}
+        )
       : await concatMp4Buffers(buffers);
 
     const stitchedDuration = await probeMp4DurationFloat(stitched);
 
     let voiceoverApplied = false;
-    if (body.outputKind === "full" && body.scenes?.length) {
+    let musicApplied = false;
+    if (body.outputKind === "full") {
       try {
-        const voiceover = await buildStoryboardVoiceoverTrack(body.scenes, {
-          targetDurationSec: stitchedDuration ?? body.totalDurationSec,
-        });
-        if (voiceover) {
-          stitched = await mixNarrationOntoVideo(stitched, voiceover);
-          voiceoverApplied = true;
+        const plannedSceneDur = body.scenes?.reduce(
+          (sum, scene) => sum + scene.durationSec,
+          0
+        ) ?? 0;
+        const videoDur =
+          stitchedDuration ?? body.totalDurationSec ?? plannedSceneDur;
+        const timedScenes =
+          body.scenes?.length && videoDur > 0
+            ? scaleScenesToVideoDuration(body.scenes, videoDur)
+            : body.scenes ?? [];
+
+        const [voiceover, ambientBed] = await Promise.all([
+          timedScenes.some((s) => s.voiceover?.trim())
+            ? buildStoryboardVoiceoverTrack(timedScenes, {
+                targetDurationSec: videoDur,
+              })
+            : Promise.resolve(null),
+          videoDur > 0
+            ? buildStoryboardAmbientBed(videoDur, body.genre)
+            : Promise.resolve(null),
+        ]);
+
+        if (voiceover || ambientBed) {
+          stitched = await mixStoryboardFinalAudio(stitched, {
+            narrationBuffer: voiceover?.buffer,
+            ambientBedBuffer: ambientBed ?? undefined,
+          });
+          voiceoverApplied = Boolean(voiceover);
+          musicApplied = Boolean(ambientBed);
           console.info(
-            "[storyboard/stitch-video] Mixed unified TTS narration with segment audio"
-          );
-        } else {
-          console.warn(
-            "[storyboard/stitch-video] No voiceover text on scenes — video keeps ambient audio only"
+            "[storyboard/stitch-video] Mixed final audio",
+            voiceover ? "narration" : "",
+            ambientBed ? "music bed" : ""
           );
         }
-      } catch (voErr) {
+      } catch (audioErr) {
         console.error(
-          "[storyboard/stitch-video] Voiceover mix failed — returning stitch without narration",
-          voErr instanceof Error ? voErr.message : voErr
+          "[storyboard/stitch-video] Final audio mix failed — returning stitch without music/voice",
+          audioErr instanceof Error ? audioErr.message : audioErr
+        );
+      }
+    }
+
+    if (body.outputKind === "full") {
+      try {
+        stitched = await applySmoothEndingToMp4(stitched);
+      } catch (fadeErr) {
+        console.warn(
+          "[storyboard/stitch-video] End fade skipped",
+          fadeErr instanceof Error ? fadeErr.message : fadeErr
         );
       }
     }
@@ -101,7 +146,9 @@ export async function POST(request: NextRequest) {
       variantId:
         body.outputKind === "full"
           ? `full-${body.projectId}`
-          : `stitched-${body.projectId}`,
+          : body.outputKind === "scene-stitch"
+            ? `scene-stitch-${body.projectId}`
+            : `stitched-${body.projectId}`,
       buffer: stitched,
       mime: "video/mp4",
     });
@@ -114,10 +161,15 @@ export async function POST(request: NextRequest) {
                 singleVideoStoragePath: uploaded.storagePath,
                 singleVideoDurationSec: durationSec,
               }
-            : {
-                stitchedVideoStoragePath: uploaded.storagePath,
-                stitchedVideoDurationSec: durationSec,
-              };
+            : body.outputKind === "scene-stitch"
+              ? {
+                  sceneStitchedVideoStoragePath: uploaded.storagePath,
+                  sceneStitchedVideoDurationSec: durationSec,
+                }
+              : {
+                  stitchedVideoStoragePath: uploaded.storagePath,
+                  stitchedVideoDurationSec: durationSec,
+                };
         await updateStoryboardOutputs(supabase, user.id, storageFolder, outputsPatch);
       } catch (persistErr) {
         console.error(
@@ -133,6 +185,7 @@ export async function POST(request: NextRequest) {
       durationSec,
       clipCount: body.clipUrls.length,
       voiceoverApplied,
+      musicApplied,
     });
   } catch (err) {
     const message =

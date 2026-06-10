@@ -68,6 +68,7 @@ export async function generateSpeechWithOpenRouter(options: {
         input: text,
         voice: options.voice && options.model ? options.voice : pick.voice,
         response_format: "mp3",
+        speed: 1.0,
       }),
     });
 

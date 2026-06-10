@@ -9,6 +9,8 @@ const execFileAsync = promisify(execFile);
 
 /** Crossfade between stitched segments so cuts feel like one continuous edit. */
 export const STORYBOARD_STITCH_CROSSFADE_SEC = 0.35;
+/** Fade out picture + sound at the end so the video does not stop on a hard cut. */
+export const STORYBOARD_END_FADE_SEC = 0.9;
 
 function ffmpegPath(): string {
   const bin = ffmpegStatic;
@@ -129,75 +131,284 @@ function ffmpegProbeStderr(filePath: string): Promise<string> {
 }
 
 async function clipHasAudioStream(filePath: string): Promise<boolean> {
-  const stderr = await ffmpegProbeStderr(filePath);
-  return /\bAudio:/i.test(stderr);
+  try {
+    await execFileAsync(ffmpegPath(), [
+      "-hide_banner",
+      "-i",
+      filePath,
+      "-map",
+      "0:a:0",
+      "-f",
+      "null",
+      "-",
+    ]);
+    return true;
+  } catch {
+    const stderr = await ffmpegProbeStderr(filePath);
+    return (
+      /\bAudio:/i.test(stderr) ||
+      /Stream #\d+:\d+.*\baudio\b/i.test(stderr)
+    );
+  }
 }
 
-/** Mux narration when the video has no ambient audio track. */
-export async function muxMp4WithAudio(
-  videoBuffer: Buffer,
-  audioBuffer: Buffer
-): Promise<Buffer> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "storyboard-mux-"));
-  const videoFile = path.join(dir, "video.mp4");
-  const audioFile = path.join(dir, "audio.mp3");
-  const outFile = path.join(dir, "muxed.mp4");
-  try {
-    await writeFile(videoFile, videoBuffer);
-    await writeFile(audioFile, audioBuffer);
+/** Re-encode clip to h264 + stereo AAC so crossfade audio filters work reliably. */
+async function prepareClipForAudioCrossfade(
+  inputPath: string,
+  outputPath: string,
+  durationSec: number
+): Promise<void> {
+  const hasAudio = await clipHasAudioStream(inputPath);
+  if (hasAudio) {
     await execFileAsync(ffmpegPath(), [
       "-y",
       "-i",
-      videoFile,
-      "-i",
-      audioFile,
-      "-map",
-      "0:v:0",
-      "-map",
-      "1:a:0",
+      inputPath,
       "-c:v",
-      "copy",
+      "libx264",
+      "-preset",
+      "fast",
+      "-crf",
+      "23",
       "-c:a",
       "aac",
       "-b:a",
       "192k",
-      "-shortest",
+      "-ar",
+      "48000",
+      "-ac",
+      "2",
       "-movflags",
       "+faststart",
-      outFile,
+      outputPath,
     ]);
-    return await readFile(outFile);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
+    return;
   }
+
+  await execFileAsync(ffmpegPath(), [
+    "-y",
+    "-i",
+    inputPath,
+    "-f",
+    "lavfi",
+    "-t",
+    durationSec.toFixed(3),
+    "-i",
+    "anullsrc=r=48000:cl=stereo",
+    "-map",
+    "0:v",
+    "-map",
+    "1:a",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "fast",
+    "-crf",
+    "23",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "192k",
+    "-shortest",
+    "-movflags",
+    "+faststart",
+    outputPath,
+  ]);
 }
 
-/** Layer unified narration over existing ambient / music from the video. */
-export async function mixNarrationOntoVideo(
+/** Trim a clip to an exact duration (no fade) — removes trailing black or overrun. */
+export async function trimMp4ToDuration(
   videoBuffer: Buffer,
-  narrationBuffer: Buffer
+  durationSec: number
 ): Promise<Buffer> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "storyboard-mix-"));
-  const videoFile = path.join(dir, "video.mp4");
-  const narrationFile = path.join(dir, "narration.mp3");
-  const outFile = path.join(dir, "mixed.mp4");
-  try {
-    await writeFile(videoFile, videoBuffer);
-    await writeFile(narrationFile, narrationBuffer);
+  if (durationSec <= 0) return videoBuffer;
 
-    const hasAmbient = await clipHasAudioStream(videoFile);
-    if (!hasAmbient) {
-      return muxMp4WithAudio(videoBuffer, narrationBuffer);
+  const dir = await mkdtemp(path.join(os.tmpdir(), "storyboard-trim-"));
+  const inFile = path.join(dir, "in.mp4");
+  const outFile = path.join(dir, "out.mp4");
+  try {
+    await writeFile(inFile, videoBuffer);
+    const probed = await probeMp4FileDurationFloat(inFile);
+    if (!probed || probed <= durationSec + 0.2) {
+      return videoBuffer;
     }
 
     await execFileAsync(ffmpegPath(), [
       "-y",
       "-i",
-      videoFile,
-      "-i",
-      narrationFile,
+      inFile,
+      "-t",
+      String(durationSec),
+      "-c:v",
+      "libx264",
+      "-preset",
+      "fast",
+      "-crf",
+      "23",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "192k",
+      "-movflags",
+      "+faststart",
+      outFile,
+    ]);
+    return await readFile(outFile);
+  } catch (trimErr) {
+    console.warn(
+      "[stitch-videos] Trim to duration failed — keeping original",
+      trimErr instanceof Error ? trimErr.message : trimErr
+    );
+    return videoBuffer;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/** Gentle fade-to-black + audio fade on the last ~1s (storyboard full videos). */
+export async function applySmoothEndingToMp4(
+  videoBuffer: Buffer
+): Promise<Buffer> {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "storyboard-endfade-"));
+  const inFile = path.join(dir, "in.mp4");
+  const outFile = path.join(dir, "out.mp4");
+  try {
+    await writeFile(inFile, videoBuffer);
+    const duration = await probeMp4FileDurationFloat(inFile);
+    if (!duration || duration < STORYBOARD_END_FADE_SEC + 0.4) {
+      return videoBuffer;
+    }
+
+    const fadeStart = Math.max(0, duration - STORYBOARD_END_FADE_SEC);
+    const fade = STORYBOARD_END_FADE_SEC.toFixed(3);
+    const start = fadeStart.toFixed(3);
+    const hasAudio = await clipHasAudioStream(inFile);
+
+    if (hasAudio) {
+      try {
+        await execFileAsync(ffmpegPath(), [
+          "-y",
+          "-i",
+          inFile,
+          "-filter_complex",
+          `[0:v]fade=t=out:st=${start}:d=${fade}[v];[0:a]afade=t=out:st=${start}:d=${fade}[a]`,
+          "-map",
+          "[v]",
+          "-map",
+          "[a]",
+          "-c:v",
+          "libx264",
+          "-preset",
+          "fast",
+          "-crf",
+          "23",
+          "-c:a",
+          "aac",
+          "-b:a",
+          "192k",
+          "-movflags",
+          "+faststart",
+          outFile,
+        ]);
+        return await readFile(outFile);
+      } catch (fadeErr) {
+        console.warn(
+          "[stitch-videos] End fade with audio failed — keeping original",
+          fadeErr instanceof Error ? fadeErr.message : fadeErr
+        );
+        return videoBuffer;
+      }
+    }
+
+    // Never re-encode with -an: a false "no audio" probe would strip narration we just mixed in.
+    try {
+      await execFileAsync(ffmpegPath(), [
+        "-y",
+        "-i",
+        inFile,
+        "-vf",
+        `fade=t=out:st=${start}:d=${fade}`,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "23",
+        "-c:a",
+        "copy",
+        "-movflags",
+        "+faststart",
+        outFile,
+      ]);
+      return await readFile(outFile);
+    } catch {
+      return videoBuffer;
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+export interface StoryboardAudioMixOptions {
+  narrationBuffer?: Buffer;
+  ambientBedBuffer?: Buffer;
+}
+
+/**
+ * Final storyboard audio: model ambient (if any) + music bed + TTS narration.
+ * Guarantees a music layer even when video segments ship without audio.
+ */
+export async function mixStoryboardFinalAudio(
+  videoBuffer: Buffer,
+  options: StoryboardAudioMixOptions
+): Promise<Buffer> {
+  const { narrationBuffer, ambientBedBuffer } = options;
+  if (!narrationBuffer && !ambientBedBuffer) return videoBuffer;
+
+  const dir = await mkdtemp(path.join(os.tmpdir(), "storyboard-mix-"));
+  const videoFile = path.join(dir, "video.mp4");
+  const outFile = path.join(dir, "mixed.mp4");
+  try {
+    await writeFile(videoFile, videoBuffer);
+    const hasModelAudio = await clipHasAudioStream(videoFile);
+
+    const inputArgs = ["-i", videoFile];
+    const filterParts: string[] = [];
+    const mixLabels: string[] = [];
+    let nextInput = 1;
+
+    if (ambientBedBuffer?.length) {
+      const bedFile = path.join(dir, "bed.mp3");
+      await writeFile(bedFile, ambientBedBuffer);
+      inputArgs.push("-i", bedFile);
+      filterParts.push(`[${nextInput}:a]apad,volume=0.72[bed]`);
+      mixLabels.push("[bed]");
+      nextInput++;
+    }
+
+    if (hasModelAudio) {
+      filterParts.push("[0:a]volume=0.28[mdl]");
+      mixLabels.push("[mdl]");
+    }
+
+    if (narrationBuffer?.length) {
+      const narFile = path.join(dir, "nar.mp3");
+      await writeFile(narFile, narrationBuffer);
+      inputArgs.push("-i", narFile);
+      filterParts.push(`[${nextInput}:a]volume=1[nar]`);
+      mixLabels.push("[nar]");
+      nextInput++;
+    }
+
+    if (!mixLabels.length) return videoBuffer;
+
+    const filterComplex = `${filterParts.join(";")};${mixLabels.join("")}amix=inputs=${mixLabels.length}:duration=longest:dropout_transition=0:normalize=0[aout]`;
+
+    await execFileAsync(ffmpegPath(), [
+      "-y",
+      ...inputArgs,
       "-filter_complex",
-      "[0:a]volume=0.5[amb];[1:a]volume=1[nar];[amb][nar]amix=inputs=2:duration=first:dropout_transition=2[aout]",
+      filterComplex,
       "-map",
       "0:v:0",
       "-map",
@@ -219,10 +430,24 @@ export async function mixNarrationOntoVideo(
   }
 }
 
+/** @deprecated Use mixStoryboardFinalAudio with ambientBedBuffer */
+export async function mixNarrationOntoVideo(
+  videoBuffer: Buffer,
+  narrationBuffer: Buffer
+): Promise<Buffer> {
+  return mixStoryboardFinalAudio(videoBuffer, { narrationBuffer });
+}
+
+export interface ConcatMp4CrossfadeOptions {
+  /** Normalize clip audio (stereo AAC) and always crossfade sound — for scene animation stitches. */
+  preserveClipAudio?: boolean;
+}
+
 /** Concatenate MP4 buffers with short crossfades between segments. */
 export async function concatMp4BuffersWithCrossfade(
   clips: Buffer[],
-  crossfadeSec = STORYBOARD_STITCH_CROSSFADE_SEC
+  crossfadeSec = STORYBOARD_STITCH_CROSSFADE_SEC,
+  options: ConcatMp4CrossfadeOptions = {}
 ): Promise<Buffer> {
   if (!clips.length) {
     throw new Error("No video clips to stitch.");
@@ -233,16 +458,33 @@ export async function concatMp4BuffersWithCrossfade(
 
   const dir = await mkdtemp(path.join(os.tmpdir(), "storyboard-xfade-"));
   try {
-    const inputPaths: string[] = [];
+    const rawPaths: string[] = [];
     for (let i = 0; i < clips.length; i++) {
-      const clipPath = path.join(dir, `clip-${i}.mp4`);
+      const clipPath = path.join(dir, `clip-raw-${i}.mp4`);
       await writeFile(clipPath, clips[i]);
-      inputPaths.push(clipPath);
+      rawPaths.push(clipPath);
     }
 
     const durations: number[] = [];
-    for (const clipPath of inputPaths) {
+    for (const clipPath of rawPaths) {
       durations.push((await probeMp4FileDurationFloat(clipPath)) ?? 8);
+    }
+
+    const inputPaths: string[] = [];
+    if (options.preserveClipAudio) {
+      for (let i = 0; i < rawPaths.length; i++) {
+        const preparedPath = path.join(dir, `clip-${i}.mp4`);
+        await prepareClipForAudioCrossfade(
+          rawPaths[i]!,
+          preparedPath,
+          durations[i]!
+        );
+        inputPaths.push(preparedPath);
+        durations[i] =
+          (await probeMp4FileDurationFloat(preparedPath)) ?? durations[i]!;
+      }
+    } else {
+      inputPaths.push(...rawPaths);
     }
 
     const fade = Math.min(
@@ -254,7 +496,8 @@ export async function concatMp4BuffersWithCrossfade(
     const clipHasAudio = await Promise.all(
       inputPaths.map((clipPath) => clipHasAudioStream(clipPath))
     );
-    const stitchAudio = clipHasAudio.every(Boolean);
+    const stitchAudio =
+      options.preserveClipAudio || clipHasAudio.every(Boolean);
 
     let videoFilter = "";
     let prevVideo = "0:v";

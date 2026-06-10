@@ -20,6 +20,7 @@ import {
 import { StoryboardImageModelDialog } from "@/components/storyboard/storyboard-image-model-dialog";
 import { StoryboardSceneEditDialog } from "@/components/storyboard/storyboard-scene-edit-dialog";
 import { StoryboardVideoModelDialog } from "@/components/storyboard/storyboard-video-model-dialog";
+import { StoryboardSceneVideos } from "@/components/storyboard/storyboard-scene-videos";
 import { StoryboardVideoPlayer } from "@/components/storyboard/storyboard-video-player";
 import { Button } from "@/components/ui/button";
 import {
@@ -245,7 +246,10 @@ export function StepStoryboardViewer() {
   );
 
   const showVideoSection =
-    wizardLocked || isGeneratingVideo || Boolean(storyboardVideoUrl);
+    wizardLocked ||
+    isGeneratingVideo ||
+    hasSingleVideo ||
+    pendingSingleVideo;
   const anyVideoGenerating =
     isAnyVideoGenerating() || pendingSingleVideo;
 
@@ -455,6 +459,38 @@ export function StepStoryboardViewer() {
           </div>
         )}
 
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-6">
+          <p className="text-xs font-medium text-foreground-muted">
+            Frame images
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button
+              variant="tintViolet"
+              size="sm"
+              onClick={handleRegenerateSelected}
+              disabled={anyFrameGenerating || anyVideoGenerating || !scenes.length}
+            >
+              {anyFrameGenerating ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4" />
+              )}
+              {selectedIds.size
+                ? `Regenerate frames (${selectedIds.size})`
+                : "Regenerate all frames"}
+            </Button>
+            <Button
+              variant="tintViolet"
+              size="sm"
+              onClick={() => openImageModelDialog("missing")}
+              disabled={anyFrameGenerating || anyVideoGenerating || !scenes.length}
+            >
+              <LayoutGrid className="h-4 w-4" />
+              Generate missing frames
+            </Button>
+          </div>
+        </div>
+
         {showVideoSection && (
           <div
             ref={videoSectionRef}
@@ -524,6 +560,8 @@ export function StepStoryboardViewer() {
           </div>
         )}
 
+        {wizardLocked && scenes.length > 0 ? <StoryboardSceneVideos /> : null}
+
       </div>
 
       {error && (
@@ -540,28 +578,6 @@ export function StepStoryboardViewer() {
 
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-surface-elevated px-4 py-3">
         <div className="flex flex-wrap gap-2">
-          <Button
-            variant="tintViolet"
-            size="sm"
-            onClick={handleRegenerateSelected}
-            disabled={anyFrameGenerating || anyVideoGenerating || !scenes.length}
-          >
-            {anyFrameGenerating ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <RefreshCw className="h-4 w-4" />
-            )}
-            Regenerate {selectedIds.size ? `(${selectedIds.size})` : "all"}
-          </Button>
-          <Button
-            variant="tintViolet"
-            size="sm"
-            onClick={() => openImageModelDialog("missing")}
-            disabled={anyFrameGenerating || anyVideoGenerating || !scenes.length}
-          >
-            <LayoutGrid className="h-4 w-4" />
-            Generate missing
-          </Button>
           {pendingSingleVideo && (
             <Button
               variant="ghost"
