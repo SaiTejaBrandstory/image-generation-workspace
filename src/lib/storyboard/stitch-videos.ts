@@ -57,6 +57,16 @@ export function formatStitchVideoErrorForUser(raw: string): string {
   if (lower.includes("command failed") && lower.includes("ffmpeg")) {
     return "Could not join scene clips. Try again, or re-animate scenes with the same video aspect ratio.";
   }
+  if (
+    lower.includes("an error occurred") ||
+    lower.includes("gateway timeout") ||
+    lower.includes("function_invocation")
+  ) {
+    return (
+      "Stitching took too long on the server (timeout). " +
+      "Try again, or stitch fewer scenes at a time."
+    );
+  }
 
   return message || "Could not stitch clips. Please try again.";
 }

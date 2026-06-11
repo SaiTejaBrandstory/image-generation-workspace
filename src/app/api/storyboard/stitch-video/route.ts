@@ -23,7 +23,8 @@ import {
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export const maxDuration = 120;
+/** FFmpeg crossfade + upload for 6+ clips can exceed 120s on production. */
+export const maxDuration = 300;
 
 interface StitchVideoBody {
   projectId: string;

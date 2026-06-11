@@ -34,6 +34,7 @@ import {
   estimateVideoGenerationMs,
   startEstimatedVideoProgress,
 } from "@/lib/video-progress";
+import { readJsonResponse } from "@/lib/api-response";
 import {
   commitStoryboard,
   fetchStoryboard,
@@ -1155,12 +1156,12 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
           outputKind: "scene-stitch",
         }),
       });
-      const stitchData = (await stitchRes.json()) as {
+      const stitchData = await readJsonResponse<{
         videoUrl?: string;
         storagePath?: string;
         durationSec?: number | null;
         error?: string;
-      };
+      }>(stitchRes);
       if (!stitchRes.ok) {
         throw new Error(stitchData.error ?? "Scene stitch failed");
       }
@@ -1464,12 +1465,12 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
             genre: settings.genre,
           }),
         });
-        const stitchData = (await stitchRes.json()) as {
+        const stitchData = await readJsonResponse<{
           videoUrl?: string;
           storagePath?: string;
           durationSec?: number | null;
           error?: string;
-        };
+        }>(stitchRes);
         if (!stitchRes.ok) {
           throw new Error(stitchData.error ?? "Video stitching failed");
         }
