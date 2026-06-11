@@ -160,14 +160,25 @@ export function Sidebar({ user }: SidebarProps) {
       });
       return;
     }
+
+    if (item?.mediaType === "video") prefetchVideoModels();
     void selectConversation(id);
+
+    // Image/video chats live on workspace home — leave storyboard/projects routes.
+    if (!isWorkspaceHome) {
+      router.push("/");
+    }
+
+    setMobilePanel(item?.mediaType === "video" ? "layouts" : "chat");
     if (!isDesktop) setMobileSidebarOpen(false);
   };
 
-  const isHistoryItemActive = (item: Conversation) =>
-    item.mediaType === "storyboard" && isStoryboardPage
-      ? storyboardConversationId === item.id
-      : activeConversationId === item.id;
+  const isHistoryItemActive = (item: Conversation) => {
+    if (item.mediaType === "storyboard") {
+      return isStoryboardPage && storyboardConversationId === item.id;
+    }
+    return isWorkspaceHome && activeConversationId === item.id;
+  };
 
   const desktopWidth = sidebarExpanded ? 280 : 72;
 

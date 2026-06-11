@@ -1267,17 +1267,17 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       }
 
       const hydrated: Conversation = { ...conversation, variants };
+      const resolvedMediaType =
+        conversation.mediaType === "image" || conversation.mediaType === "video"
+          ? conversation.mediaType
+          : get().mediaType;
 
       set((s) => ({
         variants,
-        mediaType:
-          conversation.mediaType === "image" ||
-          conversation.mediaType === "video"
-            ? conversation.mediaType
-            : s.mediaType,
+        mediaType: resolvedMediaType,
         conversations: mergeConversationInList(s.conversations, id, hydrated),
         generationProgress: viewingInFlight ? s.generationProgress : 0,
-        mobilePanel: "chat",
+        mobilePanel: resolvedMediaType === "video" ? "layouts" : "chat",
       }));
     } catch (err) {
       set({
