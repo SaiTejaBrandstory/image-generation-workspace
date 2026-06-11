@@ -13,6 +13,9 @@ export function formatStitchVideoErrorForUser(raw: string): string {
   const message = raw.trim();
   const lower = message.toLowerCase();
 
+  if (lower.includes("speech synthesis failed") || lower.includes("speech generation")) {
+    return "Narrator voice generation failed. Check your API key and try again.";
+  }
   if (lower.includes("ffmpeg missing")) {
     return "Video stitching is not available on this server. Please try again later.";
   }

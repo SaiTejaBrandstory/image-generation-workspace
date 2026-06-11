@@ -1,5 +1,26 @@
+/** Pull a human-readable message from API JSON error fields. */
+export function extractApiErrorMessage(
+  data: unknown,
+  fallback = "Request failed"
+): string {
+  if (data == null) return fallback;
+  if (typeof data === "string") return data.trim() || fallback;
+  if (typeof data !== "object") return fallback;
+
+  const record = data as Record<string, unknown>;
+  const error = record.error;
+  if (typeof error === "string") return error.trim() || fallback;
+  if (error && typeof error === "object") {
+    const nested = error as Record<string, unknown>;
+    if (typeof nested.message === "string") return nested.message;
+    if (typeof nested.error === "string") return nested.error;
+  }
+  if (typeof record.message === "string") return record.message;
+  return fallback;
+}
+
 /** Parse a fetch Response body as JSON; surface gateway/timeouts as clear errors. */
-export async function readJsonResponse<T extends { error?: string }>(
+export async function readJsonResponse<T extends { error?: unknown }>(
   res: Response
 ): Promise<T> {
   const text = await res.text();
@@ -37,6 +58,15 @@ export async function readJsonResponse<T extends { error?: string }>(
         : preview || `Request failed (${res.status}).`
     );
   }
+}
+
+export function errorMessageFromUnknown(
+  err: unknown,
+  fallback = "Something went wrong"
+): string {
+  if (err instanceof Error) return err.message.trim() || fallback;
+  if (typeof err === "string") return err.trim() || fallback;
+  return extractApiErrorMessage(err, fallback);
 }
 
 function gatewayErrorMessage(status: number): string {

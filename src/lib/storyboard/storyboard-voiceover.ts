@@ -107,11 +107,21 @@ async function writeSceneSlotAudio(
     return segPath;
   }
 
-  const raw = await generateSpeechWithOpenRouter({ input: text });
-  const rawPath = path.join(dir, `raw-${index}.mp3`);
-  const speechPath = path.join(dir, `speech-${index}.mp3`);
-  await writeFile(rawPath, raw);
-  await normalizeSpeechMp3(rawPath, speechPath);
+  let speechPath: string;
+  try {
+    const raw = await generateSpeechWithOpenRouter({ input: text });
+    const rawPath = path.join(dir, `raw-${index}.mp3`);
+    speechPath = path.join(dir, `speech-${index}.mp3`);
+    await writeFile(rawPath, raw);
+    await normalizeSpeechMp3(rawPath, speechPath);
+  } catch (ttsErr) {
+    console.warn(
+      `[storyboard-voiceover] TTS failed for scene ${scene.sceneNumber}, using silence`,
+      ttsErr instanceof Error ? ttsErr.message : ttsErr
+    );
+    await writeSilenceMp3(slotDur, segPath);
+    return segPath;
+  }
 
   const speechDur = await probeAudioDurationSec(speechPath);
   const padAfter = Math.max(0, slotDur - speechDur);

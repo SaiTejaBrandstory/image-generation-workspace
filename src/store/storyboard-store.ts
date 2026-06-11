@@ -34,7 +34,11 @@ import {
   estimateVideoGenerationMs,
   startEstimatedVideoProgress,
 } from "@/lib/video-progress";
-import { readJsonResponse } from "@/lib/api-response";
+import {
+  errorMessageFromUnknown,
+  extractApiErrorMessage,
+  readJsonResponse,
+} from "@/lib/api-response";
 import {
   commitStoryboard,
   fetchStoryboard,
@@ -259,7 +263,7 @@ async function fetchStoryboardVideoSegment(
         bridgeFrameUrl: data.bridgeFrameUrl?.trim() || undefined,
       };
     }
-    lastError = data.error ?? "Video generation failed";
+    lastError = extractApiErrorMessage(data, "Video generation failed");
     if (attempt === 0 && isRetryableVideoClientError(lastError)) {
       continue;
     }
@@ -275,6 +279,17 @@ function scenesForDraft(scenes: StoryboardScene[]): StoryboardScene[] {
     frameImageUrl:
       scene.frameImageUrl?.startsWith("data:") ? undefined : scene.frameImageUrl,
     sceneVideoUrl: undefined,
+  }));
+}
+
+/** Minimal scene payload for stitch/TTS APIs — never send frame blobs or signed URLs. */
+function scenesForStitchApi(
+  scenes: StoryboardScene[]
+): Pick<StoryboardScene, "sceneNumber" | "durationSec" | "voiceover">[] {
+  return scenes.map((scene) => ({
+    sceneNumber: scene.sceneNumber,
+    durationSec: scene.durationSec,
+    voiceover: scene.voiceover,
   }));
 }
 
@@ -1188,7 +1203,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
         error?: string;
       }>(stitchRes);
       if (!stitchRes.ok) {
-        throw new Error(stitchData.error ?? "Scene stitch failed");
+        throw new Error(extractApiErrorMessage(stitchData, "Scene stitch failed"));
       }
       if (get().stitchedVideoGenerationEpoch !== epoch) return;
 
@@ -1496,7 +1511,9 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
           error?: string;
         }>(joinRes);
         if (!joinRes.ok) {
-          throw new Error(joinData.error ?? "Video segment join failed");
+          throw new Error(
+            extractApiErrorMessage(joinData, "Video segment join failed")
+          );
         }
         if (get().videoGenerationEpoch !== epoch) return;
 
@@ -1526,7 +1543,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
             partialStoragePath,
             partialDurationSec: joinedDuration,
             totalDurationSec: joinedDuration,
-            scenes: ordered,
+            scenes: scenesForStitchApi(ordered),
             genre: settings.genre,
           }),
         });
@@ -1534,10 +1551,12 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
           videoUrl?: string;
           storagePath?: string;
           durationSec?: number | null;
-          error?: string;
+          error?: unknown;
         }>(audioRes);
         if (!audioRes.ok) {
-          throw new Error(stitchData.error ?? "Video audio mix failed");
+          throw new Error(
+            extractApiErrorMessage(stitchData, "Video audio mix failed")
+          );
         }
         if (get().videoGenerationEpoch !== epoch) return;
 
@@ -1585,7 +1604,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
       set({
         isGeneratingVideo: false,
         videoGenerationStatus: null,
-        error: err instanceof Error ? err.message : "Video generation failed",
+        error: errorMessageFromUnknown(err, "Video generation failed"),
       });
     }
   },

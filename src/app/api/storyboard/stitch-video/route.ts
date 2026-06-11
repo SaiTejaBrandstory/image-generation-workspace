@@ -176,8 +176,25 @@ export async function POST(request: NextRequest) {
         body.totalDurationSec ??
         plannedSceneDur;
 
-      const { buffer: stitched, voiceoverApplied, musicApplied } =
-        await mixFullStoryboardAudio(joinedBuffer, body, videoDur);
+      let stitched = joinedBuffer;
+      let voiceoverApplied = false;
+      let musicApplied = false;
+      try {
+        const mixed = await mixFullStoryboardAudio(joinedBuffer, body, videoDur);
+        stitched = mixed.buffer;
+        voiceoverApplied = mixed.voiceoverApplied;
+        musicApplied = mixed.musicApplied;
+      } catch (audioErr) {
+        console.error(
+          "[storyboard/stitch-video] Audio phase mix failed",
+          audioErr instanceof Error ? audioErr.message : audioErr
+        );
+        throw new Error(
+          audioErr instanceof Error
+            ? audioErr.message
+            : "Could not add narrator and music to the video."
+        );
+      }
 
       const durationSec =
         (await probeMp4DurationSec(stitched)) ?? Math.round(videoDur);
@@ -332,11 +349,18 @@ export async function POST(request: NextRequest) {
       musicApplied,
     });
   } catch (err) {
-    const message =
+    const raw =
       err instanceof Error
-        ? formatStitchVideoErrorForUser(err.message)
-        : "Could not stitch clips. Please try again.";
-    console.error("[storyboard/stitch-video]", message);
+        ? err.message
+        : typeof err === "string"
+          ? err
+          : "Could not stitch clips. Please try again.";
+    const message = formatStitchVideoErrorForUser(raw);
+    console.error(
+      "[storyboard/stitch-video]",
+      message,
+      err instanceof Error && err.stack ? err.stack : err
+    );
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }
