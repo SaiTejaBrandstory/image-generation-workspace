@@ -110,12 +110,17 @@ export function buildStoryboardSketchPrompt(
     : "";
 
   const continuityBlock = buildContinuityPromptBlock(scene.continuity);
+  const hasReferenceExclusions = scene.inputReferencePromptBlock?.includes(
+    "REFERENCE EXCLUSIONS"
+  );
   const referenceNote = scene.hasReferenceFrame
     ? [
         "CRITICAL — VISUAL CONSISTENCY:",
         "The attached reference image(s) are the ground truth for this storyboard.",
         "User-uploaded character, product, and environment references must be reproduced faithfully in every frame.",
-        "Copy the EXACT same character faces, skin tone, hair, age, body type, clothing, accessories, products, and setting details from the references.",
+        hasReferenceExclusions
+          ? "Match character faces, product design, and environment layout from the references — but honor REFERENCE EXCLUSIONS: never depict excluded photo artifacts (tags, hangers, clutter, etc.)."
+          : "Copy the EXACT same character faces, skin tone, hair, age, body type, clothing, accessories, products, and setting details from the references.",
         `Preserve the same ${styleConfig.referenceHint} across every frame.`,
         "Do NOT redesign, recast, or age-shift any character. Only change camera angle, framing, pose, and action for this new shot.",
       ].join(" ")

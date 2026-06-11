@@ -1,5 +1,6 @@
 import { resolveStoryboardFrameReferences } from "@/lib/storyboard/resolve-frame-references";
 import {
+  sanitizeStoryboardInputReferenceIgnore,
   sanitizeStoryboardInputReferenceLabel,
   sortStoryboardInputReferences,
 } from "@/lib/storyboard/storyboard-input-references";
@@ -13,6 +14,7 @@ export async function resolveStoryboardInputReferences(
     kind: StoryboardInputReference["kind"];
     url: string;
     label?: string;
+    ignoreInReference?: string;
   }>
 > {
   const sorted = sortStoryboardInputReferences(refs);
@@ -22,6 +24,7 @@ export async function resolveStoryboardInputReferences(
     kind: StoryboardInputReference["kind"];
     url: string;
     label?: string;
+    ignoreInReference?: string;
   }> = [];
 
   for (const ref of sorted) {
@@ -36,10 +39,14 @@ export async function resolveStoryboardInputReferences(
     );
     if (url?.trim()) {
       const caption = sanitizeStoryboardInputReferenceLabel(ref.label ?? "");
+      const ignore = sanitizeStoryboardInputReferenceIgnore(
+        ref.ignoreInReference ?? ""
+      );
       resolved.push({
         kind: ref.kind,
         url: url.trim(),
         ...(caption ? { label: caption } : {}),
+        ...(ignore ? { ignoreInReference: ignore } : {}),
       });
     }
   }

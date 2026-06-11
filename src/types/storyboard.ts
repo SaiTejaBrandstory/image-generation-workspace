@@ -68,6 +68,8 @@ export interface StoryboardInputReference {
   name: string;
   /** Optional name/role caption (e.g. "Ravi", "Brand logo") — sent with the image to the model. */
   label?: string;
+  /** Elements visible in the photo that must NOT appear in generated frames (e.g. "price tag, hanger"). */
+  ignoreInReference?: string;
   /** UI preview — blob or signed HTTPS URL. */
   previewUrl: string;
   /** HTTPS or storage-backed URL for generation. */

@@ -55,6 +55,7 @@ import { createEmptyScene, renumberScenes } from "@/lib/storyboard/scene-engine"
 import { normalizeSceneFields } from "@/lib/storyboard/scene-fields";
 import {
   inputReferencesForDraft,
+  sanitizeStoryboardInputReferenceIgnore,
   sanitizeStoryboardInputReferenceLabel,
   storyboardInputReferenceSlotsLeft,
 } from "@/lib/storyboard/storyboard-input-references";
@@ -138,6 +139,7 @@ interface StoryboardState {
   ) => Promise<void>;
   removeInputReference: (id: string) => void;
   updateInputReferenceLabel: (id: string, label: string) => void;
+  updateInputReferenceIgnore: (id: string, ignoreInReference: string) => void;
   setSelectedSceneId: (id: string | null) => void;
   setViewMode: (mode: StoryboardViewMode) => void;
   updateScene: (id: string, patch: Partial<StoryboardScene>) => void;
@@ -664,6 +666,21 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
         ...s.settings,
         inputReferences: (s.settings.inputReferences ?? []).map((ref) =>
           ref.id === id ? { ...ref, label: next || undefined } : ref
+        ),
+      },
+    }));
+    get().saveDraft();
+  },
+
+  updateInputReferenceIgnore: (id, ignoreInReference) => {
+    const next = sanitizeStoryboardInputReferenceIgnore(ignoreInReference);
+    set((s) => ({
+      settings: {
+        ...s.settings,
+        inputReferences: (s.settings.inputReferences ?? []).map((ref) =>
+          ref.id === id
+            ? { ...ref, ignoreInReference: next || undefined }
+            : ref
         ),
       },
     }));

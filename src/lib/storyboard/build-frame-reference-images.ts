@@ -15,6 +15,7 @@ export function buildStoryboardFrameReferenceImages(options: {
     kind: StoryboardInputReference["kind"];
     url: string;
     label?: string;
+    ignoreInReference?: string;
   }>;
   generatedFrameUrls: string[];
   maxRefs: number;
@@ -34,7 +35,11 @@ export function buildStoryboardFrameReferenceImages(options: {
     if (slot.type === "input") {
       images.push({
         url: slot.url,
-        label: buildStoryboardInputReferencePromptLabel(slot.kind, slot.label),
+        label: buildStoryboardInputReferencePromptLabel(
+          slot.kind,
+          slot.label,
+          slot.ignoreInReference
+        ),
       });
       continue;
     }

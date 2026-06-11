@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import {
+  CircleSlash,
   ImageIcon,
   ImagePlus,
   Loader2,
@@ -15,8 +16,10 @@ import {
 import { formatReferenceCountLabel } from "@/lib/reference-limits";
 import {
   STORYBOARD_INPUT_REFERENCE_ACCEPT,
+  STORYBOARD_INPUT_REFERENCE_IGNORE_MAX,
   STORYBOARD_INPUT_REFERENCE_KINDS,
   STORYBOARD_MAX_INPUT_REFERENCES,
+  storyboardInputReferenceIgnorePlaceholder,
   storyboardInputReferenceKindLabel,
   storyboardInputReferenceLabelPlaceholder,
   storyboardInputReferenceLimitHint,
@@ -104,20 +107,24 @@ function ReferenceItem({
   kind,
   onRemove,
   onLabelChange,
+  onIgnoreChange,
   removing,
 }: {
   refItem: StoryboardInputReference;
   kind: StoryboardInputReferenceKind;
   onRemove: () => void;
   onLabelChange: (label: string) => void;
+  onIgnoreChange: (ignoreInReference: string) => void;
   removing: boolean;
 }) {
   const [draftLabel, setDraftLabel] = useState(refItem.label ?? "");
+  const [draftIgnore, setDraftIgnore] = useState(refItem.ignoreInReference ?? "");
   const accent = KIND_ACCENT[kind];
 
   useEffect(() => {
     setDraftLabel(refItem.label ?? "");
-  }, [refItem.id, refItem.label]);
+    setDraftIgnore(refItem.ignoreInReference ?? "");
+  }, [refItem.id, refItem.label, refItem.ignoreInReference]);
 
   return (
     <div
@@ -186,6 +193,29 @@ function ReferenceItem({
             maxLength={80}
           />
         </label>
+        <label className="block">
+          <span className="mb-1 flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-foreground-muted/80">
+            <CircleSlash className="h-2.5 w-2.5" />
+            Ignore in reference
+          </span>
+          <input
+            type="text"
+            value={draftIgnore}
+            onChange={(e) => setDraftIgnore(e.target.value)}
+            onBlur={() => {
+              if (draftIgnore !== (refItem.ignoreInReference ?? "")) {
+                onIgnoreChange(draftIgnore);
+              }
+            }}
+            placeholder={storyboardInputReferenceIgnorePlaceholder(kind)}
+            className={cn(
+              "w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-xs text-foreground",
+              "placeholder:text-foreground-muted/50",
+              "focus:border-accent-orange/40 focus:outline-none focus:ring-2 focus:ring-accent-orange/15"
+            )}
+            maxLength={STORYBOARD_INPUT_REFERENCE_IGNORE_MAX}
+          />
+        </label>
       </div>
     </div>
   );
@@ -198,6 +228,7 @@ function ReferenceKindRow({
   onAdd,
   onRemove,
   onLabelChange,
+  onIgnoreChange,
   uploading,
 }: {
   kind: StoryboardInputReferenceKind;
@@ -206,6 +237,7 @@ function ReferenceKindRow({
   onAdd: (files: FileList | File[]) => void;
   onRemove: (id: string) => void;
   onLabelChange: (id: string, label: string) => void;
+  onIgnoreChange: (id: string, ignoreInReference: string) => void;
   uploading: boolean;
 }) {
   const refs = storyboardInputReferencesForKind(inputRefs, kind);
@@ -271,6 +303,7 @@ function ReferenceKindRow({
                   kind={kind}
                   onRemove={() => onRemove(ref.id)}
                   onLabelChange={(label) => onLabelChange(ref.id, label)}
+                  onIgnoreChange={(ignore) => onIgnoreChange(ref.id, ignore)}
                   removing={uploading}
                 />
               ))}
@@ -323,6 +356,9 @@ export function StoryboardInputReferences() {
   const updateInputReferenceLabel = useStoryboardStore(
     (s) => s.updateInputReferenceLabel
   );
+  const updateInputReferenceIgnore = useStoryboardStore(
+    (s) => s.updateInputReferenceIgnore
+  );
   const [uploadingKind, setUploadingKind] =
     useState<StoryboardInputReferenceKind | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
@@ -373,8 +409,9 @@ export function StoryboardInputReferences() {
               Reference images
             </h2>
             <p className="mt-0.5 max-w-md text-xs leading-relaxed text-foreground-muted">
-              Optional visual anchors for characters, products, and sets. Add a
-              short label on each image so your script matches the right ref.
+              Optional visual anchors for characters, products, and sets. Label
+              each image and list anything to ignore (e.g. price tags) so frames
+              match the subject without photo clutter.
             </p>
           </div>
         </div>
@@ -398,6 +435,7 @@ export function StoryboardInputReferences() {
             onAdd={(files) => void handleAdd(kind, files)}
             onRemove={removeInputReference}
             onLabelChange={updateInputReferenceLabel}
+            onIgnoreChange={updateInputReferenceIgnore}
           />
         ))}
       </div>

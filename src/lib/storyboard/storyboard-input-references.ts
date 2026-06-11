@@ -43,9 +43,14 @@ export const STORYBOARD_INPUT_REFERENCE_KINDS = [
 
 export const STORYBOARD_MAX_INPUT_REFERENCES = MAX_REFERENCES_IMAGE;
 export const STORYBOARD_INPUT_REFERENCE_LABEL_MAX = 80;
+export const STORYBOARD_INPUT_REFERENCE_IGNORE_MAX = 120;
 
 export function sanitizeStoryboardInputReferenceLabel(raw: string): string {
   return raw.replace(/\s+/g, " ").trim().slice(0, STORYBOARD_INPUT_REFERENCE_LABEL_MAX);
+}
+
+export function sanitizeStoryboardInputReferenceIgnore(raw: string): string {
+  return raw.replace(/\s+/g, " ").trim().slice(0, STORYBOARD_INPUT_REFERENCE_IGNORE_MAX);
 }
 
 export function storyboardInputReferenceLabelPlaceholder(
@@ -58,6 +63,19 @@ export function storyboardInputReferenceLabelPlaceholder(
       return "Label — e.g. Tea box, brand logo";
     case "environment":
       return "Label — e.g. Family kitchen, storefront";
+  }
+}
+
+export function storyboardInputReferenceIgnorePlaceholder(
+  kind: StoryboardInputReference["kind"]
+): string {
+  switch (kind) {
+    case "character":
+      return "Ignore — e.g. sunglasses, name badge";
+    case "product":
+      return "Ignore — e.g. price tag, hanger, packaging";
+    case "environment":
+      return "Ignore — e.g. crowd, signage, clutter";
   }
 }
 
@@ -104,6 +122,7 @@ export interface ResolvedStoryboardInputReference {
   kind: StoryboardInputReference["kind"];
   url: string;
   label?: string;
+  ignoreInReference?: string;
 }
 
 export type StoryboardFrameReferenceSlot =
@@ -112,47 +131,109 @@ export type StoryboardFrameReferenceSlot =
       url: string;
       kind: StoryboardInputReference["kind"];
       label?: string;
+      ignoreInReference?: string;
     }
   | { type: "generated"; url: string };
+
+function referenceSubjectName(
+  kind: StoryboardInputReference["kind"],
+  label?: string
+): string {
+  const caption = sanitizeStoryboardInputReferenceLabel(label ?? "");
+  return caption || storyboardInputReferenceKindLabel(kind);
+}
+
+function buildReferenceExclusionClause(ignoreInReference?: string): string {
+  const ignore = sanitizeStoryboardInputReferenceIgnore(ignoreInReference ?? "");
+  if (!ignore) return "";
+  return (
+    ` DO NOT copy from this photo: ${ignore}. ` +
+    `Match only the intended subject (shape, color, design, character); omit every excluded element completely.`
+  );
+}
 
 /** Text label sent beside each reference image in the vision model request. */
 export function buildStoryboardInputReferencePromptLabel(
   kind: StoryboardInputReference["kind"],
-  userLabel?: string
+  userLabel?: string,
+  ignoreInReference?: string
 ): string {
   const kindLabel = storyboardInputReferenceKindLabel(kind).toUpperCase();
   const caption = sanitizeStoryboardInputReferenceLabel(userLabel ?? "");
+  const exclusion = buildReferenceExclusionClause(ignoreInReference);
   if (caption) {
     return (
       `USER ${kindLabel} — "${caption}" — this attached image is that subject. ` +
-      `Match it exactly in the storyboard frame whenever "${caption}" or this role appears in the script.`
+      `Match it in the storyboard frame whenever "${caption}" or this role appears in the script.` +
+      exclusion
     );
   }
   return (
-    `USER ${kindLabel} — match this reference exactly in the storyboard frame ` +
-    `(faces, product shape, or environment as labeled):`
+    `USER ${kindLabel} — match this reference in the storyboard frame ` +
+    `(faces, product shape, or environment as labeled).` +
+    exclusion
   );
 }
 
-/** Summary block for scene breakdown + sketch prompts when labels are set. */
-export function buildInputReferencesPromptBlock(
+/** Mandatory exclusion rules — injected into every frame and scene breakdown. */
+export function buildReferenceExclusionsPromptBlock(
   refs: StoryboardInputReference[]
 ): string {
-  const labeled = sortStoryboardInputReferences(refs).filter((ref) =>
-    sanitizeStoryboardInputReferenceLabel(ref.label ?? "")
+  const withExclusions = sortStoryboardInputReferences(refs).filter((ref) =>
+    sanitizeStoryboardInputReferenceIgnore(ref.ignoreInReference ?? "")
   );
-  if (!labeled.length) return "";
+  if (!withExclusions.length) return "";
 
-  const lines = labeled.map((ref) => {
-    const caption = sanitizeStoryboardInputReferenceLabel(ref.label!);
-    return `${storyboardInputReferenceKindLabel(ref.kind)} "${caption}"`;
+  const lines = withExclusions.map((ref) => {
+    const subject = referenceSubjectName(ref.kind, ref.label);
+    const ignore = sanitizeStoryboardInputReferenceIgnore(ref.ignoreInReference!);
+    return `${subject}: never show ${ignore}`;
   });
 
   return [
-    "UPLOADED REFERENCE IMAGES (user-provided — tie each name/role to the matching attached image in every scene):",
+    "REFERENCE EXCLUSIONS (mandatory on EVERY frame — visible in the attached photos but must NOT appear in any storyboard image or video):",
     lines.join("; ") + ".",
-    "Use these exact labels in continuity character/prop descriptions and in scene actions when those subjects appear.",
+    "Copy the subject's design from the reference but completely omit every excluded element listed above.",
   ].join(" ");
+}
+
+/** Summary block for scene breakdown + sketch prompts. */
+export function buildInputReferencesPromptBlock(
+  refs: StoryboardInputReference[]
+): string {
+  const sorted = sortStoryboardInputReferences(refs);
+  const labeled = sorted.filter((ref) =>
+    sanitizeStoryboardInputReferenceLabel(ref.label ?? "")
+  );
+
+  const parts: string[] = [];
+
+  if (labeled.length) {
+    const lines = labeled.map((ref) => {
+      const caption = sanitizeStoryboardInputReferenceLabel(ref.label!);
+      return `${storyboardInputReferenceKindLabel(ref.kind)} "${caption}"`;
+    });
+    parts.push(
+      [
+        "UPLOADED REFERENCE IMAGES (user-provided — tie each name/role to the matching attached image in every scene):",
+        lines.join("; ") + ".",
+        "Use these exact labels in continuity character/prop descriptions and in scene actions when those subjects appear.",
+      ].join(" ")
+    );
+  }
+
+  const exclusions = buildReferenceExclusionsPromptBlock(sorted);
+  if (exclusions) parts.push(exclusions);
+
+  return parts.join("\n");
+}
+
+export function storyboardInputReferencesHaveExclusions(
+  refs: StoryboardInputReference[]
+): boolean {
+  return refs.some((ref) =>
+    Boolean(sanitizeStoryboardInputReferenceIgnore(ref.ignoreInReference ?? ""))
+  );
 }
 
 /**
@@ -172,6 +253,7 @@ export function pickStoryboardFrameReferenceUrls(options: {
       url: ref.url,
       kind: ref.kind,
       label: ref.label,
+      ignoreInReference: ref.ignoreInReference,
     });
   }
 
