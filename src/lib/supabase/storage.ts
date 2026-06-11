@@ -17,7 +17,7 @@ export function generationStoragePath(
   userId: string,
   conversationId: string,
   variantId: string,
-  ext: "png" | "jpg" | "webp" | "mp4" | "webm" = "png"
+  ext: "png" | "jpg" | "webp" | "mp4" | "webm" | "mp3" = "png"
 ): string {
   return `${userId}/${conversationId}/${variantId}.${ext}`;
 }
@@ -88,6 +88,44 @@ export async function videoSourceToBuffer(
   const arrayBuffer = await res.arrayBuffer();
   const ext = mime.includes("webm") ? "webm" : "mp4";
   return { buffer: Buffer.from(arrayBuffer), mime, ext };
+}
+
+export async function uploadGenerationAudioBuffer(options: {
+  userId: string;
+  conversationId: string;
+  variantId: string;
+  buffer: Buffer;
+  mime?: string;
+}): Promise<{ storagePath: string; signedUrl: string }> {
+  const mime = options.mime ?? "audio/mpeg";
+  const storagePath = generationStoragePath(
+    options.userId,
+    options.conversationId,
+    options.variantId,
+    "mp3"
+  );
+
+  const admin = createAdminClient();
+  const { error: uploadError } = await admin.storage
+    .from(BUCKET)
+    .upload(storagePath, options.buffer, {
+      contentType: mime,
+      upsert: true,
+    });
+
+  if (uploadError) {
+    throw new Error(uploadError.message);
+  }
+
+  const { data: signed, error: signError } = await admin.storage
+    .from(BUCKET)
+    .createSignedUrl(storagePath, SIGNED_URL_TTL_SEC);
+
+  if (signError || !signed?.signedUrl) {
+    throw new Error(signError?.message ?? "Failed to create audio URL.");
+  }
+
+  return { storagePath, signedUrl: signed.signedUrl };
 }
 
 export async function uploadGenerationVideoBuffer(options: {

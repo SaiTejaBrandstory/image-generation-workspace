@@ -231,6 +231,61 @@ export interface StoryboardVoiceoverResult {
  * Build narrator track aligned to each scene's durationSec slot.
  * Returns null when no scene has voiceover text.
  */
+/**
+ * One TTS call for the full script — much faster on serverless than per-scene synthesis.
+ */
+export async function buildStoryboardVoiceoverTrackCombined(
+  scenes: StoryboardScene[],
+  options?: { targetDurationSec?: number }
+): Promise<StoryboardVoiceoverResult | null> {
+  const ordered = [...scenes].sort((a, b) => a.sceneNumber - b.sceneNumber);
+  if (!ordered.some((scene) => scene.voiceover?.trim())) return null;
+
+  const lines = ordered
+    .map((scene) =>
+      fitVoiceoverToSceneDuration(scene.voiceover, scene.durationSec)
+    )
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return null;
+
+  const combined = lines.join(" ");
+  const dir = await mkdtemp(path.join(os.tmpdir(), "storyboard-vo-combined-"));
+  try {
+    const speechPath = path.join(dir, "speech.mp3");
+    try {
+      const raw = await generateSpeechWithOpenRouter({ input: combined });
+      const rawPath = path.join(dir, "raw.mp3");
+      await writeFile(rawPath, raw);
+      await normalizeSpeechMp3(rawPath, speechPath);
+    } catch (ttsErr) {
+      console.warn(
+        "[storyboard-voiceover] Combined TTS failed",
+        ttsErr instanceof Error ? ttsErr.message : ttsErr
+      );
+      return null;
+    }
+
+    const videoDur = options?.targetDurationSec;
+    if (videoDur != null && videoDur > 0) {
+      const finalPath = path.join(dir, "final.mp3");
+      const durationSec = await padToVideoDuration(speechPath, finalPath, videoDur);
+      return {
+        buffer: await readFile(finalPath),
+        durationSec,
+      };
+    }
+
+    const naturalDur = await probeAudioDurationSec(speechPath);
+    return {
+      buffer: await readFile(speechPath),
+      durationSec: naturalDur,
+    };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 export async function buildStoryboardVoiceoverTrack(
   scenes: StoryboardScene[],
   options?: { targetDurationSec?: number }

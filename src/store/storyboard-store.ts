@@ -1528,23 +1528,55 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
             : finalDuration;
 
         set({
-          videoGenerationStatus: "Adding narrator and music…",
-          videoProgress: 94,
+          videoGenerationStatus: "Generating narrator voice…",
+          videoProgress: 91,
         });
 
-        const audioRes = await fetch("/api/storyboard/stitch-video", {
+        const stitchScenes = scenesForStitchApi(ordered);
+        const ttsRes = await fetch("/api/storyboard/stitch-video", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             projectId: storyboardProjectId,
             storageConversationId: storageFolder,
             outputKind: "full",
-            stitchPhase: "audio",
+            stitchPhase: "tts",
+            partialDurationSec: joinedDuration,
+            totalDurationSec: joinedDuration,
+            scenes: stitchScenes,
+            genre: settings.genre,
+          }),
+        });
+        const ttsData = await readJsonResponse<{
+          narrationStoragePath?: string;
+          ambientStoragePath?: string;
+          error?: unknown;
+        }>(ttsRes);
+        if (!ttsRes.ok) {
+          throw new Error(
+            extractApiErrorMessage(ttsData, "Narrator voice generation failed")
+          );
+        }
+        if (get().videoGenerationEpoch !== epoch) return;
+
+        set({
+          videoGenerationStatus: "Mixing final video…",
+          videoProgress: 96,
+        });
+
+        const mixRes = await fetch("/api/storyboard/stitch-video", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            projectId: storyboardProjectId,
+            storageConversationId: storageFolder,
+            outputKind: "full",
+            stitchPhase: "mix",
             partialStoragePath,
             partialDurationSec: joinedDuration,
             totalDurationSec: joinedDuration,
-            scenes: scenesForStitchApi(ordered),
-            genre: settings.genre,
+            narrationStoragePath: ttsData.narrationStoragePath,
+            ambientStoragePath: ttsData.ambientStoragePath,
           }),
         });
         const stitchData = await readJsonResponse<{
@@ -1552,10 +1584,10 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
           storagePath?: string;
           durationSec?: number | null;
           error?: unknown;
-        }>(audioRes);
-        if (!audioRes.ok) {
+        }>(mixRes);
+        if (!mixRes.ok) {
           throw new Error(
-            extractApiErrorMessage(stitchData, "Video audio mix failed")
+            extractApiErrorMessage(stitchData, "Final video mix failed")
           );
         }
         if (get().videoGenerationEpoch !== epoch) return;

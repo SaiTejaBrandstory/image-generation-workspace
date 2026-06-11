@@ -98,6 +98,7 @@ function ffmpegPath(): string {
 
 async function runConcat(listFile: string, outFile: string, reencode: boolean) {
   const ffmpeg = ffmpegPath();
+  const serverless = process.env.VERCEL === "1";
   const args = reencode
     ? [
         "-y",
@@ -110,11 +111,10 @@ async function runConcat(listFile: string, outFile: string, reencode: boolean) {
         "-c:v",
         "libx264",
         "-preset",
-        "fast",
+        serverless ? "ultrafast" : "fast",
         "-crf",
-        "23",
-        "-c:a",
-        "aac",
+        serverless ? "26" : "23",
+        ...(serverless ? ["-an"] : ["-c:a", "aac"]),
         "-movflags",
         "+faststart",
         outFile,
@@ -683,7 +683,7 @@ export async function concatMp4BuffersFastWithAudio(
   return concatMp4BuffersFast(clips, { ...options, ensureAudio: true });
 }
 
-/** Join full-storyboard segments: stream-copy when possible, else fast re-encode. */
+/** Join full-storyboard segments: stream-copy when possible, else single-pass re-encode. */
 export async function concatMp4BuffersForFullStoryboard(
   clips: Buffer[]
 ): Promise<Buffer> {
@@ -696,11 +696,18 @@ export async function concatMp4BuffersForFullStoryboard(
 
   try {
     return await concatMp4Buffers(clips);
-  } catch {
-    return await concatMp4BuffersFast(clips, {
-      ensureAudio: false,
-      maxWidth: FULL_STITCH_MAX_WIDTH,
-    });
+  } catch (copyErr) {
+    if (process.env.VERCEL !== "1") {
+      return await concatMp4BuffersFast(clips, {
+        ensureAudio: false,
+        maxWidth: FULL_STITCH_MAX_WIDTH,
+      });
+    }
+    console.warn(
+      "[stitch-videos] Stream-copy join failed on serverless",
+      copyErr instanceof Error ? copyErr.message : copyErr
+    );
+    throw copyErr;
   }
 }
 

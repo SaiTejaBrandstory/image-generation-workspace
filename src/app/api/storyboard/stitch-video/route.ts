@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { buildStoryboardAmbientBed } from "@/lib/storyboard/storyboard-ambient-bed";
-import { buildStoryboardVoiceoverTrack } from "@/lib/storyboard/storyboard-voiceover";
+import {
+  buildStoryboardVoiceoverTrack,
+  buildStoryboardVoiceoverTrackCombined,
+} from "@/lib/storyboard/storyboard-voiceover";
 import { scaleScenesToVideoDuration } from "@/lib/storyboard/voiceover-timing";
 import {
   concatMp4Buffers,
@@ -17,6 +20,7 @@ import { updateStoryboardOutputs } from "@/lib/supabase/storyboard-db";
 import { createClient } from "@/lib/supabase/server";
 import {
   getSignedMediaUrl,
+  uploadGenerationAudioBuffer,
   uploadGenerationVideoBuffer,
   videoSourceToBuffer,
 } from "@/lib/supabase/storage";
@@ -24,11 +28,11 @@ import {
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-/** FFmpeg + upload; Hobby plan caps at 60s — full storyboard uses two-phase stitch. */
+/** Full storyboard uses join → tts → mix (3 requests) to fit Hobby 60s. */
 export const maxDuration = 300;
 export const runtime = "nodejs";
 
-type StitchPhase = "join" | "audio";
+type StitchPhase = "join" | "tts" | "mix" | "audio";
 
 interface StitchVideoBody {
   projectId: string;
@@ -39,11 +43,11 @@ interface StitchVideoBody {
   scenes?: StoryboardScene[];
   genre?: StoryboardGenre;
   outputKind?: "full" | "stitched" | "scene-stitch";
-  /** Full storyboard: join segments first, then audio in a second request (fits Hobby 60s). */
   stitchPhase?: StitchPhase;
-  /** From join phase — video without narration/music yet. */
   partialStoragePath?: string;
   partialDurationSec?: number;
+  narrationStoragePath?: string;
+  ambientStoragePath?: string;
 }
 
 async function downloadClipBuffers(body: StitchVideoBody): Promise<Buffer[]> {
@@ -61,43 +65,28 @@ async function downloadClipBuffers(body: StitchVideoBody): Promise<Buffer[]> {
   });
 }
 
-async function mixFullStoryboardAudio(
-  stitched: Buffer,
-  body: StitchVideoBody,
-  videoDur: number
-): Promise<{
-  buffer: Buffer;
-  voiceoverApplied: boolean;
-  musicApplied: boolean;
-}> {
-  const timedScenes =
-    body.scenes?.length && videoDur > 0
-      ? scaleScenesToVideoDuration(body.scenes, videoDur)
-      : body.scenes ?? [];
-
-  const [voiceover, ambientBed] = await Promise.all([
-    timedScenes.some((s) => s.voiceover?.trim())
-      ? buildStoryboardVoiceoverTrack(timedScenes, {
-          targetDurationSec: videoDur,
-        })
-      : Promise.resolve(null),
-    videoDur > 0 ? buildStoryboardAmbientBed(videoDur, body.genre) : Promise.resolve(null),
-  ]);
-
-  if (!voiceover && !ambientBed) {
-    return { buffer: stitched, voiceoverApplied: false, musicApplied: false };
+async function loadBufferFromStorage(storagePath: string): Promise<Buffer> {
+  const signed = await getSignedMediaUrl(storagePath);
+  if (!signed) {
+    throw new Error("Could not load media from storage.");
   }
+  const { buffer } = await videoSourceToBuffer(signed);
+  return buffer;
+}
 
-  const mixed = await mixStoryboardFinalAudio(stitched, {
-    narrationBuffer: voiceover?.buffer,
-    ambientBedBuffer: ambientBed ?? undefined,
-  });
-
-  return {
-    buffer: mixed,
-    voiceoverApplied: Boolean(voiceover),
-    musicApplied: Boolean(ambientBed),
-  };
+function resolveVideoDurationSec(
+  body: StitchVideoBody,
+  probed: number | null
+): number {
+  const plannedSceneDur =
+    body.scenes?.reduce((sum, scene) => sum + scene.durationSec, 0) ?? 0;
+  return (
+    probed ??
+    body.partialDurationSec ??
+    body.totalDurationSec ??
+    plannedSceneDur ??
+    0
+  );
 }
 
 async function persistStitchOutput(
@@ -148,53 +137,93 @@ export async function POST(request: NextRequest) {
     const storageFolder =
       body.storageConversationId?.trim() || body.projectId?.trim() || "storyboard-draft";
 
-    // —— Phase 2: add narration + music to joined video (full storyboard only) ——
-    if (body.outputKind === "full" && body.stitchPhase === "audio") {
+    // —— Phase 2b: generate narrator + music tracks (full storyboard) ——
+    if (body.outputKind === "full" && body.stitchPhase === "tts") {
+      const videoDur = resolveVideoDurationSec(body, null);
+      const timedScenes =
+        body.scenes?.length && videoDur > 0
+          ? scaleScenesToVideoDuration(body.scenes, videoDur)
+          : body.scenes ?? [];
+
+      const useCombinedTts = process.env.VERCEL === "1";
+      const [voiceover, ambientBed] = await Promise.all([
+        timedScenes.some((s) => s.voiceover?.trim())
+          ? useCombinedTts
+            ? buildStoryboardVoiceoverTrackCombined(timedScenes, {
+                targetDurationSec: videoDur,
+              })
+            : buildStoryboardVoiceoverTrack(timedScenes, {
+                targetDurationSec: videoDur,
+              })
+          : Promise.resolve(null),
+        videoDur > 0 ? buildStoryboardAmbientBed(videoDur, body.genre) : Promise.resolve(null),
+      ]);
+
+      let narrationStoragePath: string | undefined;
+      let ambientStoragePath: string | undefined;
+
+      if (voiceover?.buffer.length) {
+        const uploaded = await uploadGenerationAudioBuffer({
+          userId: user.id,
+          conversationId: storageFolder,
+          variantId: `narration-${body.projectId}`,
+          buffer: voiceover.buffer,
+        });
+        narrationStoragePath = uploaded.storagePath;
+      }
+
+      if (ambientBed?.length) {
+        const uploaded = await uploadGenerationAudioBuffer({
+          userId: user.id,
+          conversationId: storageFolder,
+          variantId: `ambient-${body.projectId}`,
+          buffer: ambientBed,
+        });
+        ambientStoragePath = uploaded.storagePath;
+      }
+
+      if (!narrationStoragePath && !ambientStoragePath) {
+        return NextResponse.json(
+          { error: "Could not generate narrator or music tracks." },
+          { status: 500 }
+        );
+      }
+
+      return NextResponse.json({
+        stitchPhase: "tts",
+        narrationStoragePath,
+        ambientStoragePath,
+        durationSec: videoDur > 0 ? Math.round(videoDur) : null,
+      });
+    }
+
+    // —— Phase 3: mix joined video + pre-built audio tracks ——
+    if (body.outputKind === "full" && body.stitchPhase === "mix") {
       const partialPath = body.partialStoragePath?.trim();
       if (!partialPath) {
         return NextResponse.json(
-          { error: "partialStoragePath is required for audio phase." },
+          { error: "partialStoragePath is required for mix phase." },
           { status: 400 }
         );
       }
 
-      const signed = await getSignedMediaUrl(partialPath);
-      if (!signed) {
-        return NextResponse.json(
-          { error: "Could not load stitched video for audio mix." },
-          { status: 400 }
-        );
-      }
-
-      const { buffer: joinedBuffer } = await videoSourceToBuffer(signed);
+      const joinedBuffer = await loadBufferFromStorage(partialPath);
       const probed = await probeMp4DurationFloat(joinedBuffer);
-      const plannedSceneDur =
-        body.scenes?.reduce((sum, scene) => sum + scene.durationSec, 0) ?? 0;
-      const videoDur =
-        probed ??
-        body.partialDurationSec ??
-        body.totalDurationSec ??
-        plannedSceneDur;
+      const videoDur = resolveVideoDurationSec(body, probed);
 
-      let stitched = joinedBuffer;
-      let voiceoverApplied = false;
-      let musicApplied = false;
-      try {
-        const mixed = await mixFullStoryboardAudio(joinedBuffer, body, videoDur);
-        stitched = mixed.buffer;
-        voiceoverApplied = mixed.voiceoverApplied;
-        musicApplied = mixed.musicApplied;
-      } catch (audioErr) {
-        console.error(
-          "[storyboard/stitch-video] Audio phase mix failed",
-          audioErr instanceof Error ? audioErr.message : audioErr
-        );
-        throw new Error(
-          audioErr instanceof Error
-            ? audioErr.message
-            : "Could not add narrator and music to the video."
-        );
-      }
+      const [narrationBuffer, ambientBedBuffer] = await Promise.all([
+        body.narrationStoragePath?.trim()
+          ? loadBufferFromStorage(body.narrationStoragePath.trim())
+          : Promise.resolve(undefined),
+        body.ambientStoragePath?.trim()
+          ? loadBufferFromStorage(body.ambientStoragePath.trim())
+          : Promise.resolve(undefined),
+      ]);
+
+      const stitched = await mixStoryboardFinalAudio(joinedBuffer, {
+        narrationBuffer,
+        ambientBedBuffer,
+      });
 
       const durationSec =
         (await probeMp4DurationSec(stitched)) ?? Math.round(videoDur);
@@ -227,13 +256,84 @@ export async function POST(request: NextRequest) {
         videoUrl: uploaded.signedUrl,
         storagePath: uploaded.storagePath,
         durationSec,
-        voiceoverApplied,
-        musicApplied,
+        voiceoverApplied: Boolean(narrationBuffer?.length),
+        musicApplied: Boolean(ambientBedBuffer?.length),
+        stitchPhase: "mix",
+      });
+    }
+
+    // —— Legacy single-shot audio phase (local dev) ——
+    if (body.outputKind === "full" && body.stitchPhase === "audio") {
+      const partialPath = body.partialStoragePath?.trim();
+      if (!partialPath) {
+        return NextResponse.json(
+          { error: "partialStoragePath is required for audio phase." },
+          { status: 400 }
+        );
+      }
+
+      const joinedBuffer = await loadBufferFromStorage(partialPath);
+      const videoDur = resolveVideoDurationSec(
+        body,
+        await probeMp4DurationFloat(joinedBuffer)
+      );
+      const timedScenes =
+        body.scenes?.length && videoDur > 0
+          ? scaleScenesToVideoDuration(body.scenes, videoDur)
+          : body.scenes ?? [];
+
+      const [voiceover, ambientBed] = await Promise.all([
+        timedScenes.some((s) => s.voiceover?.trim())
+          ? buildStoryboardVoiceoverTrackCombined(timedScenes, {
+              targetDurationSec: videoDur,
+            })
+          : Promise.resolve(null),
+        videoDur > 0 ? buildStoryboardAmbientBed(videoDur, body.genre) : Promise.resolve(null),
+      ]);
+
+      const stitched = await mixStoryboardFinalAudio(joinedBuffer, {
+        narrationBuffer: voiceover?.buffer,
+        ambientBedBuffer: ambientBed ?? undefined,
+      });
+
+      const durationSec =
+        (await probeMp4DurationSec(stitched)) ?? Math.round(videoDur);
+
+      const uploaded = await uploadGenerationVideoBuffer({
+        userId: user.id,
+        conversationId: storageFolder,
+        variantId: `full-${body.projectId}`,
+        buffer: stitched,
+        mime: "video/mp4",
+      });
+
+      try {
+        await persistStitchOutput(
+          supabase,
+          user.id,
+          storageFolder,
+          body,
+          uploaded,
+          durationSec
+        );
+      } catch (persistErr) {
+        console.error(
+          "[storyboard/stitch-video] DB persist failed",
+          persistErr instanceof Error ? persistErr.message : persistErr
+        );
+      }
+
+      return NextResponse.json({
+        videoUrl: uploaded.signedUrl,
+        storagePath: uploaded.storagePath,
+        durationSec,
+        voiceoverApplied: Boolean(voiceover),
+        musicApplied: Boolean(ambientBed),
         stitchPhase: "audio",
       });
     }
 
-    // —— Phase 1 (join) or single-shot stitch ——
+    // —— Phase 1 (join) or single-shot scene stitch ——
     if (!body.clipUrls?.length) {
       return NextResponse.json({ error: "clipUrls are required." }, { status: 400 });
     }
@@ -255,11 +355,6 @@ export async function POST(request: NextRequest) {
       stitched = buffers[0]!;
     }
 
-    const stitchedDuration = await probeMp4DurationFloat(stitched);
-    let voiceoverApplied = false;
-    let musicApplied = false;
-
-    // Full storyboard join phase — upload silent join; audio is a separate request.
     if (body.outputKind === "full" && body.stitchPhase === "join") {
       const durationSec =
         (await probeMp4DurationSec(stitched)) ??
@@ -282,32 +377,6 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Single-shot full stitch (local / long timeout) or legacy
-    if (body.outputKind === "full") {
-      try {
-        const plannedSceneDur =
-          body.scenes?.reduce((sum, scene) => sum + scene.durationSec, 0) ?? 0;
-        const videoDur =
-          stitchedDuration ?? body.totalDurationSec ?? plannedSceneDur;
-        const mixed = await mixFullStoryboardAudio(stitched, body, videoDur);
-        stitched = mixed.buffer;
-        voiceoverApplied = mixed.voiceoverApplied;
-        musicApplied = mixed.musicApplied;
-        if (voiceoverApplied || musicApplied) {
-          console.info(
-            "[storyboard/stitch-video] Mixed final audio",
-            voiceoverApplied ? "narration" : "",
-            musicApplied ? "music bed" : ""
-          );
-        }
-      } catch (audioErr) {
-        console.error(
-          "[storyboard/stitch-video] Final audio mix failed — returning stitch without music/voice",
-          audioErr instanceof Error ? audioErr.message : audioErr
-        );
-      }
-    }
-
     const durationSec =
       (await probeMp4DurationSec(stitched)) ?? body.totalDurationSec ?? null;
 
@@ -315,11 +384,9 @@ export async function POST(request: NextRequest) {
       userId: user.id,
       conversationId: storageFolder,
       variantId:
-        body.outputKind === "full"
-          ? `full-${body.projectId}`
-          : body.outputKind === "scene-stitch"
-            ? `scene-stitch-${body.projectId}`
-            : `stitched-${body.projectId}`,
+        body.outputKind === "scene-stitch"
+          ? `scene-stitch-${body.projectId}`
+          : `stitched-${body.projectId}`,
       buffer: stitched,
       mime: "video/mp4",
     });
@@ -345,8 +412,6 @@ export async function POST(request: NextRequest) {
       storagePath: uploaded.storagePath,
       durationSec,
       clipCount: body.clipUrls.length,
-      voiceoverApplied,
-      musicApplied,
     });
   } catch (err) {
     const raw =
