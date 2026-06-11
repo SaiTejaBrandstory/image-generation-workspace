@@ -14,10 +14,15 @@ export async function readJsonResponse<T extends { error?: string }>(
     return JSON.parse(text) as T;
   } catch {
     const lower = text.toLowerCase();
+    const isHtmlErrorPage =
+      lower.includes("<!doctype html") ||
+      lower.includes("__next_error__") ||
+      lower.includes("<html");
     if (
       res.status === 504 ||
       res.status === 502 ||
       res.status === 503 ||
+      isHtmlErrorPage ||
       lower.includes("an error occurred") ||
       lower.includes("function_invocation") ||
       lower.includes("gateway timeout")

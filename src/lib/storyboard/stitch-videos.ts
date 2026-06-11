@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "fs/promises";
 import os from "os";
 import path from "path";
 import { promisify } from "util";
+import { runWithConcurrency } from "@/lib/reference-utils";
 
 const execFileAsync = promisify(execFile);
 
@@ -60,7 +61,9 @@ export function formatStitchVideoErrorForUser(raw: string): string {
   if (
     lower.includes("an error occurred") ||
     lower.includes("gateway timeout") ||
-    lower.includes("function_invocation")
+    lower.includes("function_invocation") ||
+    lower.includes("__next_error__") ||
+    lower.includes("<!doctype html")
   ) {
     return (
       "Stitching took too long on the server (timeout). " +
@@ -73,6 +76,8 @@ export function formatStitchVideoErrorForUser(raw: string): string {
 
 /** Crossfade between stitched segments so cuts feel like one continuous edit. */
 export const STORYBOARD_STITCH_CROSSFADE_SEC = 0.35;
+/** Cap scene-stitch resolution so serverless FFmpeg finishes within platform limits. */
+export const SCENE_STITCH_MAX_WIDTH = 1280;
 /** Fade out picture + sound at the end so the video does not stop on a hard cut. */
 export const STORYBOARD_END_FADE_SEC = 0.9;
 
@@ -226,6 +231,18 @@ function pickCrossfadeTargetSize(
   return { width: evenDimension(width), height: evenDimension(height) };
 }
 
+function capStitchTargetSize(
+  size: { width: number; height: number },
+  maxWidth: number
+): { width: number; height: number } {
+  if (size.width <= maxWidth) return size;
+  const scale = maxWidth / size.width;
+  return {
+    width: evenDimension(maxWidth),
+    height: evenDimension(size.height * scale),
+  };
+}
+
 async function clipHasAudioStream(filePath: string): Promise<boolean> {
   try {
     await execFileAsync(ffmpegPath(), [
@@ -258,8 +275,9 @@ async function normalizeClipForCrossfade(
   durationSec: number,
   targetWidth: number,
   targetHeight: number,
-  options: { ensureAudio?: boolean } = {}
+  options: { ensureAudio?: boolean; preset?: "ultrafast" | "fast" } = {}
 ): Promise<void> {
+  const preset = options.preset ?? "fast";
   const vf = `scale=${targetWidth}:${targetHeight}:flags=lanczos,setsar=1`;
   const hasAudio = await clipHasAudioStream(inputPath);
 
@@ -273,7 +291,7 @@ async function normalizeClipForCrossfade(
       "-c:v",
       "libx264",
       "-preset",
-      "fast",
+      preset,
       "-crf",
       "23",
       "-c:a",
@@ -311,7 +329,7 @@ async function normalizeClipForCrossfade(
       "-c:v",
       "libx264",
       "-preset",
-      "fast",
+      preset,
       "-crf",
       "23",
       "-c:a",
@@ -335,7 +353,7 @@ async function normalizeClipForCrossfade(
     "-c:v",
     "libx264",
     "-preset",
-    "fast",
+    preset,
     "-crf",
     "23",
     "-an",
@@ -570,6 +588,80 @@ export async function mixNarrationOntoVideo(
 export interface ConcatMp4CrossfadeOptions {
   /** Normalize clip audio (stereo AAC) and always crossfade sound — for scene animation stitches. */
   preserveClipAudio?: boolean;
+}
+
+/**
+ * Fast scene-stitch: normalize clips (capped resolution) then hard-cut concat.
+ * Much faster than crossfade on serverless — avoids platform timeouts on live.
+ */
+export async function concatMp4BuffersFastWithAudio(
+  clips: Buffer[],
+  options: { maxWidth?: number } = {}
+): Promise<Buffer> {
+  if (!clips.length) {
+    throw new Error("No video clips to stitch.");
+  }
+  if (clips.length === 1) {
+    return clips[0]!;
+  }
+
+  const maxWidth = options.maxWidth ?? SCENE_STITCH_MAX_WIDTH;
+  const dir = await mkdtemp(path.join(os.tmpdir(), "storyboard-fast-stitch-"));
+  try {
+    const rawPaths: string[] = [];
+    for (let i = 0; i < clips.length; i++) {
+      const clipPath = path.join(dir, `clip-raw-${i}.mp4`);
+      await writeFile(clipPath, clips[i]);
+      rawPaths.push(clipPath);
+    }
+
+    const durations: number[] = [];
+    const dimensions: Array<{ width: number; height: number }> = [];
+    for (const clipPath of rawPaths) {
+      durations.push((await probeMp4FileDurationFloat(clipPath)) ?? 8);
+      const size = await probeMp4VideoDimensions(clipPath);
+      if (size) dimensions.push(size);
+    }
+
+    const targetSize = capStitchTargetSize(
+      pickCrossfadeTargetSize(dimensions),
+      maxWidth
+    );
+
+    const preparedPaths = await runWithConcurrency(
+      rawPaths.map((rawPath, index) => ({ rawPath, index })),
+      2,
+      async ({ rawPath, index }) => {
+        const preparedPath = path.join(dir, `clip-${index}.mp4`);
+        await normalizeClipForCrossfade(
+          rawPath,
+          preparedPath,
+          durations[index]!,
+          targetSize.width,
+          targetSize.height,
+          { ensureAudio: true, preset: "ultrafast" }
+        );
+        return preparedPath;
+      }
+    );
+
+    const listFile = path.join(dir, "concat.txt");
+    const listContent = preparedPaths
+      .map((p) => `file '${p.replace(/'/g, "'\\''")}'`)
+      .join("\n");
+    await writeFile(listFile, listContent);
+
+    const outFile = path.join(dir, "stitched.mp4");
+    try {
+      await runConcat(listFile, outFile, false);
+    } catch {
+      await runConcat(listFile, outFile, true);
+    }
+
+    return await readFile(outFile);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 
 /** Concatenate MP4 buffers with short crossfades between segments. */

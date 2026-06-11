@@ -5,12 +5,14 @@ import { scaleScenesToVideoDuration } from "@/lib/storyboard/voiceover-timing";
 import {
   applySmoothEndingToMp4,
   concatMp4Buffers,
+  concatMp4BuffersFastWithAudio,
   concatMp4BuffersWithCrossfade,
   formatStitchVideoErrorForUser,
   mixStoryboardFinalAudio,
   probeMp4DurationFloat,
   probeMp4DurationSec,
 } from "@/lib/storyboard/stitch-videos";
+import { runWithConcurrency } from "@/lib/reference-utils";
 import type { StoryboardGenre, StoryboardScene } from "@/types/storyboard";
 import { updateStoryboardOutputs } from "@/lib/supabase/storyboard-db";
 import { createClient } from "@/lib/supabase/server";
@@ -25,6 +27,7 @@ const UUID_RE =
 
 /** FFmpeg crossfade + upload for 6+ clips can exceed 120s on production. */
 export const maxDuration = 300;
+export const runtime = "nodejs";
 
 interface StitchVideoBody {
   projectId: string;
@@ -59,8 +62,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "clipUrls are required." }, { status: 400 });
     }
 
-    const buffers: Buffer[] = [];
-    for (let i = 0; i < body.clipUrls.length; i++) {
+    const clipIndexes = body.clipUrls.map((_, index) => index);
+    const buffers = await runWithConcurrency(clipIndexes, 3, async (i) => {
       const storagePath = body.clipStoragePaths?.[i]?.trim();
       let source = body.clipUrls[i]!;
       if (storagePath) {
@@ -68,21 +71,23 @@ export async function POST(request: NextRequest) {
         if (signed) source = signed;
       }
       const { buffer } = await videoSourceToBuffer(source);
-      buffers.push(buffer);
-    }
+      return buffer;
+    });
 
-    const useCrossfade =
-      (body.outputKind === "full" || body.outputKind === "scene-stitch") &&
-      buffers.length > 1;
-    let stitched = useCrossfade
-      ? await concatMp4BuffersWithCrossfade(
-          buffers,
-          undefined,
-          body.outputKind === "scene-stitch"
-            ? { preserveClipAudio: true }
-            : {}
-        )
-      : await concatMp4Buffers(buffers);
+    console.info(
+      `[storyboard/stitch-video] Stitching ${buffers.length} clips (${body.outputKind ?? "stitched"})`
+    );
+
+    let stitched: Buffer;
+    if (body.outputKind === "scene-stitch" && buffers.length > 1) {
+      stitched = await concatMp4BuffersFastWithAudio(buffers);
+    } else if (body.outputKind === "full" && buffers.length > 1) {
+      stitched = await concatMp4BuffersWithCrossfade(buffers);
+    } else if (buffers.length > 1) {
+      stitched = await concatMp4Buffers(buffers);
+    } else {
+      stitched = buffers[0]!;
+    }
 
     const stitchedDuration = await probeMp4DurationFloat(stitched);
 
