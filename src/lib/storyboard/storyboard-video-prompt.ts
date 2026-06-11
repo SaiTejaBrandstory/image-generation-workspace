@@ -68,7 +68,6 @@ export function buildStoryboardFullVideoPrompt(options: {
     })
     .join("\n");
 
-  const isMultiSegment = Boolean(batch && batch.total > 1);
   const firstScene = scenes[0];
   const lastScene = scenes[scenes.length - 1];
   const globalSceneCount = batch?.totalScenes ?? scenes.length;
@@ -100,9 +99,8 @@ export function buildStoryboardFullVideoPrompt(options: {
           .join(" ")
       : "";
 
-  const audioLead = isMultiSegment
-    ? "AUDIO: Include cinematic ambient music and sound design. Do NOT include spoken dialogue or narration — a single narrator voice is added in post-production."
-    : "AUDIO: Include ambient music plus one consistent narrator voice. Match the voiceover text in the shot list.";
+  const audioLead =
+    "AUDIO — ENGLISH ONLY: Include soft cinematic background music and one consistent English narrator. Speak every voiceover (VO) line in the shot list verbatim at a calm, natural pace — complete each line before its scene ends. Never use non-English speech.";
 
   return [
     batchLead,

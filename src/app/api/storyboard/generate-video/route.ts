@@ -16,15 +16,7 @@ import {
   supportsFrameImages,
 } from "@/lib/openrouter-video-models";
 import { buildStoryboardFullVideoPrompt } from "@/lib/storyboard/storyboard-video-prompt";
-import { buildStoryboardAmbientBed } from "@/lib/storyboard/storyboard-ambient-bed";
-import { buildStoryboardVoiceoverTrack } from "@/lib/storyboard/storyboard-voiceover";
-import {
-  applySmoothEndingToMp4,
-  extractLastFrameFromMp4,
-  mixStoryboardFinalAudio,
-  probeMp4DurationFloat,
-} from "@/lib/storyboard/stitch-videos";
-import { scaleScenesToVideoDuration } from "@/lib/storyboard/voiceover-timing";
+import { extractLastFrameFromMp4 } from "@/lib/storyboard/stitch-videos";
 import {
   buildStoryboardSegmentReferences,
   describeStoryboardSegmentReferences,
@@ -173,7 +165,7 @@ export async function POST(request: NextRequest) {
       aspectOptions.frameAspectRatio ?? "—"
     );
     const modelChain = buildStoryboardModelChain(body);
-    /** Ambient/music from Veo on every segment; unified TTS narration is added at stitch for multi-segment jobs. */
+    /** Native model audio (narration + music) on every segment — stitched without post-production TTS. */
     const segmentGenerateAudio = true;
     let videoModel = modelChain[0]!;
     let videoSettings = clampVideoSettingsToModel(videoModel, {
@@ -291,50 +283,7 @@ export async function POST(request: NextRequest) {
       ? `seg-${body.batch.index + 1}of${body.batch.total}`
       : "full";
     const isSingleGeneration = !body.batch || body.batch.total === 1;
-    let outputBuffer = result.videoBuffer;
-
-    if (isSingleGeneration) {
-      try {
-        const videoDur =
-          (await probeMp4DurationFloat(outputBuffer)) ?? videoSettings.duration;
-        const timedScenes = scaleScenesToVideoDuration(scenes, videoDur);
-        const [voiceover, ambientBed] = await Promise.all([
-          scenes.some((s) => s.voiceover?.trim())
-            ? buildStoryboardVoiceoverTrack(timedScenes, {
-                targetDurationSec: videoDur,
-              })
-            : Promise.resolve(null),
-          buildStoryboardAmbientBed(videoDur, body.settings.genre),
-        ]);
-        if (voiceover || ambientBed) {
-          outputBuffer = await mixStoryboardFinalAudio(outputBuffer, {
-            narrationBuffer: voiceover?.buffer,
-            ambientBedBuffer: ambientBed,
-          });
-          console.info(
-            "[storyboard/generate-video] Mixed final audio onto single-segment video",
-            voiceover ? "narration" : "",
-            "music bed"
-          );
-        }
-      } catch (audioErr) {
-        console.error(
-          "[storyboard/generate-video] Final audio mix failed — using model audio only",
-          audioErr instanceof Error ? audioErr.message : audioErr
-        );
-      }
-    }
-
-    if (isSingleGeneration) {
-      try {
-        outputBuffer = await applySmoothEndingToMp4(outputBuffer);
-      } catch (fadeErr) {
-        console.warn(
-          "[storyboard/generate-video] End fade skipped",
-          fadeErr instanceof Error ? fadeErr.message : fadeErr
-        );
-      }
-    }
+    const outputBuffer = result.videoBuffer;
 
     const uploaded = await uploadGenerationVideoBuffer({
       userId: user.id,
