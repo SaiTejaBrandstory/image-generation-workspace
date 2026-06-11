@@ -27,6 +27,7 @@ import {
   getVideoModelsCatalog,
   pickStoryboardHumanFrameFallback,
 } from "@/lib/openrouter-video-models";
+import { runWithConcurrency } from "@/lib/reference-utils";
 import { normalizeFrameStyle } from "@/lib/storyboard/frame-styles";
 import { normalizeFrameCount } from "@/lib/storyboard/script-utils";
 import {
@@ -1008,24 +1009,26 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
 
     set({ error: null });
 
+    const epochs: Record<string, number> = {};
     for (const scene of ordered) {
-      const epoch = (get().sceneVideoGenerationEpoch[scene.id] ?? 0) + 1;
-      set((s) => ({
-        sceneVideoGenerationEpoch: {
-          ...s.sceneVideoGenerationEpoch,
-          [scene.id]: epoch,
-        },
-        scenes: s.scenes.map((item) =>
-          item.id === scene.id
-            ? {
-                ...item,
-                sceneVideoStatus: "generating" as const,
-                sceneVideoError: undefined,
-              }
-            : item
-        ),
-      }));
+      epochs[scene.id] = (get().sceneVideoGenerationEpoch[scene.id] ?? 0) + 1;
+    }
 
+    set((s) => ({
+      sceneVideoGenerationEpoch: { ...s.sceneVideoGenerationEpoch, ...epochs },
+      scenes: s.scenes.map((item) =>
+        epochs[item.id] != null
+          ? {
+              ...item,
+              sceneVideoStatus: "generating" as const,
+              sceneVideoError: undefined,
+            }
+          : item
+      ),
+    }));
+
+    const generateOne = async (scene: (typeof ordered)[number]) => {
+      const epoch = epochs[scene.id]!;
       try {
         const res = await fetch("/api/storyboard/generate-scene-video", {
           method: "POST",
@@ -1056,7 +1059,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
           throw new Error(data.error ?? "Scene animation failed");
         }
 
-        if (get().sceneVideoGenerationEpoch[scene.id] !== epoch) continue;
+        if (get().sceneVideoGenerationEpoch[scene.id] !== epoch) return;
 
         set((s) => ({
           scenes: s.scenes.map((item) =>
@@ -1074,12 +1077,8 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
               : item
           ),
         }));
-        get().saveDraft();
-        if (get().wizardLocked && get().conversationId) {
-          await syncStoryboardToHistory();
-        }
       } catch (err) {
-        if (get().sceneVideoGenerationEpoch[scene.id] !== epoch) continue;
+        if (get().sceneVideoGenerationEpoch[scene.id] !== epoch) return;
         const message =
           err instanceof Error ? err.message : "Scene animation failed";
         set((s) => ({
@@ -1095,6 +1094,15 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
           error: `Scene ${scene.sceneNumber}: ${message}`,
         }));
       }
+    };
+
+    await runWithConcurrency(ordered, ordered.length, (scene) =>
+      generateOne(scene)
+    );
+
+    get().saveDraft();
+    if (get().wizardLocked && get().conversationId) {
+      await syncStoryboardToHistory();
     }
   },
 

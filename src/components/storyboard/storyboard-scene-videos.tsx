@@ -423,7 +423,7 @@ export function StoryboardSceneVideos() {
             Scene animations
           </h2>
           <p className="mt-0.5 text-sm text-foreground-muted">
-            Animate frames one scene at a time — model voice and music per clip.
+            Animate all selected scenes in parallel — model voice and music per clip.
             {animatedCount > 0
               ? ` · ${animatedCount} of ${ordered.length} animated`
               : ""}
