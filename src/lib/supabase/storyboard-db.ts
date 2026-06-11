@@ -16,6 +16,14 @@ const DEFAULT_STORYBOARD_SETTINGS: StoryboardProjectSettings = {
   sceneEnvironment: "",
 };
 
+/** Postgres duration columns are `int` — never persist fractional seconds. */
+function roundDurationSec(
+  value: number | null | undefined
+): number | null {
+  if (value == null) return null;
+  return Math.round(value);
+}
+
 function normalizeStoryboardSettings(
   raw: Partial<StoryboardProjectSettings> | null | undefined
 ): StoryboardProjectSettings {
@@ -112,7 +120,7 @@ function sceneToRow(
     conversation_id: conversationId,
     user_id: userId,
     scene_number: scene.sceneNumber,
-    duration_sec: scene.durationSec,
+    duration_sec: roundDurationSec(scene.durationSec) ?? scene.durationSec,
     voiceover: scene.voiceover,
     visual_description: scene.visualDescription,
     camera_direction: scene.cameraDirection,
@@ -127,7 +135,7 @@ function sceneToRow(
     frame_status: scene.frameStatus,
     frame_error: scene.frameError ?? null,
     scene_video_storage_path: scene.sceneVideoStoragePath ?? null,
-    scene_video_duration_sec: scene.sceneVideoDurationSec ?? null,
+    scene_video_duration_sec: roundDurationSec(scene.sceneVideoDurationSec),
     scene_video_status: scene.sceneVideoStatus ?? null,
     scene_video_error: scene.sceneVideoError ?? null,
     scene_video_model: scene.sceneVideoModel ?? null,
@@ -224,21 +232,35 @@ export async function persistStoryboard(
     conversationId = data.id as string;
   }
 
-  await supabase
-    .from("storyboard_scenes")
-    .delete()
-    .eq("conversation_id", conversationId)
-    .eq("user_id", userId);
-
   const sceneRows = payload.scenes.map((scene, index) =>
     sceneToRow(scene, conversationId!, userId, index)
   );
 
+  // Upsert first — never delete scenes before a successful write (avoids wiping on insert errors).
   if (sceneRows.length) {
     const { error: scenesError } = await supabase
       .from("storyboard_scenes")
-      .insert(sceneRows);
+      .upsert(sceneRows, { onConflict: "id" });
     if (scenesError) throw new Error(scenesError.message);
+  }
+
+  const payloadSceneIds = new Set(payload.scenes.map((scene) => scene.id));
+  const { data: existingScenes } = await supabase
+    .from("storyboard_scenes")
+    .select("id")
+    .eq("conversation_id", conversationId)
+    .eq("user_id", userId);
+
+  const orphanSceneIds = (existingScenes ?? [])
+    .map((row) => row.id as string)
+    .filter((sceneId) => !payloadSceneIds.has(sceneId));
+
+  if (orphanSceneIds.length) {
+    const { error: deleteError } = await supabase
+      .from("storyboard_scenes")
+      .delete()
+      .in("id", orphanSceneIds);
+    if (deleteError) throw new Error(deleteError.message);
   }
 
   const { data: existingOutputs } = await supabase
@@ -251,11 +273,20 @@ export async function persistStoryboard(
 
   const prev = existingOutputs as DbStoryboardOutputsRow | null;
 
+  const settingsWithSnapshot = {
+    ...payload.settings,
+    scenesSnapshot: payload.scenes.map((scene) => ({
+      ...scene,
+      frameImageUrl: undefined,
+      sceneVideoUrl: undefined,
+    })),
+  };
+
   const outputsRow = {
     conversation_id: conversationId,
     user_id: userId,
     continuity: payload.continuity,
-    settings: payload.settings,
+    settings: settingsWithSnapshot,
     single_video_storage_path:
       payload.singleVideoStoragePath ?? prev?.single_video_storage_path ?? null,
     stitched_video_storage_path:
@@ -266,16 +297,16 @@ export async function persistStoryboard(
       payload.sceneStitchedVideoStoragePath ??
       prev?.scene_stitched_video_storage_path ??
       null,
-    single_video_duration_sec:
-      payload.singleVideoDurationSec ?? prev?.single_video_duration_sec ?? null,
-    stitched_video_duration_sec:
-      payload.stitchedVideoDurationSec ??
-      prev?.stitched_video_duration_sec ??
-      null,
-    scene_stitched_video_duration_sec:
+    single_video_duration_sec: roundDurationSec(
+      payload.singleVideoDurationSec ?? prev?.single_video_duration_sec
+    ),
+    stitched_video_duration_sec: roundDurationSec(
+      payload.stitchedVideoDurationSec ?? prev?.stitched_video_duration_sec
+    ),
+    scene_stitched_video_duration_sec: roundDurationSec(
       payload.sceneStitchedVideoDurationSec ??
-      prev?.scene_stitched_video_duration_sec ??
-      null,
+        prev?.scene_stitched_video_duration_sec
+    ),
     wizard_locked: true,
     updated_at: new Date().toISOString(),
   };
@@ -378,7 +409,7 @@ export async function updateStoryboardSceneVideo(
     row.scene_video_storage_path = patch.sceneVideoStoragePath;
   }
   if (patch.sceneVideoDurationSec !== undefined) {
-    row.scene_video_duration_sec = patch.sceneVideoDurationSec;
+    row.scene_video_duration_sec = roundDurationSec(patch.sceneVideoDurationSec);
   }
   if (patch.sceneVideoStatus !== undefined) {
     row.scene_video_status = patch.sceneVideoStatus;
@@ -426,13 +457,17 @@ export async function updateStoryboardOutputs(
     row.scene_stitched_video_storage_path = patch.sceneStitchedVideoStoragePath;
   }
   if (patch.singleVideoDurationSec !== undefined) {
-    row.single_video_duration_sec = patch.singleVideoDurationSec;
+    row.single_video_duration_sec = roundDurationSec(patch.singleVideoDurationSec);
   }
   if (patch.stitchedVideoDurationSec !== undefined) {
-    row.stitched_video_duration_sec = patch.stitchedVideoDurationSec;
+    row.stitched_video_duration_sec = roundDurationSec(
+      patch.stitchedVideoDurationSec
+    );
   }
   if (patch.sceneStitchedVideoDurationSec !== undefined) {
-    row.scene_stitched_video_duration_sec = patch.sceneStitchedVideoDurationSec;
+    row.scene_stitched_video_duration_sec = roundDurationSec(
+      patch.sceneStitchedVideoDurationSec
+    );
   }
 
   const { error } = await supabase

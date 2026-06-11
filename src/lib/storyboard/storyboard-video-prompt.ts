@@ -1,5 +1,8 @@
 import { getFrameStyleLabel } from "@/lib/storyboard/frame-styles";
-import { fitVoiceoverToSceneDuration } from "@/lib/storyboard/voiceover-timing";
+import {
+  fitVoiceoverToSceneDuration,
+  VIDEO_NARRATOR_WORDS_PER_SEC,
+} from "@/lib/storyboard/voiceover-timing";
 import type {
   StoryboardContinuity,
   StoryboardProjectSettings,
@@ -148,7 +151,8 @@ export function buildStoryboardClipPrompt(options: {
 
   const voiceoverLine = fitVoiceoverToSceneDuration(
     scene.voiceover,
-    videoDurationSec
+    videoDurationSec,
+    VIDEO_NARRATOR_WORDS_PER_SEC
   );
 
   const parts = [
@@ -175,7 +179,7 @@ export function buildStoryboardClipPrompt(options: {
       ? `Animate from the opening storyboard frame toward the closing frame. Match ${getFrameStyleLabel(settings.frameStyle).toLowerCase()} style and character design.`
       : `Animate from the opening storyboard frame for this scene beat. Match ${getFrameStyleLabel(settings.frameStyle).toLowerCase()} style.`,
     voiceoverLine
-      ? `AUDIO — ENGLISH ONLY: Include soft cinematic background music and one English narrator. Speak this exact English line verbatim (do not translate, do not paraphrase, do not use any other language): "${voiceoverLine}"`
+      ? `AUDIO — ENGLISH ONLY: Include soft cinematic background music and one English narrator. Speak this exact English line verbatim at a calm, natural pace — complete every word before the clip ends (do not translate, do not paraphrase, do not use any other language): "${voiceoverLine}"`
       : "AUDIO: Include soft cinematic background music only. No spoken dialogue.",
     "LANGUAGE: All narration must be English (en-US). Never use Hindi, Spanish, or any non-English speech.",
     "ENDING: End on live storyboard motion — no fade to black, no black frames, no blank screen, no title card, no logo hold at the end.",

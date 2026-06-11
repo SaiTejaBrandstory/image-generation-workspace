@@ -15,7 +15,10 @@ import {
   supportsFrameImages,
 } from "@/lib/openrouter-video-models";
 import { buildStoryboardClipPrompt } from "@/lib/storyboard/storyboard-video-prompt";
-import { trimMp4ToDuration } from "@/lib/storyboard/stitch-videos";
+import {
+  probeMp4DurationFloat,
+  probeMp4DurationSec,
+} from "@/lib/storyboard/stitch-videos";
 import {
   buildStoryboardClipReferences,
   getStoryboardFullVideoMaxPollMs,
@@ -138,7 +141,11 @@ export async function POST(request: NextRequest) {
 
     let videoModel = modelChain[0]!;
     let videoSettings = clampVideoSettingsToModel(modelChain[0]!, {
-      duration: pickStoryboardClipDuration(scene.durationSec, modelChain[0]!),
+      duration: pickStoryboardClipDuration(
+        scene.durationSec,
+        modelChain[0]!,
+        scene.voiceover
+      ),
       resolution: DEFAULT_VIDEO_RESOLUTION,
       aspectRatio: resolveStoryboardVideoAspectRatio(modelChain[0]!, aspectOptions),
       generateAudio: true,
@@ -153,7 +160,11 @@ export async function POST(request: NextRequest) {
       const nextModel = modelChain[i + 1];
       videoModel = model;
       videoSettings = clampVideoSettingsToModel(model, {
-        duration: pickStoryboardClipDuration(scene.durationSec, model),
+        duration: pickStoryboardClipDuration(
+          scene.durationSec,
+          model,
+          scene.voiceover
+        ),
         resolution: DEFAULT_VIDEO_RESOLUTION,
         aspectRatio: resolveStoryboardVideoAspectRatio(model, aspectOptions),
         generateAudio: true,
@@ -216,16 +227,18 @@ export async function POST(request: NextRequest) {
       throw lastError ?? new Error("Scene video generation failed");
     }
 
-    let outputBuffer = result.videoBuffer;
-    try {
-      outputBuffer = await trimMp4ToDuration(
-        outputBuffer,
-        videoSettings.duration
-      );
-    } catch (trimErr) {
-      console.warn(
-        "[storyboard/generate-scene-video] Trim skipped",
-        trimErr instanceof Error ? trimErr.message : trimErr
+    const outputBuffer = result.videoBuffer;
+    const [probedDuration, probedDurationSec] = await Promise.all([
+      probeMp4DurationFloat(outputBuffer),
+      probeMp4DurationSec(outputBuffer),
+    ]);
+    const actualDurationSec = probedDurationSec ?? videoSettings.duration;
+    if (
+      probedDuration != null &&
+      probedDuration > videoSettings.duration + 0.35
+    ) {
+      console.info(
+        `[storyboard/generate-scene-video] Scene ${scene.sceneNumber}: keeping full clip (${probedDuration.toFixed(2)}s, requested ${videoSettings.duration}s) to preserve narration`
       );
     }
 
@@ -242,7 +255,7 @@ export async function POST(request: NextRequest) {
       try {
         await updateStoryboardSceneVideo(supabase, user.id, storageFolder, scene.id, {
           sceneVideoStoragePath: uploaded.storagePath,
-          sceneVideoDurationSec: videoSettings.duration,
+          sceneVideoDurationSec: actualDurationSec,
           sceneVideoStatus: "complete",
           sceneVideoError: null,
           sceneVideoModel: videoModel,
@@ -258,7 +271,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       videoUrl: uploaded.signedUrl,
       storagePath: uploaded.storagePath,
-      durationSec: videoSettings.duration,
+      durationSec: actualDurationSec,
       model: videoModel,
       sceneId: scene.id,
       sceneNumber: scene.sceneNumber,

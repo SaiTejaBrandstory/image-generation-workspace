@@ -39,6 +39,7 @@ import {
   commitStoryboard,
   fetchStoryboard,
   patchStoryboardOutputs,
+  recoverStoryboard,
 } from "@/lib/storyboard-api";
 import {
   clearPendingVideo,
@@ -267,13 +268,37 @@ async function fetchStoryboardVideoSegment(
   throw new Error(`${segmentLabel}: ${lastError}`);
 }
 
-/** Keep localStorage small — never persist base64 frame blobs. */
+/** Keep localStorage small — never persist base64 blobs or expiring signed URLs. */
 function scenesForDraft(scenes: StoryboardScene[]): StoryboardScene[] {
   return scenes.map((scene) => ({
     ...scene,
     frameImageUrl:
       scene.frameImageUrl?.startsWith("data:") ? undefined : scene.frameImageUrl,
+    sceneVideoUrl: undefined,
   }));
+}
+
+function readDraftScenesForConversation(
+  conversationId: string
+): StoryboardScene[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(DRAFT_KEY);
+    if (!raw) return [];
+    const draft = JSON.parse(raw) as {
+      conversationId?: string;
+      scenes?: StoryboardScene[];
+    };
+    if (draft.conversationId !== conversationId || !draft.scenes?.length) {
+      return [];
+    }
+    return draft.scenes.map((scene) => ({
+      ...scene,
+      ...normalizeSceneFields(scene),
+    }));
+  } catch {
+    return [];
+  }
 }
 
 let sceneEditSyncTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1630,7 +1655,33 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
     }
     set({ error: null });
     try {
-      const loaded = await fetchStoryboard(id);
+      let loaded = await fetchStoryboard(id);
+      let scenes = loaded.scenes;
+      let recoveredFromDraft = false;
+      let recoveredFromServer = false;
+
+      if (!scenes.length) {
+        const draftScenes = readDraftScenesForConversation(id);
+        if (draftScenes.length) {
+          scenes = draftScenes;
+          recoveredFromDraft = true;
+        } else {
+          try {
+            const recovery = await recoverStoryboard(id);
+            if (recovery.recovered && recovery.storyboard?.scenes.length) {
+              loaded = recovery.storyboard;
+              scenes = loaded.scenes;
+              recoveredFromServer = true;
+            }
+          } catch (recoveryErr) {
+            console.warn(
+              "[storyboard] Storage recovery failed",
+              recoveryErr instanceof Error ? recoveryErr.message : recoveryErr
+            );
+          }
+        }
+      }
+
       set({
         conversationId: loaded.conversationId,
         wizardLocked: loaded.wizardLocked,
@@ -1642,7 +1693,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
           frameStyle: normalizeFrameStyle(loaded.settings.frameStyle),
         },
         continuity: loaded.continuity,
-        scenes: loaded.scenes,
+        scenes,
         imagePrimaryModel: resolveStoryboardImageModel(
           loaded.settings.imagePrimaryModel
         ),
@@ -1669,7 +1720,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
           }
         ),
         step: 4,
-        selectedSceneId: loaded.scenes[0]?.id ?? null,
+        selectedSceneId: scenes[0]?.id ?? null,
         viewMode: "grid",
         isBreakingDown: false,
         isGeneratingFrames: false,
@@ -1687,12 +1738,45 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
         sceneStitchedVideoStoragePath: loaded.sceneStitchedVideoStoragePath,
         frameGenerationEpoch: {},
         sceneVideoGenerationEpoch: {},
-        history: [cloneScenes(loaded.scenes)],
+        history: [cloneScenes(scenes)],
         historyIndex: 0,
         isCommitting: false,
       });
       useWorkspaceStore.setState({ activeConversationId: id });
       get().saveDraft();
+
+      if (recoveredFromDraft) {
+        await syncStoryboardToHistory();
+        try {
+          const reloaded = await fetchStoryboard(id);
+          if (reloaded.scenes.length) {
+            set((s) => ({
+              scenes: reloaded.scenes,
+              storyboardVideoUrl:
+                reloaded.storyboardVideoUrl ?? s.storyboardVideoUrl,
+              storyboardVideoDurationSec:
+                reloaded.storyboardVideoDurationSec ??
+                s.storyboardVideoDurationSec,
+              sceneStitchedVideoUrl:
+                reloaded.sceneStitchedVideoUrl ?? s.sceneStitchedVideoUrl,
+              sceneStitchedVideoDurationSec:
+                reloaded.sceneStitchedVideoDurationSec ??
+                s.sceneStitchedVideoDurationSec,
+              singleVideoStoragePath:
+                reloaded.singleVideoStoragePath ?? s.singleVideoStoragePath,
+              sceneStitchedVideoStoragePath:
+                reloaded.sceneStitchedVideoStoragePath ??
+                s.sceneStitchedVideoStoragePath,
+              history: [cloneScenes(reloaded.scenes)],
+            }));
+            get().saveDraft();
+          }
+        } catch {
+          /* in-memory recovery still usable */
+        }
+      } else if (recoveredFromServer) {
+        get().saveDraft();
+      }
     } catch (err) {
       set({
         error:
@@ -1925,11 +2009,37 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
             conversationId: s.conversationId,
             wizardLocked: true,
             step: 4,
+            script: s.script,
+            settings: storyboardSettingsForPersist(),
+            continuity: s.continuity,
+            scenes: scenesForDraft(s.scenes),
+            storyboardProjectId: s.storyboardProjectId,
+            storyboardVideoUrl: s.storyboardVideoUrl,
+            storyboardVideoDurationSec: s.storyboardVideoDurationSec,
+            sceneStitchedVideoUrl: s.sceneStitchedVideoUrl,
+            sceneStitchedVideoDurationSec: s.sceneStitchedVideoDurationSec,
+            singleVideoStoragePath: s.singleVideoStoragePath,
+            sceneStitchedVideoStoragePath: s.sceneStitchedVideoStoragePath,
+            selectedSceneId: s.selectedSceneId,
+            viewMode: s.viewMode,
             updatedAt: Date.now(),
           })
         );
       } catch {
-        /* ignore */
+        /* QuotaExceeded — fall back to ids only */
+        try {
+          localStorage.setItem(
+            DRAFT_KEY,
+            JSON.stringify({
+              conversationId: s.conversationId,
+              wizardLocked: true,
+              step: 4,
+              updatedAt: Date.now(),
+            })
+          );
+        } catch {
+          /* ignore */
+        }
       }
       return;
     }

@@ -11,6 +11,7 @@ import {
   imageSourceToBuffer,
   uploadGenerationImage,
 } from "@/lib/supabase/storage";
+import { minDurationSecForVoiceover } from "@/lib/storyboard/voiceover-timing";
 import type { ReferenceImagePayload } from "@/types";
 import type { StoryboardScene } from "@/types/storyboard";
 
@@ -378,9 +379,14 @@ export async function buildStoryboardClipReferences(
 
 export function pickStoryboardClipDuration(
   sceneDurationSec: number,
-  modelId = STORYBOARD_VIDEO_MODEL
+  modelId = STORYBOARD_VIDEO_MODEL,
+  voiceover?: string
 ): number {
-  return pickStoryboardVideoDuration(sceneDurationSec, modelId);
+  const fromVoice = voiceover?.trim()
+    ? minDurationSecForVoiceover(voiceover)
+    : 0;
+  const requested = Math.max(sceneDurationSec, fromVoice);
+  return pickStoryboardVideoDuration(requested, modelId);
 }
 
 /**
@@ -454,7 +460,9 @@ export function estimateStoryboardSceneClipsDuration(
   modelId: string
 ): number {
   return scenes.reduce(
-    (sum, scene) => sum + pickStoryboardClipDuration(scene.durationSec, modelId),
+    (sum, scene) =>
+      sum +
+      pickStoryboardClipDuration(scene.durationSec, modelId, scene.voiceover),
     0
   );
 }
@@ -469,7 +477,9 @@ export function estimateStoryboardSceneClipsCost(
   if (rate == null) return null;
   return scenes.reduce(
     (sum, scene) =>
-      sum + pickStoryboardClipDuration(scene.durationSec, modelId) * rate,
+      sum +
+      pickStoryboardClipDuration(scene.durationSec, modelId, scene.voiceover) *
+        rate,
     0
   );
 }

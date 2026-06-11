@@ -94,7 +94,10 @@ export function StepStoryboardViewer() {
     checkPendingStoryboardVideo,
     conversationId,
     singleVideoStoragePath,
+    loadStoryboardConversation,
   } = useStoryboardStore();
+
+  const [isRestoring, setIsRestoring] = useState(false);
 
   const pendingSingleVideo =
     isPendingVideoForConversation(conversationId, "single") &&
@@ -275,8 +278,44 @@ export function StepStoryboardViewer() {
     }
   }, [isGeneratingVideo]);
 
+  const handleRestoreStoryboard = async () => {
+    if (!conversationId) return;
+    setIsRestoring(true);
+    try {
+      await loadStoryboardConversation(conversationId);
+    } finally {
+      setIsRestoring(false);
+    }
+  };
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-4">
+      {wizardLocked && !scenes.length && conversationId ? (
+        <div className="rounded-lg border border-accent-violet/30 bg-accent-violet/5 px-4 py-4 text-sm">
+          <p className="font-medium text-foreground">
+            This storyboard looks empty after a save error.
+          </p>
+          <p className="mt-1 text-foreground-muted">
+            Your script and generated files may still be in storage. Try restoring
+            before starting over.
+          </p>
+          <Button
+            className="mt-3"
+            variant="tintViolet"
+            size="sm"
+            disabled={isRestoring || isCommitting}
+            onClick={() => void handleRestoreStoryboard()}
+          >
+            {isRestoring ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}
+            Restore storyboard
+          </Button>
+        </div>
+      ) : null}
+
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">

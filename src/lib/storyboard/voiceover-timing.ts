@@ -4,8 +4,24 @@ import type { StoryboardScene } from "@/types/storyboard";
 /** Conservative narrator pace (~132 wpm) so TTS fits each scene slot without speeding up. */
 export const NARRATOR_WORDS_PER_SEC = 2.2;
 
-export function maxWordsForDuration(durationSec: number): number {
-  return Math.max(3, Math.floor(durationSec * NARRATOR_WORDS_PER_SEC));
+/** Slower pace for native video-model narration (~105 wpm) — models read deliberately. */
+export const VIDEO_NARRATOR_WORDS_PER_SEC = 1.75;
+
+export function maxWordsForDuration(
+  durationSec: number,
+  wordsPerSec = NARRATOR_WORDS_PER_SEC
+): number {
+  return Math.max(3, Math.floor(durationSec * wordsPerSec));
+}
+
+/** Minimum clip length so a voiceover line can finish at natural video-model pace. */
+export function minDurationSecForVoiceover(
+  text: string,
+  wordsPerSec = VIDEO_NARRATOR_WORDS_PER_SEC
+): number {
+  const words = countWords(text);
+  if (words <= 0) return 0;
+  return Math.ceil(words / wordsPerSec);
 }
 
 export function countWords(text: string): number {
@@ -20,12 +36,13 @@ export function countWords(text: string): number {
  */
 export function fitVoiceoverToSceneDuration(
   text: string,
-  durationSec: number
+  durationSec: number,
+  wordsPerSec = NARRATOR_WORDS_PER_SEC
 ): string {
   const trimmed = text.trim();
   if (!trimmed) return "";
 
-  const maxWords = maxWordsForDuration(durationSec);
+  const maxWords = maxWordsForDuration(durationSec, wordsPerSec);
   const words = trimmed.split(/\s+/);
   if (words.length <= maxWords) return trimmed;
 

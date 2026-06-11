@@ -93,6 +93,8 @@ export interface StoryboardProjectSettings {
   videoAspectRatio?: string;
   videoPrimaryModel?: string;
   videoFallbackModel?: string | null;
+  /** Server-side backup of scene rows — used to recover after failed saves. */
+  scenesSnapshot?: StoryboardScene[];
 }
 
 /** Locked visual bible — same characters, locations, and sketch style in every frame. */

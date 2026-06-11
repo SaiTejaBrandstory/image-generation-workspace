@@ -39,6 +39,25 @@ export async function fetchStoryboard(
   return data as LoadedStoryboard;
 }
 
+export async function recoverStoryboard(conversationId: string): Promise<{
+  recovered: boolean;
+  source: string;
+  sceneCount: number;
+  storyboard: LoadedStoryboard | null;
+}> {
+  const res = await fetch(`/api/storyboard/${conversationId}/recover`, {
+    method: "POST",
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error ?? "Storyboard recovery failed");
+  return data as {
+    recovered: boolean;
+    source: string;
+    sceneCount: number;
+    storyboard: LoadedStoryboard | null;
+  };
+}
+
 export async function patchStoryboardOutputs(
   conversationId: string,
   patch: {
