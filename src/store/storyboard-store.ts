@@ -1472,13 +1472,12 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
         uniqueSegmentUrls.length === segmentUrls.length
       ) {
         set({
-          videoGenerationStatus:
-            "Stitching segments and adding unified voiceover…",
-          videoProgress: 90,
+          videoGenerationStatus: "Joining video segments…",
+          videoProgress: 88,
         });
 
         const segmentStoragePaths = segmentResults.map((r) => r.storagePath);
-        const stitchRes = await fetch("/api/storyboard/stitch-video", {
+        const joinRes = await fetch("/api/storyboard/stitch-video", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -1488,6 +1487,45 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
             clipStoragePaths: segmentStoragePaths,
             totalDurationSec: finalDuration,
             outputKind: "full",
+            stitchPhase: "join",
+          }),
+        });
+        const joinData = await readJsonResponse<{
+          storagePath?: string;
+          durationSec?: number | null;
+          error?: string;
+        }>(joinRes);
+        if (!joinRes.ok) {
+          throw new Error(joinData.error ?? "Video segment join failed");
+        }
+        if (get().videoGenerationEpoch !== epoch) return;
+
+        const partialStoragePath = joinData.storagePath as string | undefined;
+        if (!partialStoragePath) {
+          throw new Error("Video segment join did not return a storage path.");
+        }
+
+        const joinedDuration =
+          joinData.durationSec != null && joinData.durationSec > 0
+            ? joinData.durationSec
+            : finalDuration;
+
+        set({
+          videoGenerationStatus: "Adding narrator and music…",
+          videoProgress: 94,
+        });
+
+        const audioRes = await fetch("/api/storyboard/stitch-video", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            projectId: storyboardProjectId,
+            storageConversationId: storageFolder,
+            outputKind: "full",
+            stitchPhase: "audio",
+            partialStoragePath,
+            partialDurationSec: joinedDuration,
+            totalDurationSec: joinedDuration,
             scenes: ordered,
             genre: settings.genre,
           }),
@@ -1497,9 +1535,9 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
           storagePath?: string;
           durationSec?: number | null;
           error?: string;
-        }>(stitchRes);
-        if (!stitchRes.ok) {
-          throw new Error(stitchData.error ?? "Video stitching failed");
+        }>(audioRes);
+        if (!audioRes.ok) {
+          throw new Error(stitchData.error ?? "Video audio mix failed");
         }
         if (get().videoGenerationEpoch !== epoch) return;
 

@@ -233,7 +233,7 @@ export async function buildStoryboardVoiceoverTrack(
   try {
     const slotResults = await runWithConcurrency(
       ordered.map((scene, index) => ({ scene, index })),
-      3,
+      5,
       ({ scene, index }) => writeSceneSlotAudio(scene, index, dir)
     );
     const slotPaths = slotResults.filter((slotPath): slotPath is string =>

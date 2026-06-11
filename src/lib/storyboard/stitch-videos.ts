@@ -78,6 +78,8 @@ export function formatStitchVideoErrorForUser(raw: string): string {
 export const STORYBOARD_STITCH_CROSSFADE_SEC = 0.35;
 /** Cap scene-stitch resolution so serverless FFmpeg finishes within platform limits. */
 export const SCENE_STITCH_MAX_WIDTH = 1280;
+/** Lower cap for full storyboard segment joins on serverless (Hobby 60s). */
+export const FULL_STITCH_MAX_WIDTH = 960;
 /** Fade out picture + sound at the end so the video does not stop on a hard cut. */
 export const STORYBOARD_END_FADE_SEC = 0.9;
 
@@ -637,7 +639,7 @@ export async function concatMp4BuffersFast(
 
     const preparedPaths = await runWithConcurrency(
       rawPaths.map((rawPath, index) => ({ rawPath, index })),
-      2,
+      3,
       async ({ rawPath, index }) => {
         const preparedPath = path.join(dir, `clip-${index}.mp4`);
         await normalizeClipForCrossfade(
@@ -676,6 +678,27 @@ export async function concatMp4BuffersFastWithAudio(
   options: Omit<ConcatMp4FastOptions, "ensureAudio"> = {}
 ): Promise<Buffer> {
   return concatMp4BuffersFast(clips, { ...options, ensureAudio: true });
+}
+
+/** Join full-storyboard segments: stream-copy when possible, else fast re-encode. */
+export async function concatMp4BuffersForFullStoryboard(
+  clips: Buffer[]
+): Promise<Buffer> {
+  if (!clips.length) {
+    throw new Error("No video clips to stitch.");
+  }
+  if (clips.length === 1) {
+    return clips[0]!;
+  }
+
+  try {
+    return await concatMp4Buffers(clips);
+  } catch {
+    return await concatMp4BuffersFast(clips, {
+      ensureAudio: false,
+      maxWidth: FULL_STITCH_MAX_WIDTH,
+    });
+  }
 }
 
 /** Concatenate MP4 buffers with short crossfades between segments. */
