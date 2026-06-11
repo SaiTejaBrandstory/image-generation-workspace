@@ -3,10 +3,9 @@ import { buildStoryboardAmbientBed } from "@/lib/storyboard/storyboard-ambient-b
 import { buildStoryboardVoiceoverTrack } from "@/lib/storyboard/storyboard-voiceover";
 import { scaleScenesToVideoDuration } from "@/lib/storyboard/voiceover-timing";
 import {
-  applySmoothEndingToMp4,
   concatMp4Buffers,
+  concatMp4BuffersFast,
   concatMp4BuffersFastWithAudio,
-  concatMp4BuffersWithCrossfade,
   formatStitchVideoErrorForUser,
   mixStoryboardFinalAudio,
   probeMp4DurationFloat,
@@ -82,7 +81,7 @@ export async function POST(request: NextRequest) {
     if (body.outputKind === "scene-stitch" && buffers.length > 1) {
       stitched = await concatMp4BuffersFastWithAudio(buffers);
     } else if (body.outputKind === "full" && buffers.length > 1) {
-      stitched = await concatMp4BuffersWithCrossfade(buffers);
+      stitched = await concatMp4BuffersFast(buffers, { ensureAudio: false });
     } else if (buffers.length > 1) {
       stitched = await concatMp4Buffers(buffers);
     } else {
@@ -134,17 +133,6 @@ export async function POST(request: NextRequest) {
         console.error(
           "[storyboard/stitch-video] Final audio mix failed — returning stitch without music/voice",
           audioErr instanceof Error ? audioErr.message : audioErr
-        );
-      }
-    }
-
-    if (body.outputKind === "full") {
-      try {
-        stitched = await applySmoothEndingToMp4(stitched);
-      } catch (fadeErr) {
-        console.warn(
-          "[storyboard/stitch-video] End fade skipped",
-          fadeErr instanceof Error ? fadeErr.message : fadeErr
         );
       }
     }

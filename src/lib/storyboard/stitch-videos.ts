@@ -590,14 +590,21 @@ export interface ConcatMp4CrossfadeOptions {
   preserveClipAudio?: boolean;
 }
 
+export interface ConcatMp4FastOptions {
+  maxWidth?: number;
+  /** Scene animations keep native audio; full storyboard stitch replaces audio with TTS. */
+  ensureAudio?: boolean;
+}
+
 /**
- * Fast scene-stitch: normalize clips (capped resolution) then hard-cut concat.
+ * Fast stitch: normalize clips (capped resolution) then hard-cut concat.
  * Much faster than crossfade on serverless — avoids platform timeouts on live.
  */
-export async function concatMp4BuffersFastWithAudio(
+export async function concatMp4BuffersFast(
   clips: Buffer[],
-  options: { maxWidth?: number } = {}
+  options: ConcatMp4FastOptions = {}
 ): Promise<Buffer> {
+  const ensureAudio = options.ensureAudio ?? false;
   if (!clips.length) {
     throw new Error("No video clips to stitch.");
   }
@@ -639,7 +646,7 @@ export async function concatMp4BuffersFastWithAudio(
           durations[index]!,
           targetSize.width,
           targetSize.height,
-          { ensureAudio: true, preset: "ultrafast" }
+          { ensureAudio, preset: "ultrafast" }
         );
         return preparedPath;
       }
@@ -662,6 +669,13 @@ export async function concatMp4BuffersFastWithAudio(
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+export async function concatMp4BuffersFastWithAudio(
+  clips: Buffer[],
+  options: Omit<ConcatMp4FastOptions, "ensureAudio"> = {}
+): Promise<Buffer> {
+  return concatMp4BuffersFast(clips, { ...options, ensureAudio: true });
 }
 
 /** Concatenate MP4 buffers with short crossfades between segments. */

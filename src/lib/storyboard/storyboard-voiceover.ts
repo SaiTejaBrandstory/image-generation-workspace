@@ -5,6 +5,7 @@ import os from "os";
 import path from "path";
 import { promisify } from "util";
 import { generateSpeechWithOpenRouter } from "@/lib/openrouter-tts";
+import { runWithConcurrency } from "@/lib/reference-utils";
 import { fitVoiceoverToSceneDuration } from "@/lib/storyboard/voiceover-timing";
 import type { StoryboardScene } from "@/types/storyboard";
 
@@ -230,12 +231,14 @@ export async function buildStoryboardVoiceoverTrack(
 
   const dir = await mkdtemp(path.join(os.tmpdir(), "storyboard-vo-"));
   try {
-    const slotPaths: string[] = [];
-
-    for (let i = 0; i < ordered.length; i++) {
-      const slotPath = await writeSceneSlotAudio(ordered[i]!, i, dir);
-      if (slotPath) slotPaths.push(slotPath);
-    }
+    const slotResults = await runWithConcurrency(
+      ordered.map((scene, index) => ({ scene, index })),
+      3,
+      ({ scene, index }) => writeSceneSlotAudio(scene, index, dir)
+    );
+    const slotPaths = slotResults.filter((slotPath): slotPath is string =>
+      Boolean(slotPath)
+    );
 
     if (!slotPaths.length) return null;
 

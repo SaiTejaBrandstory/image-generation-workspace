@@ -1477,6 +1477,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
           videoProgress: 90,
         });
 
+        const segmentStoragePaths = segmentResults.map((r) => r.storagePath);
         const stitchRes = await fetch("/api/storyboard/stitch-video", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1484,6 +1485,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
             projectId: storyboardProjectId,
             storageConversationId: storageFolder,
             clipUrls: uniqueSegmentUrls,
+            clipStoragePaths: segmentStoragePaths,
             totalDurationSec: finalDuration,
             outputKind: "full",
             scenes: ordered,
