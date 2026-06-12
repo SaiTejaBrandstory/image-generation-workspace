@@ -83,6 +83,8 @@ export const STORYBOARD_STITCH_CROSSFADE_SEC = 0.35;
 export const SCENE_STITCH_MAX_WIDTH = 1280;
 /** Lower cap for full storyboard segment joins on serverless (Hobby 60s). */
 export const FULL_STITCH_MAX_WIDTH = 960;
+/** Gentle fade in from black at the start (cinematic ease-in). */
+export const STORYBOARD_START_FADE_SEC = 0.75;
 /** Fade out picture + sound at the end so the video does not stop on a hard cut. */
 export const STORYBOARD_END_FADE_SEC = 0.9;
 
@@ -417,33 +419,156 @@ export async function trimMp4ToDuration(
   }
 }
 
-/** Gentle fade-to-black + audio fade on the last ~1s (storyboard full videos). */
-export async function applySmoothEndingToMp4(
-  videoBuffer: Buffer
+/**
+ * How long to hold on pure black before the fade-in and after the fade-out.
+ * Applied by cloning the first/last frame (which is already black after the
+ * cinematic fade) — so no image model sees a "black scene" prompt.
+ */
+export const STORYBOARD_BLACK_LEADER_SEC = 0.4;
+export const STORYBOARD_BLACK_TRAILER_SEC = 0.4;
+
+/**
+ * Extend the held-black period at the start and end of the video.
+ * Call this AFTER applyCinematicBookendFadesToMp4 so the cloned frames
+ * are already black (the fade has driven brightness to 0 at both ends).
+ */
+export async function padVideoWithBlackLeader(
+  videoBuffer: Buffer,
+  leadSec = STORYBOARD_BLACK_LEADER_SEC,
+  trailSec = STORYBOARD_BLACK_TRAILER_SEC
 ): Promise<Buffer> {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "storyboard-endfade-"));
+  if (leadSec <= 0 && trailSec <= 0) return videoBuffer;
+  const dir = await mkdtemp(path.join(os.tmpdir(), "storyboard-black-pad-"));
   const inFile = path.join(dir, "in.mp4");
   const outFile = path.join(dir, "out.mp4");
   try {
     await writeFile(inFile, videoBuffer);
-    const duration = await probeMp4FileDurationFloat(inFile);
-    if (!duration || duration < STORYBOARD_END_FADE_SEC + 0.4) {
-      return videoBuffer;
-    }
-
-    const fadeStart = Math.max(0, duration - STORYBOARD_END_FADE_SEC);
-    const fade = STORYBOARD_END_FADE_SEC.toFixed(3);
-    const start = fadeStart.toFixed(3);
     const hasAudio = await clipHasAudioStream(inFile);
 
+    // tpad clones the first/last frame; since those are already black from
+    // the cinematic fade this gives a genuine held-black period.
+    const videoFilter = `tpad=start_duration=${leadSec.toFixed(3)}:start_mode=clone:stop_duration=${trailSec.toFixed(3)}:stop_mode=clone`;
+
     if (hasAudio) {
+      const leadMs = Math.round(leadSec * 1000);
+      // adelay delays audio to align with the prepended black frames;
+      // apad extends audio to cover appended black frames.
+      const audioFilter = `adelay=${leadMs}|${leadMs},apad=pad_dur=${trailSec.toFixed(3)}`;
       try {
         await execFileAsync(ffmpegPath(), [
           "-y",
           "-i",
           inFile,
           "-filter_complex",
-          `[0:v]fade=t=out:st=${start}:d=${fade}[v];[0:a]afade=t=out:st=${start}:d=${fade}[a]`,
+          `[0:v]${videoFilter}[v];[0:a]${audioFilter}[a]`,
+          "-map",
+          "[v]",
+          "-map",
+          "[a]",
+          "-c:v",
+          "libx264",
+          "-preset",
+          "fast",
+          "-crf",
+          "23",
+          "-c:a",
+          "aac",
+          "-b:a",
+          "192k",
+          "-movflags",
+          "+faststart",
+          outFile,
+        ]);
+        return await readFile(outFile);
+      } catch {
+        return videoBuffer;
+      }
+    }
+
+    try {
+      await execFileAsync(ffmpegPath(), [
+        "-y",
+        "-i",
+        inFile,
+        "-vf",
+        videoFilter,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "23",
+        "-an",
+        "-movflags",
+        "+faststart",
+        outFile,
+      ]);
+      return await readFile(outFile);
+    } catch {
+      return videoBuffer;
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+export interface CinematicFadeOptions {
+  fadeIn?: boolean;
+  fadeOut?: boolean;
+}
+
+/** FFmpeg fade in/out on a single clip (post-production — not baked into image prompts). */
+export async function applyCinematicFadesToMp4(
+  videoBuffer: Buffer,
+  options: CinematicFadeOptions = { fadeIn: true, fadeOut: true }
+): Promise<Buffer> {
+  const fadeIn = options.fadeIn !== false;
+  const fadeOut = options.fadeOut !== false;
+  if (!fadeIn && !fadeOut) return videoBuffer;
+
+  const dir = await mkdtemp(path.join(os.tmpdir(), "storyboard-bookend-fade-"));
+  const inFile = path.join(dir, "in.mp4");
+  const outFile = path.join(dir, "out.mp4");
+  try {
+    await writeFile(inFile, videoBuffer);
+    const duration = await probeMp4FileDurationFloat(inFile);
+    const minDuration =
+      (fadeIn ? STORYBOARD_START_FADE_SEC : 0) +
+      (fadeOut ? STORYBOARD_END_FADE_SEC : 0) +
+      0.5;
+    if (!duration || duration < minDuration) {
+      return videoBuffer;
+    }
+
+    const fadeInSec = STORYBOARD_START_FADE_SEC.toFixed(3);
+    const fadeOutSec = STORYBOARD_END_FADE_SEC.toFixed(3);
+    const fadeOutStart = Math.max(
+      fadeIn ? STORYBOARD_START_FADE_SEC + 0.2 : 0.2,
+      duration - STORYBOARD_END_FADE_SEC
+    ).toFixed(3);
+
+    const videoParts: string[] = [];
+    if (fadeIn) videoParts.push(`fade=t=in:st=0:d=${fadeInSec}`);
+    if (fadeOut) {
+      videoParts.push(`fade=t=out:st=${fadeOutStart}:d=${fadeOutSec}`);
+    }
+    const videoFade = videoParts.join(",");
+    const hasAudio = await clipHasAudioStream(inFile);
+
+    if (hasAudio) {
+      try {
+        const audioParts: string[] = [];
+        if (fadeIn) audioParts.push(`afade=t=in:st=0:d=${fadeInSec}`);
+        if (fadeOut) {
+          audioParts.push(`afade=t=out:st=${fadeOutStart}:d=${fadeOutSec}`);
+        }
+        const audioFade = audioParts.join(",");
+        await execFileAsync(ffmpegPath(), [
+          "-y",
+          "-i",
+          inFile,
+          "-filter_complex",
+          `[0:v]${videoFade}[v];[0:a]${audioFade}[a]`,
           "-map",
           "[v]",
           "-map",
@@ -465,21 +590,20 @@ export async function applySmoothEndingToMp4(
         return await readFile(outFile);
       } catch (fadeErr) {
         console.warn(
-          "[stitch-videos] End fade with audio failed — keeping original",
+          "[stitch-videos] Bookend fades with audio failed — keeping original",
           fadeErr instanceof Error ? fadeErr.message : fadeErr
         );
         return videoBuffer;
       }
     }
 
-    // Never re-encode with -an: a false "no audio" probe would strip narration we just mixed in.
     try {
       await execFileAsync(ffmpegPath(), [
         "-y",
         "-i",
         inFile,
         "-vf",
-        `fade=t=out:st=${start}:d=${fade}`,
+        videoFade,
         "-c:v",
         "libx264",
         "-preset",
@@ -499,6 +623,23 @@ export async function applySmoothEndingToMp4(
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+/** Fade in from black + fade out to black on a full stitched storyboard video. */
+export async function applyCinematicBookendFadesToMp4(
+  videoBuffer: Buffer
+): Promise<Buffer> {
+  return applyCinematicFadesToMp4(videoBuffer, {
+    fadeIn: true,
+    fadeOut: true,
+  });
+}
+
+/** @deprecated Use applyCinematicBookendFadesToMp4 */
+export async function applySmoothEndingToMp4(
+  videoBuffer: Buffer
+): Promise<Buffer> {
+  return applyCinematicBookendFadesToMp4(videoBuffer);
 }
 
 export interface StoryboardAudioMixOptions {

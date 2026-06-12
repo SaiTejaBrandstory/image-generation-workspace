@@ -129,8 +129,14 @@ export async function generateStoryboardSketchFrame(
     hasReferenceFrame: useReference,
     aspectRatio,
   });
+  const mappedAspect = mapAspectRatio(aspectRatio);
   if (!config.supportsAspectConfig) {
-    textPrompt = `${textPrompt}\n\nCompose as a single ${mapAspectRatio(aspectRatio)} storyboard panel.`;
+    textPrompt = `${textPrompt}\n\nCompose as a single ${mappedAspect} storyboard panel.`;
+  } else if (aspectRatio !== "auto") {
+    textPrompt = `${textPrompt}\n\nOutput dimensions: ${mappedAspect} canvas (required). Do not output a square 1:1 image unless ${mappedAspect} is 1:1.`;
+    if (useReference) {
+      textPrompt = `${textPrompt} Reference images are for character/product content only — do not copy their aspect ratio or dimensions.`;
+    }
   }
 
   const messageContent = useReference

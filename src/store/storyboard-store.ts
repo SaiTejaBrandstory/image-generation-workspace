@@ -51,6 +51,11 @@ import {
   isPendingVideoForConversation,
   markPendingVideo,
 } from "@/lib/storyboard/pending-video";
+import {
+  ensureBookendScenes,
+  getStoryScenes,
+  isBookendScene,
+} from "@/lib/storyboard/bookend-scenes";
 import { createEmptyScene, renumberScenes } from "@/lib/storyboard/scene-engine";
 import { normalizeSceneFields } from "@/lib/storyboard/scene-fields";
 import {
@@ -77,6 +82,8 @@ const DEFAULT_SETTINGS: StoryboardProjectSettings = {
   frameCount: 6,
   frameStyle: "sketch",
   sceneEnvironment: "",
+  enableVoiceover: true,
+  enableCinematicFade: true,
 };
 
 interface StoryboardState {
@@ -167,10 +174,11 @@ interface StoryboardState {
   generateStoryboardVideo: (options?: {
     replace?: boolean;
     videoAspectRatio?: string;
+    enableVoiceover?: boolean;
   }) => Promise<void>;
   generateSceneVideos: (
     sceneIds: string[],
-    options?: { videoAspectRatio?: string }
+    options?: { videoAspectRatio?: string; enableVoiceover?: boolean }
   ) => Promise<void>;
   stitchSceneAnimations: () => Promise<void>;
   checkPendingStoryboardVideo: () => Promise<void>;
@@ -730,6 +738,8 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
   },
 
   deleteScene: (id) => {
+    const target = get().scenes.find((scene) => scene.id === id);
+    if (target && isBookendScene(target)) return;
     get().pushHistory();
     set((s) => {
       const next = renumberScenes(s.scenes.filter((scene) => scene.id !== id));
@@ -958,6 +968,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
           imageModel: resolveStoryboardImageModel(get().imagePrimaryModel),
           aspectRatio: get().imageAspectRatio,
           inputReferences: settings.inputReferences ?? [],
+          sceneRole: current.sceneRole,
         }),
       });
       const data = await res.json();
@@ -1047,12 +1058,26 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
     } = get();
 
     const storageFolder = storageFolderId(conversationId, storyboardProjectId);
-    const totalScenes = get().scenes.length;
+    const allScenes = get().scenes;
+    const storyScenes = getStoryScenes(allScenes);
+    const totalScenes = storyScenes.length;
+    const firstStorySceneId = storyScenes[0]?.id;
+    const lastStorySceneId = storyScenes[storyScenes.length - 1]?.id;
+    const hasClosingBookend = allScenes.some(
+      (s) => s.sceneRole === "bookend-close"
+    );
+    const hasOpeningBookend = allScenes.some(
+      (s) => s.sceneRole === "bookend-open"
+    );
     const aspect =
       options?.videoAspectRatio?.trim() ||
       videoAspectRatio ||
       settings.videoAspectRatio ||
       imageAspectRatio;
+    const effectiveSceneSettings: typeof settings =
+      options?.enableVoiceover !== undefined
+        ? { ...settings, enableVoiceover: options.enableVoiceover }
+        : settings;
 
     set({ error: null });
 
@@ -1084,9 +1109,13 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
             sceneId: scene.id,
             scene,
             script,
-            settings,
+            settings: effectiveSceneSettings,
             continuity,
             totalScenes,
+            isFirstStoryScene: scene.id === firstStorySceneId,
+            isLastStoryScene: scene.id === lastStorySceneId,
+            hasClosingBookend,
+            hasOpeningBookend,
             storageConversationId: storageFolder,
             projectId: storyboardProjectId,
             videoPrimaryModel,
@@ -1179,6 +1208,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
       error: null,
     });
 
+    const hasBookends = ordered.some((s) => isBookendScene(s));
     const clipUrls = ordered.map((scene) => scene.sceneVideoUrl as string);
     const clipStoragePaths = ordered.map((scene) => scene.sceneVideoStoragePath);
     const totalDurationSec = ordered.reduce(
@@ -1200,6 +1230,8 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
           clipStoragePaths,
           totalDurationSec,
           outputKind: "scene-stitch",
+          enableCinematicFade: get().settings.enableCinematicFade !== false,
+          hasBookendClips: hasBookends,
         }),
       });
       const stitchData = await readJsonResponse<{
@@ -1312,6 +1344,11 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
       options?.videoAspectRatio?.trim() ||
       settings.videoAspectRatio ||
       videoAspectRatio;
+    // enableVoiceover option overrides setting; both default to true
+    const effectiveSettings: typeof settings =
+      options?.enableVoiceover !== undefined
+        ? { ...settings, enableVoiceover: options.enableVoiceover }
+        : settings;
     if (get().isAnyVideoGenerating() || isGeneratingFrames) return;
 
     if (
@@ -1339,8 +1376,14 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
     const ordered = [...scenes].sort((a, b) => a.sceneNumber - b.sceneNumber);
     const missing = ordered.filter((s) => !s.frameImageUrl?.trim());
     if (missing.length) {
+      const label =
+        missing[0].sceneRole === "bookend-open"
+          ? "Opening"
+          : missing[0].sceneRole === "bookend-close"
+            ? "Closing"
+            : `Scene ${missing[0].sceneNumber}`;
       set({
-        error: `Generate all frame images first (missing scene ${missing[0].sceneNumber}).`,
+        error: `Generate all frame images first (missing ${label}).`,
       });
       return;
     }
@@ -1433,7 +1476,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
             storageConversationId: storageFolder,
             scenes: batch,
             script,
-            settings,
+            settings: effectiveSettings,
             continuity,
             videoDurationSec: batchDuration,
             videoPrimaryModel,
@@ -1509,6 +1552,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
             totalDurationSec: finalDuration,
             outputKind: "full",
             genre: settings.genre,
+            enableCinematicFade: settings.enableCinematicFade !== false,
           }),
         });
         const stitchData = await readJsonResponse<{
@@ -1628,20 +1672,31 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
 
   generateAllFrames: async (onlyMissing = false) => {
     const allScenes = get().scenes;
-    const scenes = onlyMissing
-      ? allScenes.filter(
-          (s) => !s.frameImageUrl || s.frameStatus === "pending" || s.frameStatus === "error"
-        )
-      : allScenes;
-    if (!scenes.length) {
-      if (!onlyMissing) return;
-      await enterStep4();
-      return;
-    }
-    const ordered = [...scenes]
-      .filter((s) => s.frameStatus !== "generating")
-      .sort((a, b) => a.sceneNumber - b.sceneNumber);
+    const needsFrame = (s: StoryboardScene) =>
+      !s.frameImageUrl || s.frameStatus === "pending" || s.frameStatus === "error";
+
+    const storyScenes = getStoryScenes(allScenes);
+    const openingBookend = allScenes.find((s) => s.sceneRole === "bookend-open");
+    const closingBookend = allScenes.find((s) => s.sceneRole === "bookend-close");
+
+    const storyQueue = onlyMissing
+      ? storyScenes.filter(needsFrame)
+      : storyScenes.filter((s) => s.frameStatus !== "generating");
+    const openingQueue =
+      openingBookend &&
+      (onlyMissing ? needsFrame(openingBookend) : openingBookend.frameStatus !== "generating")
+        ? [openingBookend]
+        : [];
+    const closingQueue =
+      closingBookend &&
+      (onlyMissing ? needsFrame(closingBookend) : closingBookend.frameStatus !== "generating")
+        ? [closingBookend]
+        : [];
+
+    // Story frames first — bookends reference the first/last story frame for world consistency.
+    const ordered = [...storyQueue, ...openingQueue, ...closingQueue];
     if (!ordered.length) {
+      if (!onlyMissing) return;
       await enterStep4();
       return;
     }
@@ -1705,16 +1760,19 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
         }
       }
 
+      const loadedSettings = {
+        ...DEFAULT_SETTINGS,
+        ...loaded.settings,
+        frameCount: normalizeFrameCount(loaded.settings.frameCount),
+        frameStyle: normalizeFrameStyle(loaded.settings.frameStyle),
+      };
+      scenes = ensureBookendScenes(scenes, loadedSettings, loaded.script);
+
       set({
         conversationId: loaded.conversationId,
         wizardLocked: loaded.wizardLocked,
         script: loaded.script,
-        settings: {
-          ...DEFAULT_SETTINGS,
-          ...loaded.settings,
-          frameCount: normalizeFrameCount(loaded.settings.frameCount),
-          frameStyle: normalizeFrameStyle(loaded.settings.frameStyle),
-        },
+        settings: loadedSettings,
         continuity: loaded.continuity,
         scenes,
         imagePrimaryModel: resolveStoryboardImageModel(

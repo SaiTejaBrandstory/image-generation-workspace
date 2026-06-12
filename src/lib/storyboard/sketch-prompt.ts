@@ -9,6 +9,7 @@ import type {
   StoryboardContinuity,
   StoryboardFrameStyle,
   StoryboardGenre,
+  StoryboardScene,
 } from "@/types/storyboard";
 
 /** Strip labels that models often render as visible text in the image. */
@@ -45,6 +46,7 @@ export interface StoryboardSketchSceneInput {
   referenceImages?: Array<{ url: string; label: string }>;
   /** User-defined names/roles for uploaded reference images. */
   inputReferencePromptBlock?: string;
+  sceneRole?: StoryboardScene["sceneRole"];
   aspectRatio?: AspectRatio;
 }
 
@@ -121,6 +123,7 @@ export function buildStoryboardSketchPrompt(
         hasReferenceExclusions
           ? "Match character faces, product design, and environment layout from the references — but honor REFERENCE EXCLUSIONS: never depict excluded photo artifacts (tags, hangers, clutter, etc.)."
           : "Copy the EXACT same character faces, skin tone, hair, age, body type, clothing, accessories, products, and setting details from the references.",
+        "COLOR & BRAND LOCK: every garment and product from a reference keeps its EXACT reference color — same hue and tone in every frame, regardless of scene lighting. Logos and graphics stay pixel-faithful: never remove, redraw, or replace a logo, and NEVER print text, slogans, or new graphics on clothing or products.",
         `Preserve the same ${styleConfig.referenceHint} across every frame.`,
         "Do NOT redesign, recast, or age-shift any character. Only change camera angle, framing, pose, and action for this new shot.",
       ].join(" ")
@@ -137,9 +140,27 @@ export function buildStoryboardSketchPrompt(
       ? `${UNIVERSAL_NEGATIVE_CONSTRAINTS} ${SKETCH_NEGATIVE_EXTRA}`
       : UNIVERSAL_NEGATIVE_CONSTRAINTS;
 
+  const bookendNote =
+    scene.sceneRole === "bookend-open"
+      ? [
+          "OPENING INTRO FRAME — cinematic lead-in before Scene 1.",
+          "Compose a script-appropriate intro that flows into the story — same world, characters, and style, distinct framing from Scene 1.",
+          "Choose what fits: long shot, environmental establishing, product tease, character arrival, etc.",
+          "FULL BRIGHTNESS — normal exposure. NO black frame, NO dark vignette, NO fade-to-black look. Fades are video post only.",
+        ].join(" ")
+      : scene.sceneRole === "bookend-close"
+        ? [
+            "CLOSING OUTRO FRAME — cinematic lead-out after the final scene.",
+            "Compose a script-appropriate resolution — same world, distinct from the final scene (not a duplicate).",
+            "Choose what fits: wider pullback, product hero, environmental exhale, departure beat, etc.",
+            "FULL BRIGHTNESS — normal exposure. NO black frame, NO dark vignette, NO fade-to-black look. Fades are video post only.",
+          ].join(" ")
+        : "";
+
   return [
     continuityBlock,
     scene.inputReferencePromptBlock,
+    bookendNote,
     referenceNote,
     styleConfig.promptBlock,
     negativeConstraints,

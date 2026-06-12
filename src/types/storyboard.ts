@@ -37,6 +37,9 @@ export type SceneEmotion =
 
 export type FrameStatus = "pending" | "generating" | "complete" | "error";
 
+/** Extra smooth open/close holds — not counted in settings.frameCount. */
+export type StoryboardSceneRole = "bookend-open" | "bookend-close";
+
 export type StoryboardFrameCount = 4 | 6 | 8 | 10 | 12 | 15 | 18 | 21;
 
 import type { AspectRatio } from "@/types";
@@ -95,6 +98,18 @@ export interface StoryboardProjectSettings {
   videoAspectRatio?: string;
   videoPrimaryModel?: string;
   videoFallbackModel?: string | null;
+  /**
+   * Include voiceover narration in the generated video.
+   * When false the video prompt strips all VO lines; the model generates
+   * ambient music only. Defaults to true.
+   */
+  enableVoiceover?: boolean;
+  /**
+   * Prepend + append a short held-black period around the final video.
+   * Applied as a post-process FFmpeg step — does NOT add scene frames.
+   * Defaults to true.
+   */
+  enableCinematicFade?: boolean;
   /** Server-side backup of scene rows — used to recover after failed saves. */
   scenesSnapshot?: StoryboardScene[];
 }
@@ -109,6 +124,8 @@ export interface StoryboardContinuity {
 
 export interface StoryboardScene {
   id: string;
+  /** Opening/closing ease holds — always first and last in the scene list. */
+  sceneRole?: StoryboardSceneRole;
   sceneNumber: number;
   durationSec: number;
   voiceover: string;

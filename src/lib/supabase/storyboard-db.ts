@@ -59,6 +59,7 @@ export interface DbStoryboardSceneRow {
   scene_video_status: StoryboardScene["sceneVideoStatus"] | null;
   scene_video_error: string | null;
   scene_video_model: string | null;
+  scene_role: StoryboardScene["sceneRole"] | null;
   sort_index: number;
 }
 
@@ -139,6 +140,7 @@ function sceneToRow(
     scene_video_status: scene.sceneVideoStatus ?? null,
     scene_video_error: scene.sceneVideoError ?? null,
     scene_video_model: scene.sceneVideoModel ?? null,
+    scene_role: scene.sceneRole ?? null,
     sort_index: index,
   };
 }
@@ -158,6 +160,7 @@ async function mapSceneRow(row: DbStoryboardSceneRow): Promise<StoryboardScene> 
 
   return {
     id: row.id,
+    sceneRole: row.scene_role ?? undefined,
     sceneNumber: row.scene_number,
     durationSec: row.duration_sec,
     voiceover: row.voiceover,
@@ -236,14 +239,8 @@ export async function persistStoryboard(
     sceneToRow(scene, conversationId!, userId, index)
   );
 
-  // Upsert first — never delete scenes before a successful write (avoids wiping on insert errors).
-  if (sceneRows.length) {
-    const { error: scenesError } = await supabase
-      .from("storyboard_scenes")
-      .upsert(sceneRows, { onConflict: "id" });
-    if (scenesError) throw new Error(scenesError.message);
-  }
-
+  // Remove stale rows first so renumbered scenes (e.g. new bookend ids) do not hit
+  // unique (conversation_id, scene_number) when upserting by primary key id.
   const payloadSceneIds = new Set(payload.scenes.map((scene) => scene.id));
   const { data: existingScenes } = await supabase
     .from("storyboard_scenes")
@@ -261,6 +258,13 @@ export async function persistStoryboard(
       .delete()
       .in("id", orphanSceneIds);
     if (deleteError) throw new Error(deleteError.message);
+  }
+
+  if (sceneRows.length) {
+    const { error: scenesError } = await supabase
+      .from("storyboard_scenes")
+      .upsert(sceneRows, { onConflict: "id" });
+    if (scenesError) throw new Error(scenesError.message);
   }
 
   const { data: existingOutputs } = await supabase

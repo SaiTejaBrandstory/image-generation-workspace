@@ -6,10 +6,12 @@ import {
 import type {
   StoryboardFrameStyle,
   StoryboardInputReference,
+  StoryboardSceneRole,
 } from "@/types/storyboard";
 
 export function buildStoryboardFrameReferenceImages(options: {
   sceneNumber: number;
+  sceneRole?: StoryboardSceneRole;
   frameStyle?: StoryboardFrameStyle;
   inputRefs: Array<{
     kind: StoryboardInputReference["kind"];
@@ -44,8 +46,14 @@ export function buildStoryboardFrameReferenceImages(options: {
       continue;
     }
 
-    const label =
-      generatedIndex === 0
+    const isBookend =
+      options.sceneRole === "bookend-open" ||
+      options.sceneRole === "bookend-close";
+    const label = isBookend && options.sceneRole === "bookend-open"
+      ? `SCENE 1 REFERENCE — same story world. Generate a DISTINCT opening intro composition that flows into this scene. Match exact faces, wardrobe, products, color palette, and ${styleHint}. Full brightness, no vignette. Do NOT copy this exact framing:`
+      : isBookend && options.sceneRole === "bookend-close"
+        ? `FINAL SCENE REFERENCE — same story world. Generate a DISTINCT closing outro composition — NOT a duplicate of this shot. Match exact faces, wardrobe, products, color palette, and ${styleHint}. Full brightness, no vignette:`
+        : generatedIndex === 0
         ? `SCENE 1 ANCHOR — locked character design. Match these exact faces, costumes, props, and ${styleHint}:`
         : "PREVIOUS SHOT — continue from this frame; keep the same characters and visual style:";
     images.push({ url: slot.url, label });

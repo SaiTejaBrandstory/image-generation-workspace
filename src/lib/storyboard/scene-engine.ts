@@ -109,9 +109,33 @@ export function createEmptyScene(sceneNumber: number): StoryboardScene {
   };
 }
 
+/** Opening bookend sorts first; story scenes use 1…N; closing bookend sorts last. */
+export const STORYBOARD_OPENING_BOOKEND_SCENE_NUMBER = 0;
+export const STORYBOARD_CLOSING_BOOKEND_SCENE_NUMBER = 9999;
+
+function isBookendRole(role: StoryboardScene["sceneRole"]): boolean {
+  return role === "bookend-open" || role === "bookend-close";
+}
+
 export function renumberScenes(scenes: StoryboardScene[]): StoryboardScene[] {
-  return scenes.map((scene, index) => ({
-    ...scene,
-    sceneNumber: index + 1,
-  }));
+  const hasBookends = scenes.some((s) => isBookendRole(s.sceneRole));
+
+  if (!hasBookends) {
+    return scenes.map((scene, index) => ({
+      ...scene,
+      sceneNumber: index + 1,
+    }));
+  }
+
+  let storyNum = 0;
+  return scenes.map((scene) => {
+    if (scene.sceneRole === "bookend-open") {
+      return { ...scene, sceneNumber: STORYBOARD_OPENING_BOOKEND_SCENE_NUMBER };
+    }
+    if (scene.sceneRole === "bookend-close") {
+      return { ...scene, sceneNumber: STORYBOARD_CLOSING_BOOKEND_SCENE_NUMBER };
+    }
+    storyNum += 1;
+    return { ...scene, sceneNumber: storyNum };
+  });
 }

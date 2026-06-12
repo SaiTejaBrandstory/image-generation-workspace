@@ -16,7 +16,11 @@ import {
   supportsFrameImages,
 } from "@/lib/openrouter-video-models";
 import { buildStoryboardFullVideoPrompt } from "@/lib/storyboard/storyboard-video-prompt";
-import { extractLastFrameFromMp4 } from "@/lib/storyboard/stitch-videos";
+import {
+  applyCinematicBookendFadesToMp4,
+  extractLastFrameFromMp4,
+  padVideoWithBlackLeader,
+} from "@/lib/storyboard/stitch-videos";
 import {
   buildStoryboardSegmentReferences,
   describeStoryboardSegmentReferences,
@@ -283,7 +287,21 @@ export async function POST(request: NextRequest) {
       ? `seg-${body.batch.index + 1}of${body.batch.total}`
       : "full";
     const isSingleGeneration = !body.batch || body.batch.total === 1;
-    const outputBuffer = result.videoBuffer;
+    let outputBuffer = result.videoBuffer;
+
+    const wantFade =
+      isSingleGeneration && body.settings?.enableCinematicFade !== false;
+    if (wantFade) {
+      try {
+        outputBuffer = await applyCinematicBookendFadesToMp4(outputBuffer);
+        outputBuffer = await padVideoWithBlackLeader(outputBuffer);
+      } catch (fadeErr) {
+        console.warn(
+          "[storyboard/generate-video] Bookend fades skipped",
+          fadeErr instanceof Error ? fadeErr.message : fadeErr
+        );
+      }
+    }
 
     const uploaded = await uploadGenerationVideoBuffer({
       userId: user.id,

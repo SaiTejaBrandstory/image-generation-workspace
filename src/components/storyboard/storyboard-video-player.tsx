@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { Download, Loader2, Pause, Play, RefreshCw } from "lucide-react";
+import { Download, Loader2, Pause, Play, RefreshCw, VolumeX } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { downloadVideo } from "@/lib/download-utils";
 import { storyboardVideoAspectRatioCss } from "@/lib/storyboard/storyboard-video";
@@ -53,6 +53,7 @@ export function StoryboardVideoPlayer({
   const videoRef = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [downloadingMuted, setDownloadingMuted] = useState(false);
 
   const aspectCss = storyboardVideoAspectRatioCss(aspectRatio);
   const isPortrait =
@@ -88,6 +89,37 @@ export function StoryboardVideoPlayer({
       window.alert("Could not download the video. Try again in a moment.");
     } finally {
       setDownloading(false);
+    }
+  };
+
+  const handleDownloadMuted = async () => {
+    if (!videoUrl || downloadingMuted) return;
+    setDownloadingMuted(true);
+    try {
+      const mutedFilename = downloadFilename.replace(/\.mp4$/i, "-no-audio.mp4");
+      const res = await fetch("/api/storyboard/strip-audio", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videoUrl, filename: mutedFilename }),
+      });
+      if (!res.ok) {
+        const data = (await res.json()) as { error?: string };
+        throw new Error(data.error ?? "Failed to strip audio");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = mutedFilename;
+      anchor.rel = "noopener";
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(url);
+    } catch {
+      window.alert("Could not download the muted video. Try again in a moment.");
+    } finally {
+      setDownloadingMuted(false);
     }
   };
 
@@ -211,6 +243,20 @@ export function StoryboardVideoPlayer({
               <Download className="h-4 w-4" />
             )}
             {downloading ? "Downloading…" : "Download video"}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void handleDownloadMuted()}
+            disabled={downloadingMuted}
+            title="Download this video with all audio tracks removed"
+          >
+            {downloadingMuted ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <VolumeX className="h-4 w-4" />
+            )}
+            {downloadingMuted ? "Removing audio…" : "Download without sound"}
           </Button>
           {onRegenerate ? (
             <Button

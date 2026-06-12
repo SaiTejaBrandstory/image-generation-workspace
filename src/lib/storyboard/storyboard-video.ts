@@ -1,3 +1,4 @@
+import { STORYBOARD_BOOKEND_DURATION_SEC } from "@/lib/storyboard/bookend-scenes";
 import { MAX_REFERENCES_VIDEO } from "@/lib/reference-limits";
 import {
   clampVideoSettingsToModel,
@@ -380,8 +381,15 @@ export async function buildStoryboardClipReferences(
 export function pickStoryboardClipDuration(
   sceneDurationSec: number,
   modelId = STORYBOARD_VIDEO_MODEL,
-  voiceover?: string
+  voiceover?: string,
+  sceneRole?: StoryboardScene["sceneRole"]
 ): number {
+  if (sceneRole === "bookend-open" || sceneRole === "bookend-close") {
+    return pickStoryboardVideoDuration(
+      STORYBOARD_BOOKEND_DURATION_SEC,
+      modelId
+    );
+  }
   const fromVoice = voiceover?.trim()
     ? minDurationSecForVoiceover(voiceover)
     : 0;
@@ -462,7 +470,12 @@ export function estimateStoryboardSceneClipsDuration(
   return scenes.reduce(
     (sum, scene) =>
       sum +
-      pickStoryboardClipDuration(scene.durationSec, modelId, scene.voiceover),
+      pickStoryboardClipDuration(
+        scene.durationSec,
+        modelId,
+        scene.voiceover,
+        scene.sceneRole
+      ),
     0
   );
 }
@@ -478,8 +491,12 @@ export function estimateStoryboardSceneClipsCost(
   return scenes.reduce(
     (sum, scene) =>
       sum +
-      pickStoryboardClipDuration(scene.durationSec, modelId, scene.voiceover) *
-        rate,
+      pickStoryboardClipDuration(
+        scene.durationSec,
+        modelId,
+        scene.voiceover,
+        scene.sceneRole
+      ) * rate,
     0
   );
 }

@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
+  applyCinematicBookendFadesToMp4,
   concatMp4Buffers,
   concatMp4BuffersFastWithAudio,
   formatStitchVideoErrorForUser,
+  padVideoWithBlackLeader,
   probeMp4DurationSec,
 } from "@/lib/storyboard/stitch-videos";
 import { runWithConcurrency } from "@/lib/reference-utils";
@@ -31,6 +33,10 @@ interface StitchVideoBody {
   genre?: StoryboardGenre;
   /** full = storyboard video segments; scene-stitch = scene animation clips */
   outputKind?: "full" | "stitched" | "scene-stitch";
+  /** Prepend + append held-black padding around the final video (default true for "full"). */
+  enableCinematicFade?: boolean;
+  /** When true, bookend clips get per-clip fades at generation — skip stitch fade to avoid doubling. */
+  hasBookendClips?: boolean;
 }
 
 export async function POST(request: NextRequest) {
@@ -81,6 +87,25 @@ export async function POST(request: NextRequest) {
       stitched = await concatMp4BuffersFastWithAudio(buffers);
     } else {
       stitched = await concatMp4Buffers(buffers);
+    }
+
+    const wantFade =
+      body.enableCinematicFade !== false &&
+      (body.outputKind === "full" ||
+        (body.outputKind === "scene-stitch" && !body.hasBookendClips));
+    if (wantFade) {
+      try {
+        stitched = await applyCinematicBookendFadesToMp4(stitched);
+        // Pad with held-black AFTER the fade — first/last frames are now black
+        // so tpad clone gives a genuine silent-dark leader/trailer.
+        stitched = await padVideoWithBlackLeader(stitched);
+        console.info("[storyboard/stitch-video] Applied cinematic fade + black leader/trailer");
+      } catch (fadeErr) {
+        console.warn(
+          "[storyboard/stitch-video] Bookend fades skipped",
+          fadeErr instanceof Error ? fadeErr.message : fadeErr
+        );
+      }
     }
 
     const durationSec =

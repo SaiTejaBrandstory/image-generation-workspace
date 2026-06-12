@@ -16,8 +16,16 @@ import {
 } from "@/lib/openrouter-video-models";
 import { buildStoryboardClipPrompt } from "@/lib/storyboard/storyboard-video-prompt";
 import {
+  isClosingBookend,
+  isOpeningBookend,
+} from "@/lib/storyboard/bookend-scenes";
+import {
+  applyCinematicFadesToMp4,
+  padVideoWithBlackLeader,
   probeMp4DurationFloat,
   probeMp4DurationSec,
+  STORYBOARD_BLACK_LEADER_SEC,
+  STORYBOARD_BLACK_TRAILER_SEC,
 } from "@/lib/storyboard/stitch-videos";
 import {
   buildStoryboardClipReferences,
@@ -48,6 +56,14 @@ interface GenerateSceneVideoBody {
   settings: StoryboardProjectSettings;
   continuity?: StoryboardContinuity | null;
   totalScenes: number;
+  /** True when this is the first story scene — clip should open with a fade from black. */
+  isFirstStoryScene?: boolean;
+  /** True when this is the last story scene — clip should end with a hero hold then fade to black. */
+  isLastStoryScene?: boolean;
+  /** True when a closing bookend follows — last story scene should not fade to black. */
+  hasClosingBookend?: boolean;
+  /** True when an opening bookend precedes — first story scene should not fade from black. */
+  hasOpeningBookend?: boolean;
   storageConversationId?: string;
   projectId?: string;
   videoPrimaryModel?: string;
@@ -144,7 +160,8 @@ export async function POST(request: NextRequest) {
       duration: pickStoryboardClipDuration(
         scene.durationSec,
         modelChain[0]!,
-        scene.voiceover
+        scene.voiceover,
+        scene.sceneRole
       ),
       resolution: DEFAULT_VIDEO_RESOLUTION,
       aspectRatio: resolveStoryboardVideoAspectRatio(modelChain[0]!, aspectOptions),
@@ -163,7 +180,8 @@ export async function POST(request: NextRequest) {
         duration: pickStoryboardClipDuration(
           scene.durationSec,
           model,
-          scene.voiceover
+          scene.voiceover,
+          scene.sceneRole
         ),
         resolution: DEFAULT_VIDEO_RESOLUTION,
         aspectRatio: resolveStoryboardVideoAspectRatio(model, aspectOptions),
@@ -179,6 +197,10 @@ export async function POST(request: NextRequest) {
         totalScenes,
         hasEndFrame: false,
         videoDurationSec: videoSettings.duration,
+        isFirstStoryScene: body.isFirstStoryScene ?? false,
+        isLastStoryScene: body.isLastStoryScene ?? false,
+        hasClosingBookend: body.hasClosingBookend ?? false,
+        hasOpeningBookend: body.hasOpeningBookend ?? false,
       });
 
       if (videoSettings.duration !== scene.durationSec) {
@@ -227,7 +249,45 @@ export async function POST(request: NextRequest) {
       throw lastError ?? new Error("Scene video generation failed");
     }
 
-    const outputBuffer = result.videoBuffer;
+    let outputBuffer = result.videoBuffer;
+
+    const wantCinematicFade = body.settings?.enableCinematicFade !== false;
+    if (wantCinematicFade && isOpeningBookend(scene)) {
+      try {
+        outputBuffer = await applyCinematicFadesToMp4(outputBuffer, {
+          fadeIn: true,
+          fadeOut: false,
+        });
+        outputBuffer = await padVideoWithBlackLeader(
+          outputBuffer,
+          STORYBOARD_BLACK_LEADER_SEC,
+          0
+        );
+      } catch (fadeErr) {
+        console.warn(
+          "[storyboard/generate-scene-video] Opening bookend fade skipped",
+          fadeErr instanceof Error ? fadeErr.message : fadeErr
+        );
+      }
+    } else if (wantCinematicFade && isClosingBookend(scene)) {
+      try {
+        outputBuffer = await applyCinematicFadesToMp4(outputBuffer, {
+          fadeIn: false,
+          fadeOut: true,
+        });
+        outputBuffer = await padVideoWithBlackLeader(
+          outputBuffer,
+          0,
+          STORYBOARD_BLACK_TRAILER_SEC
+        );
+      } catch (fadeErr) {
+        console.warn(
+          "[storyboard/generate-scene-video] Closing bookend fade skipped",
+          fadeErr instanceof Error ? fadeErr.message : fadeErr
+        );
+      }
+    }
+
     const [probedDuration, probedDurationSec] = await Promise.all([
       probeMp4DurationFloat(outputBuffer),
       probeMp4DurationSec(outputBuffer),

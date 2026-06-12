@@ -15,6 +15,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { StoryboardImageModelDialog } from "@/components/storyboard/storyboard-image-model-dialog";
 import { StoryboardSceneEditForm } from "@/components/storyboard/storyboard-scene-edit-form";
+import {
+  formatStoryboardSceneLabel,
+  isBookendScene,
+} from "@/lib/storyboard/bookend-scenes";
 import { useStoryboardStore } from "@/store/storyboard-store";
 import { cn } from "@/lib/utils";
 
@@ -106,10 +110,12 @@ export function StepSceneBreakdown() {
               )}
             >
               <p className="text-xs font-semibold text-accent-orange">
-                Scene {String(scene.sceneNumber).padStart(2, "0")}
+                {formatStoryboardSceneLabel(scene, scenes)}
               </p>
               <p className="mt-0.5 line-clamp-2 text-[11px] text-foreground-muted">
-                {scene.voiceover || "Empty scene"}
+                {scene.voiceover ||
+                  scene.visualDescription?.slice(0, 80) ||
+                  "Empty scene"}
               </p>
               <p className="mt-1 text-[10px] tabular-nums text-foreground-muted">
                 {scene.durationSec}s · {scene.cameraDirection}
@@ -122,12 +128,13 @@ export function StepSceneBreakdown() {
           <div className="min-h-0 overflow-y-auto rounded-lg border border-border bg-surface-elevated p-5">
             <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-lg font-semibold">
-                Scene {String(selected.sceneNumber).padStart(2, "0")}
+                {formatStoryboardSceneLabel(selected, scenes)}
               </h2>
               <div className="flex flex-wrap gap-1">
                 <Button
                   variant="ghost"
                   size="sm"
+                  disabled={isBookendScene(selected)}
                   onClick={() => moveScene(selected.id, -1)}
                 >
                   <ChevronUp className="h-4 w-4" />
@@ -136,6 +143,7 @@ export function StepSceneBreakdown() {
                 <Button
                   variant="ghost"
                   size="sm"
+                  disabled={isBookendScene(selected)}
                   onClick={() => moveScene(selected.id, 1)}
                 >
                   <ChevronDown className="h-4 w-4" />
@@ -144,6 +152,7 @@ export function StepSceneBreakdown() {
                 <Button
                   variant="ghost"
                   size="sm"
+                  disabled={isBookendScene(selected)}
                   onClick={() => duplicateScene(selected.id)}
                 >
                   <Copy className="h-4 w-4" />
@@ -152,6 +161,7 @@ export function StepSceneBreakdown() {
                 <Button
                   variant="cancel"
                   size="sm"
+                  disabled={isBookendScene(selected)}
                   onClick={() => deleteScene(selected.id)}
                 >
                   <Trash2 className="h-4 w-4" />

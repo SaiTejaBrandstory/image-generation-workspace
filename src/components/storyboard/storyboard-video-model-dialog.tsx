@@ -8,7 +8,7 @@ import {
   type ReactNode,
   type Ref,
 } from "react";
-import { Check, Clock, Film, Loader2 } from "lucide-react";
+import { Check, Clock, Film, Loader2, Mic, MicOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -64,7 +64,14 @@ interface StoryboardVideoModelDialogProps {
   /** Persisted from DB — may be missing on older storyboards. */
   settingsFrameAspectRatio?: AspectRatio;
   scenes: StoryboardScene[];
-  onConfirm: (primary: string, fallback: string, aspectRatio: string) => void;
+  /** Whether to include voiceover narration in the video (default true). */
+  enableVoiceover?: boolean;
+  onConfirm: (
+    primary: string,
+    fallback: string,
+    aspectRatio: string,
+    enableVoiceover: boolean
+  ) => void;
   onCancel: () => void;
 }
 
@@ -222,6 +229,7 @@ export function StoryboardVideoModelDialog({
   frameAspectRatio,
   settingsFrameAspectRatio,
   scenes,
+  enableVoiceover: enableVoiceoverProp = true,
   onConfirm,
   onCancel,
 }: StoryboardVideoModelDialogProps) {
@@ -232,6 +240,7 @@ export function StoryboardVideoModelDialog({
   const [primary, setPrimary] = useState(primaryModel);
   const [fallback, setFallback] = useState(fallbackModel);
   const [aspectRatio, setAspectRatio] = useState(videoAspectRatio);
+  const [voiceoverEnabled, setVoiceoverEnabled] = useState(enableVoiceoverProp);
   const [inferredFrameAspect, setInferredFrameAspect] =
     useState<AspectRatio | null>(null);
   const primarySelectedRef = useRef<HTMLButtonElement>(null);
@@ -272,6 +281,7 @@ export function StoryboardVideoModelDialog({
     if (!open) return;
     setPrimary(primaryModel);
     setFallback(fallbackModel);
+    setVoiceoverEnabled(enableVoiceoverProp);
     const modelRatios = storyboardVideoAspectRatiosForModel(primaryModel);
     setAspectRatio(
       modelRatios.includes(videoAspectRatio)
@@ -305,6 +315,7 @@ export function StoryboardVideoModelDialog({
     fallbackModel,
     videoAspectRatio,
     effectiveFrameAspect,
+    enableVoiceoverProp,
   ]);
 
   const sorted = useMemo(() => {
@@ -392,7 +403,7 @@ export function StoryboardVideoModelDialog({
 
   const handleConfirm = () => {
     if (!canConfirm) return;
-    onConfirm(primaryId, fallbackId, resolvedAspect);
+    onConfirm(primaryId, fallbackId, resolvedAspect, voiceoverEnabled);
   };
 
   const primaryOptions = sorted;
@@ -493,6 +504,51 @@ export function StoryboardVideoModelDialog({
                   ))}
                 </div>
               </ModelSection>
+
+              <div className="border-t border-border/50 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setVoiceoverEnabled((v) => !v)}
+                    className={cn(
+                      "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-all",
+                      "ring-1 ring-inset",
+                      voiceoverEnabled
+                        ? "bg-accent-cyan/8 ring-accent-cyan/40 shadow-sm"
+                        : "bg-surface-elevated ring-foreground/8 hover:bg-surface-hover hover:ring-foreground/12"
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "flex h-4 w-4 shrink-0 items-center justify-center rounded-full border transition-colors",
+                        voiceoverEnabled
+                          ? "border-accent-cyan bg-accent-cyan text-white"
+                          : "border-border/80 bg-surface"
+                      )}
+                    >
+                      {voiceoverEnabled ? (
+                        <Check className="h-2.5 w-2.5" strokeWidth={3} />
+                      ) : null}
+                    </span>
+                    <span className="flex min-w-0 flex-1 items-center gap-2 truncate">
+                      {voiceoverEnabled ? (
+                        <Mic className="h-3.5 w-3.5 shrink-0 text-accent-cyan" />
+                      ) : (
+                        <MicOff className="h-3.5 w-3.5 shrink-0 text-foreground-muted" />
+                      )}
+                      <span className="text-sm font-medium text-foreground">
+                        Voiceover narration
+                      </span>
+                    </span>
+                    <span className="text-[10px] text-foreground-muted">
+                      {voiceoverEnabled ? "on" : "off"}
+                    </span>
+                  </button>
+                  <p className="mt-1.5 px-1 text-[11px] leading-snug text-foreground-muted">
+                    {voiceoverEnabled
+                      ? "Narrator reads each scene's voiceover line over soft background music."
+                      : "Background music only — no spoken narration."}
+                  </p>
+                </div>
 
               <div className="space-y-2 border-t border-border/50 pt-2">
                 <h3 className="px-0.5 text-xs font-semibold text-foreground">

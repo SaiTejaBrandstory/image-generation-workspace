@@ -10,6 +10,7 @@ import {
   Palette,
   Settings2,
   Sparkles,
+  Sunset,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -281,6 +282,48 @@ export function StepProjectConfig() {
           </p>
         </ConfigCard>
       </div>
+
+      <ConfigCard
+        title="Cinematic fades"
+        description="Adds a held-black leader before the opening scene and a trailer after the closing scene — treated as editing transitions, not storyboard frames."
+        icon={Sunset}
+      >
+        <button
+          type="button"
+          onClick={() =>
+            patchSettings({
+              enableCinematicFade: settings.enableCinematicFade === false ? true : false,
+            })
+          }
+          style={{ cursor: "pointer" }}
+          className={cn(
+            "flex w-full items-start gap-3 rounded-md border p-3.5 text-left transition-all",
+            settings.enableCinematicFade !== false
+              ? "border-accent-orange/45 bg-accent-orange/10 ring-1 ring-inset ring-accent-orange/25"
+              : "border-border bg-background hover:border-accent-orange/25"
+          )}
+        >
+          <span
+            className={cn(
+              "mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full transition-colors",
+              settings.enableCinematicFade !== false
+                ? "bg-accent-orange text-white"
+                : "border border-border bg-background"
+            )}
+          >
+            {settings.enableCinematicFade !== false && (
+              <Check className="h-3 w-3" strokeWidth={3} />
+            )}
+          </span>
+          <div>
+            <p className="text-sm font-medium">Fade in / fade out from black</p>
+            <p className="mt-0.5 text-[11px] leading-snug text-foreground-muted">
+              ~0.4s held black before the opening shot and after the closing shot,
+              with a smooth video fade. No extra scene frames are generated.
+            </p>
+          </div>
+        </button>
+      </ConfigCard>
 
       {error && (
         <p className="rounded-md border border-accent-orange/30 bg-accent-orange/5 px-4 py-3 text-center text-sm text-accent-orange">

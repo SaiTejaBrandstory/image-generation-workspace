@@ -24,22 +24,33 @@ import {
 } from "@/components/ui/dialog";
 import { downloadVideo } from "@/lib/download-utils";
 import { formatStoryboardVideoModelLabel } from "@/lib/openrouter-video-models";
+import { formatStoryboardSceneLabel } from "@/lib/storyboard/bookend-scenes";
 import { storyboardVideoAspectRatioCss } from "@/lib/storyboard/storyboard-video";
 import { useStoryboardStore } from "@/store/storyboard-store";
 import { cn } from "@/lib/utils";
 import type { StoryboardScene } from "@/types/storyboard";
 
+function sceneClipDownloadName(scene: StoryboardScene, allScenes: StoryboardScene[]) {
+  const label = formatStoryboardSceneLabel(scene, allScenes)
+    .toLowerCase()
+    .replace(/\s+/g, "-");
+  return `storyboard-${label}.mp4`;
+}
+
 function SceneVideoPreview({
   scene,
+  allScenes,
   aspectRatio,
   onWatch,
   disabled,
 }: {
   scene: StoryboardScene;
+  allScenes: StoryboardScene[];
   aspectRatio: string;
   onWatch: () => void;
   disabled: boolean;
 }) {
+  const sceneLabel = formatStoryboardSceneLabel(scene, allScenes);
   const aspectCss = storyboardVideoAspectRatioCss(aspectRatio);
   const durationLabel =
     scene.sceneVideoDurationSec != null
@@ -58,7 +69,7 @@ function SceneVideoPreview({
         disabled && "pointer-events-none opacity-60"
       )}
       style={{ aspectRatio: aspectCss, width: "7.5rem" }}
-      aria-label={`Watch scene ${scene.sceneNumber} animation`}
+      aria-label={`Watch ${sceneLabel} animation`}
     >
       {scene.sceneVideoUrl ? (
         <video
@@ -99,6 +110,7 @@ function SceneVideoPreview({
 
 function SceneAnimateRow({
   scene,
+  allScenes,
   aspectRatio,
   selected,
   onToggleSelect,
@@ -108,6 +120,7 @@ function SceneAnimateRow({
   disabled,
 }: {
   scene: StoryboardScene;
+  allScenes: StoryboardScene[];
   aspectRatio: string;
   selected: boolean;
   onToggleSelect: () => void;
@@ -120,6 +133,7 @@ function SceneAnimateRow({
   const isGenerating = scene.sceneVideoStatus === "generating";
   const hasVideo =
     Boolean(scene.sceneVideoUrl) && scene.sceneVideoStatus === "complete";
+  const sceneLabel = formatStoryboardSceneLabel(scene, allScenes);
 
   const handleDownload = async () => {
     if (!scene.sceneVideoUrl || downloading) return;
@@ -127,7 +141,7 @@ function SceneAnimateRow({
     try {
       await downloadVideo(
         scene.sceneVideoUrl,
-        `storyboard-scene-${scene.sceneNumber}.mp4`
+        sceneClipDownloadName(scene, allScenes)
       );
     } catch {
       window.alert("Could not download this clip. Try again in a moment.");
@@ -145,12 +159,13 @@ function SceneAnimateRow({
           checked={selected}
           onChange={onToggleSelect}
           disabled={disabled || isGenerating || !scene.frameImageUrl}
-          aria-label={`Select scene ${scene.sceneNumber}`}
+          aria-label={`Select ${sceneLabel}`}
         />
 
         {hasVideo ? (
           <SceneVideoPreview
             scene={scene}
+            allScenes={allScenes}
             aspectRatio={aspectRatio}
             onWatch={onWatch}
             disabled={disabled}
@@ -161,7 +176,7 @@ function SceneAnimateRow({
               // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={scene.frameImageUrl}
-                alt={`Scene ${scene.sceneNumber} frame`}
+                alt={`${sceneLabel} frame`}
                 className="h-full w-full object-cover opacity-80"
               />
             ) : (
@@ -175,7 +190,7 @@ function SceneAnimateRow({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-xs font-semibold text-accent-orange">
-              Scene {scene.sceneNumber}
+              {sceneLabel}
             </span>
             <span className="text-[11px] text-foreground-muted">
               {hasVideo &&
@@ -392,11 +407,15 @@ export function StoryboardSceneVideos() {
   const handleDialogConfirm = (
     primary: string,
     fallback: string,
-    aspect: string
+    aspect: string,
+    enableVoiceover: boolean
   ) => {
     setDialogOpen(false);
     useStoryboardStore.getState().setStoryboardVideoModels(primary, fallback, aspect);
-    void generateSceneVideos(pendingSceneIds, { videoAspectRatio: aspect });
+    void generateSceneVideos(pendingSceneIds, {
+      videoAspectRatio: aspect,
+      enableVoiceover,
+    });
     setSelectedIds(new Set());
   };
 
@@ -449,6 +468,7 @@ export function StoryboardSceneVideos() {
           <SceneAnimateRow
             key={scene.id}
             scene={scene}
+            allScenes={ordered}
             aspectRatio={aspectRatio}
             selected={selectedIds.has(scene.id)}
             onToggleSelect={() => toggleSelect(scene.id)}
@@ -519,7 +539,11 @@ export function StoryboardSceneVideos() {
         <DialogContent className="max-w-3xl gap-0 overflow-hidden p-0">
           <DialogHeader className="border-b border-border px-5 pb-3 pt-5 pr-12">
             <DialogTitle className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-base">
-              <span>Scene {watchScene?.sceneNumber ?? ""} · animation</span>
+              <span>
+                {watchScene
+                  ? `${formatStoryboardSceneLabel(watchScene, ordered)} · animation`
+                  : "Animation"}
+              </span>
               {watchableScenes.length > 1 ? (
                 <span className="text-xs font-normal tabular-nums text-foreground-muted">
                   ({watchIndex + 1} of {watchableScenes.length})
@@ -589,6 +613,7 @@ export function StoryboardSceneVideos() {
         frameAspectRatio={imageAspectRatio}
         settingsFrameAspectRatio={settings.imageAspectRatio}
         scenes={dialogScenes}
+        enableVoiceover={settings.enableVoiceover !== false}
         onConfirm={handleDialogConfirm}
         onCancel={() => setDialogOpen(false)}
       />

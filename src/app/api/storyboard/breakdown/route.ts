@@ -12,6 +12,10 @@ import {
   padScenesToTarget,
 } from "@/lib/storyboard/scene-expansion";
 import { sanitizeScenes } from "@/lib/storyboard/brief-meta";
+import {
+  injectBookendScenes,
+  parseBookendSceneFields,
+} from "@/lib/storyboard/bookend-scenes";
 import { applyGlobalSceneEnvironment } from "@/lib/storyboard/scene-environment";
 import { storyboardChatCompletion } from "@/lib/storyboard/openrouter-text";
 import { getTargetSceneCount } from "@/lib/storyboard/script-utils";
@@ -53,7 +57,12 @@ function parseContinuity(
 async function breakdownWithLlm(
   script: string,
   settings: StoryboardProjectSettings
-): Promise<{ scenes: StoryboardScene[]; continuity: StoryboardContinuity } | null> {
+): Promise<{
+  scenes: StoryboardScene[];
+  continuity: StoryboardContinuity;
+  openingBookend?: ReturnType<typeof parseBookendSceneFields>;
+  closingBookend?: ReturnType<typeof parseBookendSceneFields>;
+} | null> {
   const apiKey = process.env.OPENROUTER_API_KEY?.trim();
   if (!apiKey) return null;
 
@@ -68,7 +77,7 @@ async function breakdownWithLlm(
     settings.inputReferences ?? []
   );
 
-  const system = `You are a professional storyboard supervisor for film production. Return ONLY valid JSON with "continuity" and "scenes".
+  const system = `You are a professional storyboard supervisor for film production. Return ONLY valid JSON with "continuity", "scenes", "openingBookend", and "closingBookend".
 
 "continuity" object (visual bible for the ENTIRE storyboard — must stay identical across every frame):
 - characters: detailed locked descriptions of every recurring character (face, hair, age, build, clothing, distinguishing features). Use specific names.
@@ -96,6 +105,18 @@ voiceover: Spoken narration for THIS scene only — short lines that fit the sce
 visualDescription: What the camera sees in this single shot — subject, action, setting, mood. Not ad-length meta or the brief preamble.
 
 Use the SAME character names and physical descriptions in every scene. For imagePrompt: ${frameStyleConfig.breakdownHint}. Reference continuity bible characters by name. Never include scene numbers, shot labels, or any text that could appear in the image. No text, labels, UI, timelines, collages, or multi-panel layouts.
+
+"openingBookend" and "closingBookend" — extra cinematic intro/outro frames (NOT in the scenes array). Choose the best approach FROM THIS SCRIPT — examples only, pick what fits:
+- Long shot of the same world with the main character before/after the story
+- Environmental establishing or epilogue of the story location
+- Product hero framing for brand/product ads
+- Character arrival, departure, or resolution beat
+
+openingBookend: smooth lead-in BEFORE scene 1 — same story world as scene 1, continuous feel, different composition (not a duplicate of scene 1).
+closingBookend: smooth lead-out AFTER the final scene — same story world, NOT a duplicate of the final scene; script-appropriate resolution.
+
+Each bookend object: visualDescription, imagePrompt, cameraDirection, cameraAngle, cameraMovement, characterActions, environment, emotion, transition.
+Bookend imagePrompt rules: full brightness, normal exposure — NO black frame, NO dark vignette, NO fade-to-black in the image (video fades are post-production only). No voiceover on bookends.
 ${referenceLabelsBlock ? `\n${referenceLabelsBlock}` : ""}`;
 
   let raw: string;
@@ -118,6 +139,8 @@ ${referenceLabelsBlock ? `\n${referenceLabelsBlock}` : ""}`;
     const parsed = JSON.parse(raw) as {
       continuity?: Record<string, unknown>;
       scenes?: Array<Record<string, unknown>>;
+      openingBookend?: unknown;
+      closingBookend?: unknown;
     };
     const list = Array.isArray(parsed.scenes)
       ? parsed.scenes
@@ -151,7 +174,12 @@ ${referenceLabelsBlock ? `\n${referenceLabelsBlock}` : ""}`;
       };
     });
 
-    return { scenes, continuity };
+    return {
+      scenes,
+      continuity,
+      openingBookend: parseBookendSceneFields(parsed.openingBookend),
+      closingBookend: parseBookendSceneFields(parsed.closingBookend),
+    };
   } catch {
     return null;
   }
@@ -195,6 +223,12 @@ export async function POST(request: NextRequest) {
     scenes = dedupeSceneContent(scenes, body.script, settings);
     scenes = sanitizeScenes(scenes);
     scenes = normalizeScenesToTimeline(scenes, settings.durationSec);
+
+    scenes = injectBookendScenes(scenes, settings, {
+      script: body.script,
+      openingBookend: llmResult?.openingBookend,
+      closingBookend: llmResult?.closingBookend,
+    });
 
     return NextResponse.json({
       scenes: applyGlobalSceneEnvironment(scenes, settings.sceneEnvironment),

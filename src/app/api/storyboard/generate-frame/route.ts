@@ -18,6 +18,7 @@ import type {
   StoryboardFrameStyle,
   StoryboardGenre,
   StoryboardInputReference,
+  StoryboardSceneRole,
 } from "@/types/storyboard";
 
 export const maxDuration = 120;
@@ -46,6 +47,7 @@ interface GenerateFrameBody {
   imageModel?: string;
   aspectRatio?: AspectRatio;
   inputReferences?: StoryboardInputReference[];
+  sceneRole?: StoryboardSceneRole;
 }
 
 export async function POST(request: NextRequest) {
@@ -100,8 +102,9 @@ export async function POST(request: NextRequest) {
       ? await resolveStoryboardInputReferences(body.inputReferences, resolveOptions)
       : [];
 
+    // Bookends always resolve refs (opening is sceneNumber 1 but anchors to scene 1's frame).
     const generatedFrameUrls =
-      sceneNumber > 1 && referenceInputs.length
+      (sceneNumber > 1 || body.sceneRole) && referenceInputs.length
         ? await resolveStoryboardFrameReferences(referenceInputs, resolveOptions)
         : [];
 
@@ -119,6 +122,7 @@ export async function POST(request: NextRequest) {
     const maxRefs = modelConfig.maxReferenceImages;
     const referenceImages = buildStoryboardFrameReferenceImages({
       sceneNumber,
+      sceneRole: body.sceneRole,
       frameStyle: body.frameStyle,
       inputRefs,
       generatedFrameUrls,
@@ -142,6 +146,7 @@ export async function POST(request: NextRequest) {
         continuity: body.continuity,
         referenceImages,
         inputReferencePromptBlock: inputReferencePromptBlock || undefined,
+        sceneRole: body.sceneRole,
         aspectRatio: body.aspectRatio,
       },
       { model: body.imageModel, aspectRatio: body.aspectRatio }

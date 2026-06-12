@@ -1,3 +1,8 @@
+import {
+  getFirstStoryScene,
+  getLastStoryScene,
+  getStoryScenes,
+} from "@/lib/storyboard/bookend-scenes";
 import { getFrameStyleConfig } from "@/lib/storyboard/frame-styles";
 import type {
   StoryboardContinuity,
@@ -61,15 +66,14 @@ function isUsableReferenceScene(
   );
 }
 
-/** Scene 01 anchor frame — same character look and sketch style for the whole board. */
+/** First story frame anchor — same character look for the whole board (not opening bookend). */
 export function getAnchorScene(
   scenes: StoryboardScene[],
   currentSceneId: string
 ): StoryboardScene | undefined {
-  return scenes.find(
-    (s) =>
-      s.sceneNumber === 1 && isUsableReferenceScene(s, currentSceneId)
-  );
+  const anchor = getFirstStoryScene(scenes);
+  if (!anchor || anchor.id === currentSceneId) return undefined;
+  return isUsableReferenceScene(anchor, currentSceneId) ? anchor : undefined;
 }
 
 /**
@@ -81,19 +85,38 @@ export function getStoryboardReferenceScenes(
   currentSceneId: string
 ): StoryboardScene[] {
   const current = scenes.find((s) => s.id === currentSceneId);
-  if (!current || current.sceneNumber <= 1) return [];
+  if (!current) return [];
+
+  // Bookends anchor to the adjacent story frame for world/character/color
+  // consistency — the prompt asks for a different composition of the same world.
+  if (current.sceneRole === "bookend-open") {
+    const firstStory = getFirstStoryScene(scenes);
+    return firstStory && isUsableReferenceScene(firstStory, currentSceneId)
+      ? [firstStory]
+      : [];
+  }
+  if (current.sceneRole === "bookend-close") {
+    const lastStory = getLastStoryScene(scenes);
+    return lastStory && isUsableReferenceScene(lastStory, currentSceneId)
+      ? [lastStory]
+      : [];
+  }
+
+  const storyScenes = getStoryScenes(scenes);
+  const storyIndex = storyScenes.findIndex((s) => s.id === currentSceneId);
+  if (storyIndex <= 0) return [];
 
   const refs: StoryboardScene[] = [];
   const anchor = getAnchorScene(scenes, currentSceneId);
   if (anchor) refs.push(anchor);
 
-  if (current.sceneNumber > 2) {
-    const previous = scenes.find(
-      (s) =>
-        s.sceneNumber === current.sceneNumber - 1 &&
-        isUsableReferenceScene(s, currentSceneId)
-    );
-    if (previous && !refs.some((r) => r.id === previous.id)) {
+  if (storyIndex > 1) {
+    const previous = storyScenes[storyIndex - 1];
+    if (
+      previous &&
+      isUsableReferenceScene(previous, currentSceneId) &&
+      !refs.some((r) => r.id === previous.id)
+    ) {
       refs.push(previous);
     }
   }

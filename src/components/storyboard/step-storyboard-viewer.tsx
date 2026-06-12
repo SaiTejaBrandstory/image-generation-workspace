@@ -39,6 +39,7 @@ import {
   chunkStoryboardScenesForVideo,
   needsStoryboardVideoBatching,
 } from "@/lib/storyboard/storyboard-video";
+import { formatStoryboardSceneLabel } from "@/lib/storyboard/bookend-scenes";
 import { useStoryboardStore } from "@/store/storyboard-store";
 import { cn } from "@/lib/utils";
 import { normalizeSceneFields } from "@/lib/storyboard/scene-fields";
@@ -150,13 +151,15 @@ export function StepStoryboardViewer() {
   const handleVideoModelConfirm = (
     primary: string,
     fallback: string,
-    aspectRatio: string
+    aspectRatio: string,
+    enableVoiceover: boolean
   ) => {
     setVideoModelDialogOpen(false);
     setStoryboardVideoModels(primary, fallback, aspectRatio);
     void generateStoryboardVideo({
       replace: videoReplaceOnConfirm,
       videoAspectRatio: aspectRatio,
+      enableVoiceover,
     });
   };
 
@@ -370,6 +373,7 @@ export function StepStoryboardViewer() {
               <StoryboardFrameCard
                 key={scene.id}
                 scene={scene}
+                allScenes={scenes}
                 selected={selectedIds.has(scene.id)}
                 onSelect={() => toggleSelect(scene.id)}
                 detailsOpen={expandedDetailsId === scene.id}
@@ -394,6 +398,7 @@ export function StepStoryboardViewer() {
               <div key={scene.id} className="w-72 shrink-0">
                 <StoryboardFrameCard
                   scene={scene}
+                  allScenes={scenes}
                   selected={selectedIds.has(scene.id)}
                   onSelect={() => toggleSelect(scene.id)}
                   detailsOpen={expandedDetailsId === scene.id}
@@ -417,6 +422,7 @@ export function StepStoryboardViewer() {
           <div className="mx-auto max-w-4xl">
             <StoryboardFrameCard
               scene={presentationScene}
+              allScenes={scenes}
               selected={false}
               onSelect={() => {}}
               detailsOpen={expandedDetailsId === presentationScene.id}
@@ -465,7 +471,7 @@ export function StepStoryboardViewer() {
                     key={scene.id}
                     className="group relative min-w-[40px] rounded-md bg-accent-orange/30 transition-colors hover:bg-accent-orange/50"
                     style={{ width: `${widthPct}%` }}
-                    title={`Scene ${scene.sceneNumber} · ${scene.durationSec}s`}
+                    title={`${formatStoryboardSceneLabel(scene, scenes)} · ${scene.durationSec}s`}
                   >
                     <span className="absolute -top-5 left-0 text-[10px] text-foreground-muted opacity-0 transition-opacity group-hover:opacity-100">
                       {scene.durationSec}s
@@ -479,6 +485,7 @@ export function StepStoryboardViewer() {
                 <StoryboardFrameCard
                   key={scene.id}
                   scene={scene}
+                  allScenes={scenes}
                   selected={selectedIds.has(scene.id)}
                   onSelect={() => toggleSelect(scene.id)}
                   detailsOpen={expandedDetailsId === scene.id}
@@ -680,6 +687,7 @@ export function StepStoryboardViewer() {
         frameAspectRatio={imageAspectRatio}
         settingsFrameAspectRatio={settings.imageAspectRatio}
         scenes={scenes}
+        enableVoiceover={settings.enableVoiceover !== false}
         onConfirm={handleVideoModelConfirm}
         onCancel={() => setVideoModelDialogOpen(false)}
       />
@@ -826,7 +834,7 @@ function StoryboardFramePreviewDialog({
         <DialogHeader className="shrink-0 border-b border-border/60 px-5 pb-3 pt-5">
           <div className="flex items-center justify-between gap-3 pr-8">
             <DialogTitle>
-              Scene {String(scene.sceneNumber).padStart(2, "0")} preview
+              {formatStoryboardSceneLabel(scene, scenes)} preview
             </DialogTitle>
             <span className="text-xs tabular-nums text-foreground-muted">
               {previewSlot >= 0 ? previewSlot + 1 : sceneIndex + 1} /{" "}
@@ -902,6 +910,7 @@ function StoryboardFramePreviewDialog({
 
 function StoryboardFrameCard({
   scene,
+  allScenes,
   selected,
   onSelect,
   detailsOpen,
@@ -913,6 +922,7 @@ function StoryboardFrameCard({
   actionsDisabled,
 }: {
   scene: StoryboardScene;
+  allScenes: StoryboardScene[];
   selected: boolean;
   onSelect: () => void;
   detailsOpen: boolean;
@@ -1056,7 +1066,7 @@ function StoryboardFrameCard({
       <div className="space-y-2 border-t border-border/60 p-3">
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <span className="font-semibold text-accent-orange">
-            Scene {String(scene.sceneNumber).padStart(2, "0")}
+            {formatStoryboardSceneLabel(scene, allScenes)}
           </span>
           <span className="text-foreground-muted">{scene.durationSec}s</span>
           <span className="text-foreground-muted">{camera.cameraDirection}</span>

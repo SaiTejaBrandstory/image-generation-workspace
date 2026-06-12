@@ -161,16 +161,22 @@ export function buildStoryboardInputReferencePromptLabel(
   const kindLabel = storyboardInputReferenceKindLabel(kind).toUpperCase();
   const caption = sanitizeStoryboardInputReferenceLabel(userLabel ?? "");
   const exclusion = buildReferenceExclusionClause(ignoreInReference);
+  const fidelity =
+    kind === "product"
+      ? " Reproduce its EXACT color (same hue and tone in every frame), exact logo, and exact design — never recolor it, never remove or redraw the logo, never add text or graphics to it."
+      : "";
   if (caption) {
     return (
       `USER ${kindLabel} — "${caption}" — this attached image is that subject. ` +
       `Match it in the storyboard frame whenever "${caption}" or this role appears in the script.` +
+      fidelity +
       exclusion
     );
   }
   return (
     `USER ${kindLabel} — match this reference in the storyboard frame ` +
     `(faces, product shape, or environment as labeled).` +
+    fidelity +
     exclusion
   );
 }
