@@ -82,6 +82,10 @@ export type TransitionPreviewGroup =
   | "squeeze-v"
   | "zoom-in";
 
+/** Hard cut — no xfade between clips. */
+export const NO_TRANSITION_ID = "none" as const;
+export type NoTransitionId = typeof NO_TRANSITION_ID;
+
 /** Legacy storyboard values — still accepted when loading old projects. */
 export type LegacySceneTransition = "cut" | "wipe" | "match-cut" | "jump-cut";
 
@@ -149,36 +153,66 @@ export const XFADE_TRANSITIONS: XfadeTransitionMeta[] = [
 
 export type XfadeTransitionId = (typeof XFADE_TRANSITIONS)[number]["id"];
 
-export type SceneTransition = XfadeTransitionId | LegacySceneTransition;
+export type SceneTransition =
+  | XfadeTransitionId
+  | LegacySceneTransition
+  | NoTransitionId;
 
 const XFADE_BY_ID = new Map(XFADE_TRANSITIONS.map((item) => [item.id, item]));
 
-const LEGACY_TO_XFADE: Record<LegacySceneTransition, string> = {
-  cut: "fade",
+const LEGACY_TO_XFADE: Record<Exclude<LegacySceneTransition, "cut">, string> = {
   wipe: "wiperight",
   "match-cut": "smoothleft",
   "jump-cut": "fadefast",
 };
 
-const LEGACY_DURATION_SEC: Partial<Record<LegacySceneTransition, number>> = {
-  cut: 0.12,
+const LEGACY_DURATION_SEC: Partial<
+  Record<Exclude<LegacySceneTransition, "cut">, number>
+> = {
   "jump-cut": 0.2,
 };
 
 const LEGACY_LABELS: Record<LegacySceneTransition, string> = {
-  cut: "Cut",
+  cut: "No transition",
   wipe: "Wipe",
   "match-cut": "Match cut",
   "jump-cut": "Jump cut",
 };
 
+export const NO_TRANSITION_META: XfadeTransitionMeta & { id: NoTransitionId } = {
+  id: NO_TRANSITION_ID,
+  label: "No transition",
+  description: "Hard cut — clips join with no blend between them.",
+  category: "fade",
+  xfade: "",
+  durationSec: 0,
+  previewGroup: "fade",
+  previewMs: 0,
+};
+
+export function isNoTransition(transition: string | undefined): boolean {
+  const raw = transition?.trim().toLowerCase();
+  return raw === NO_TRANSITION_ID || raw === "cut";
+}
+
+export function areSceneTransitionsEqual(
+  a: string | undefined,
+  b: string | undefined
+): boolean {
+  if (isNoTransition(a) && isNoTransition(b)) return true;
+  return (a?.trim().toLowerCase() ?? "") === (b?.trim().toLowerCase() ?? "");
+}
+
 export function normalizeSceneTransition(
   transition: string | undefined
-): XfadeTransitionId {
+): XfadeTransitionId | NoTransitionId {
   const raw = transition?.trim().toLowerCase();
   if (!raw) return "fade";
+  if (isNoTransition(raw)) return NO_TRANSITION_ID;
   if (raw in LEGACY_TO_XFADE) {
-    return LEGACY_TO_XFADE[raw as LegacySceneTransition] as XfadeTransitionId;
+    return LEGACY_TO_XFADE[
+      raw as Exclude<LegacySceneTransition, "cut">
+    ] as XfadeTransitionId;
   }
   if (XFADE_BY_ID.has(raw)) return raw as XfadeTransitionId;
   return "fade";
@@ -188,11 +222,23 @@ export function resolveSceneTransitionMeta(
   transition: string | undefined
 ): XfadeTransitionMeta & { storedId: string } {
   const storedId = transition?.trim().toLowerCase() || "fade";
+  if (isNoTransition(storedId)) {
+    return {
+      ...NO_TRANSITION_META,
+      storedId,
+      label:
+        storedId in LEGACY_LABELS
+          ? LEGACY_LABELS[storedId as LegacySceneTransition]
+          : NO_TRANSITION_META.label,
+    };
+  }
   const normalized = normalizeSceneTransition(storedId);
   const meta = XFADE_BY_ID.get(normalized)!;
   const legacyDuration =
     storedId in LEGACY_DURATION_SEC
-      ? LEGACY_DURATION_SEC[storedId as LegacySceneTransition]
+      ? LEGACY_DURATION_SEC[
+          storedId as Exclude<LegacySceneTransition, "cut">
+        ]
       : undefined;
   const legacyLabel =
     storedId in LEGACY_LABELS
@@ -216,16 +262,31 @@ export function getXfadeTransitionMeta(
   return resolveSceneTransitionMeta(transition);
 }
 
-export function mapStoryboardTransitionToStitchJoin(transition: string | undefined): {
-  xfade: string;
+export interface StitchJoinSpec {
+  hardCut: boolean;
+  xfade: string | null;
   durationSec: number;
-} {
+}
+
+export function mapStoryboardTransitionToStitchJoin(
+  transition: string | undefined
+): StitchJoinSpec {
+  if (isNoTransition(transition)) {
+    return { hardCut: true, xfade: null, durationSec: 0 };
+  }
   const resolved = resolveSceneTransitionMeta(transition);
-  return { xfade: resolved.xfade, durationSec: resolved.durationSec };
+  return {
+    hardCut: false,
+    xfade: resolved.xfade,
+    durationSec: resolved.durationSec,
+  };
 }
 
 /** Incoming clip context after the join in modal previews. */
 export function getJoinPreviewIncomingSec(transition: string | undefined): number {
+  if (isNoTransition(transition)) {
+    return 1.25;
+  }
   const { durationSec, id } = resolveSceneTransitionMeta(transition);
   if (id === "squeezeh" || id === "squeezev") {
     return Math.max(durationSec + 1.5, 3.5);
@@ -289,7 +350,12 @@ export function isFullOverlapXfade(xfade: string): boolean {
 
 export function isSceneTransition(value: string): value is SceneTransition {
   const lower = value.toLowerCase();
-  return lower in LEGACY_TO_XFADE || XFADE_BY_ID.has(lower);
+  return (
+    lower === NO_TRANSITION_ID ||
+    lower === "cut" ||
+    lower in LEGACY_TO_XFADE ||
+    XFADE_BY_ID.has(lower)
+  );
 }
 
 export function getTransitionsForCategory(
@@ -301,6 +367,8 @@ export function getTransitionsForCategory(
 export function getCategoryForTransition(
   transition: string | undefined
 ): TransitionCategory {
+  if (isNoTransition(transition)) return "fade";
   const normalized = normalizeSceneTransition(transition);
+  if (normalized === NO_TRANSITION_ID) return "fade";
   return XFADE_BY_ID.get(normalized)?.category ?? "fade";
 }

@@ -2,7 +2,7 @@ import { extractApiErrorMessage } from "@/lib/api-response";
 
 const previewBlobCache = new Map<string, string>();
 
-const PREVIEW_CACHE_VERSION = "v31-fade-gray-fast";
+const PREVIEW_CACHE_VERSION = "v32-no-transition";
 
 function cacheKey(
   fromStoragePath: string,

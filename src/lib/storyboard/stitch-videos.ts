@@ -10,10 +10,12 @@ import {
   isBlendXfade,
   isFadeCategoryXfade,
   isFullOverlapXfade,
+  isNoTransition,
   isSlideXfade,
   isWipeXfade,
   mapStoryboardTransitionToStitchJoin,
   resolveSceneTransitionMeta,
+  type StitchJoinSpec,
 } from "@/lib/storyboard/xfade-transitions";
 import type { SceneTransition } from "@/types/storyboard";
 
@@ -484,14 +486,18 @@ export async function renderJoinTransitionPreview(
   transition: SceneTransition | string,
   options: JoinTransitionPreviewOptions = {}
 ): Promise<Buffer> {
-  const resolved = resolveSceneTransitionMeta(transition);
-  const transitionDurationSec =
-    options.transitionDurationSec ?? resolved.durationSec;
   const headSec =
     options.headSec ?? getJoinPreviewIncomingSec(transition);
   const maxWidth = options.maxWidth ?? 720;
-
   const head = await trimMp4HeadSeconds(incomingClip, headSec);
+
+  if (isNoTransition(transition)) {
+    return concatMp4BuffersFastWithAudio([outgoingClip, head], { maxWidth });
+  }
+
+  const resolved = resolveSceneTransitionMeta(transition);
+  const transitionDurationSec =
+    options.transitionDurationSec ?? resolved.durationSec;
 
   return concatMp4BuffersWithMotionEffects([outgoingClip, head], {
     joinTransitions: [transition as SceneTransition],
@@ -878,7 +884,8 @@ export interface ConcatMp4CrossfadeOptions {
 }
 
 export interface StitchJoinTransition {
-  xfade: string;
+  hardCut: boolean;
+  xfade: string | null;
   durationSec: number;
 }
 
@@ -926,11 +933,11 @@ function shouldEnforceExactJoinDuration(
 ): boolean {
   if (options.enforceExactJoinDuration) return true;
   return (
-    joinTransitions?.some((transition) =>
-      isFullOverlapXfade(
-        mapStoryboardTransitionToStitchJoin(transition).xfade
-      )
-    ) ?? false
+    joinTransitions?.some((transition) => {
+      const spec = mapStoryboardTransitionToStitchJoin(transition);
+      if (spec.hardCut || !spec.xfade) return false;
+      return isFullOverlapXfade(spec.xfade);
+    }) ?? false
   );
 }
 
@@ -1118,29 +1125,54 @@ export async function concatMp4BuffersWithCrossfade(
       options.joinTransitions
     );
 
+    const defaultJoinSpec: StitchJoinSpec = {
+      hardCut: false,
+      xfade: "fade",
+      durationSec: defaultCrossfade,
+    };
+
+    const joinCount = inputPaths.length - 1;
+    const joinSpecs: StitchJoinSpec[] = Array.from({ length: joinCount }, (_, i) =>
+      options.joinTransitions?.length
+        ? mapStoryboardTransitionToStitchJoin(options.joinTransitions[i])
+        : defaultJoinSpec
+    );
+
+    if (joinSpecs.length > 0 && joinSpecs.every((spec) => spec.hardCut)) {
+      return await concatMp4BuffersFast(clips, {
+        ensureAudio: stitchAudio,
+        maxWidth,
+      });
+    }
+
     let videoFilter = "";
     let prevVideo = "0:v";
     let accumulated = durations[0]!;
 
     for (let i = 1; i < inputPaths.length; i++) {
-      const joinSpec = options.joinTransitions?.length
-        ? mapStoryboardTransitionToStitchJoin(options.joinTransitions[i - 1])
-        : { xfade: "fade", durationSec: defaultCrossfade };
-      const requestedDuration =
-        options.joinTransitionDurationSec ?? joinSpec.durationSec;
-      const fade = computeJoinFadeSec(
-        requestedDuration,
-        durations[i - 1]!,
-        durations[i]!,
-        enforceExact,
-        joinSpec.xfade
-      );
-      const offset = Math.max(0, accumulated - fade);
+      const joinSpec = joinSpecs[i - 1] ?? defaultJoinSpec;
       const outLabel = i === inputPaths.length - 1 ? "vout" : `v${i}`;
-      videoFilter += `[${prevVideo}][${i}:v]xfade=transition=${joinSpec.xfade}:duration=${fade.toFixed(3)}:offset=${offset.toFixed(3)}[${outLabel}]`;
+
+      if (joinSpec.hardCut) {
+        videoFilter += `[${prevVideo}][${i}:v]concat=n=2:v=1:a=0[${outLabel}]`;
+        accumulated += durations[i]!;
+      } else {
+        const requestedDuration =
+          options.joinTransitionDurationSec ?? joinSpec.durationSec;
+        const fade = computeJoinFadeSec(
+          requestedDuration,
+          durations[i - 1]!,
+          durations[i]!,
+          enforceExact,
+          joinSpec.xfade ?? undefined
+        );
+        const offset = Math.max(0, accumulated - fade);
+        videoFilter += `[${prevVideo}][${i}:v]xfade=transition=${joinSpec.xfade}:duration=${fade.toFixed(3)}:offset=${offset.toFixed(3)}[${outLabel}]`;
+        accumulated += durations[i]! - fade;
+      }
+
       if (i < inputPaths.length - 1) videoFilter += ";";
       prevVideo = outLabel;
-      accumulated += durations[i]! - fade;
     }
 
     let filterComplex = videoFilter;
@@ -1149,20 +1181,24 @@ export async function concatMp4BuffersWithCrossfade(
       let prevAudio = "0:a";
 
       for (let i = 1; i < inputPaths.length; i++) {
-        const joinSpec = options.joinTransitions?.length
-          ? mapStoryboardTransitionToStitchJoin(options.joinTransitions[i - 1])
-          : { xfade: "fade", durationSec: defaultCrossfade };
-        const requestedDuration =
-          options.joinTransitionDurationSec ?? joinSpec.durationSec;
-        const fade = computeJoinFadeSec(
-          requestedDuration,
-          durations[i - 1]!,
-          durations[i]!,
-          enforceExact,
-          joinSpec.xfade
-        );
+        const joinSpec = joinSpecs[i - 1] ?? defaultJoinSpec;
         const outLabel = i === inputPaths.length - 1 ? "aout" : `a${i}`;
-        audioFilter += `[${prevAudio}][${i}:a]acrossfade=d=${fade.toFixed(3)}:c1=tri:c2=tri[${outLabel}]`;
+
+        if (joinSpec.hardCut) {
+          audioFilter += `[${prevAudio}][${i}:a]concat=n=2:v=0:a=1[${outLabel}]`;
+        } else {
+          const requestedDuration =
+            options.joinTransitionDurationSec ?? joinSpec.durationSec;
+          const fade = computeJoinFadeSec(
+            requestedDuration,
+            durations[i - 1]!,
+            durations[i]!,
+            enforceExact,
+            joinSpec.xfade ?? undefined
+          );
+          audioFilter += `[${prevAudio}][${i}:a]acrossfade=d=${fade.toFixed(3)}:c1=tri:c2=tri[${outLabel}]`;
+        }
+
         if (i < inputPaths.length - 1) audioFilter += ";";
         prevAudio = outLabel;
       }

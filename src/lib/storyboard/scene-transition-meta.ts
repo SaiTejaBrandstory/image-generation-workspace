@@ -1,6 +1,8 @@
 import {
   XFADE_TRANSITIONS,
   getXfadeTransitionMeta,
+  isNoTransition,
+  NO_TRANSITION_ID,
   resolveSceneTransitionMeta,
   type XfadeTransitionMeta,
 } from "@/lib/storyboard/xfade-transitions";
@@ -24,8 +26,11 @@ export function getSceneTransitionMeta(
   transition: SceneTransition | string | undefined
 ): SceneTransitionMeta {
   const resolved = resolveSceneTransitionMeta(transition);
+  const id = isNoTransition(transition)
+    ? NO_TRANSITION_ID
+    : ((transition ?? "fade") as SceneTransition);
   return {
-    id: (transition ?? "fade") as SceneTransition,
+    id,
     label: resolved.label,
     description: resolved.description,
   };

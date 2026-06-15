@@ -18,8 +18,11 @@ import { getSceneTransitionMeta } from "@/lib/storyboard/scene-transition-meta";
 import { fetchJoinTransitionPreview } from "@/lib/storyboard/preview-join-transition-client";
 import { sceneHasAnimatedClip } from "@/lib/storyboard/resolve-scene-clip-url";
 import {
+  areSceneTransitionsEqual,
   getCategoryForTransition,
   getTransitionsForCategory,
+  isNoTransition,
+  NO_TRANSITION_ID,
   normalizeSceneTransition,
   TRANSITION_CATEGORIES,
   type TransitionCategory,
@@ -362,7 +365,7 @@ export function SceneTransitionJoin({
   const fromLabel = formatStoryboardSceneLabel(fromScene, allScenes);
   const toLabel = formatStoryboardSceneLabel(toScene, allScenes);
 
-  const isDirty = previewTransition !== savedTransition;
+  const isDirty = !areSceneTransitionsEqual(previewTransition, savedTransition);
 
   const handleOpenChange = (next: boolean) => {
     if (!next) {
@@ -448,6 +451,16 @@ export function SceneTransitionJoin({
                 </div>
 
                 <div className="space-y-2 rounded-md border border-border p-2">
+                  <div className="flex flex-wrap gap-1.5 border-b border-border/60 pb-2">
+                    <TransitionOptionChip
+                      label="No transition"
+                      selected={isNoTransition(previewTransition)}
+                      onClick={() => {
+                        setPreviewTransition(NO_TRANSITION_ID);
+                        setReplayToken((t) => t + 1);
+                      }}
+                    />
+                  </div>
                   <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-3">
                     {TRANSITION_CATEGORIES.map((category) => (
                       <TransitionCategoryTab
