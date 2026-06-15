@@ -1,3 +1,7 @@
+import {
+  extractApiErrorMessage,
+  readJsonResponse,
+} from "@/lib/api-response";
 import type {
   StoryboardContinuity,
   StoryboardProjectSettings,
@@ -25,8 +29,12 @@ export async function commitStoryboard(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error ?? "Failed to save storyboard");
+  const data = await readJsonResponse<{ conversationId?: string; error?: string }>(
+    res
+  );
+  if (!res.ok) {
+    throw new Error(extractApiErrorMessage(data, "Failed to save storyboard"));
+  }
   return { conversationId: data.conversationId as string };
 }
 
@@ -34,8 +42,10 @@ export async function fetchStoryboard(
   conversationId: string
 ): Promise<LoadedStoryboard> {
   const res = await fetch(`/api/storyboard/${conversationId}`);
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error ?? "Failed to load storyboard");
+  const data = await readJsonResponse<LoadedStoryboard & { error?: string }>(res);
+  if (!res.ok) {
+    throw new Error(extractApiErrorMessage(data, "Failed to load storyboard"));
+  }
   return data as LoadedStoryboard;
 }
 
@@ -48,8 +58,16 @@ export async function recoverStoryboard(conversationId: string): Promise<{
   const res = await fetch(`/api/storyboard/${conversationId}/recover`, {
     method: "POST",
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error ?? "Storyboard recovery failed");
+  const data = await readJsonResponse<{
+    recovered: boolean;
+    source: string;
+    sceneCount: number;
+    storyboard: LoadedStoryboard | null;
+    error?: string;
+  }>(res);
+  if (!res.ok) {
+    throw new Error(extractApiErrorMessage(data, "Storyboard recovery failed"));
+  }
   return data as {
     recovered: boolean;
     source: string;
@@ -74,6 +92,8 @@ export async function patchStoryboardOutputs(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(patch),
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error ?? "Failed to update storyboard");
+  const data = await readJsonResponse<{ error?: string }>(res);
+  if (!res.ok) {
+    throw new Error(extractApiErrorMessage(data, "Failed to update storyboard"));
+  }
 }

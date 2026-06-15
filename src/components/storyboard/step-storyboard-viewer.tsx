@@ -32,7 +32,7 @@ import {
 } from "@/components/ui/dialog";
 import { downloadImage } from "@/lib/download-utils";
 import { exportStoryboardPdf } from "@/lib/storyboard/export";
-import { SCENE_TRANSITIONS } from "@/lib/storyboard/constants";
+import { getSceneTransitionMeta } from "@/lib/storyboard/scene-transition-meta";
 import { isPendingVideoForConversation } from "@/lib/storyboard/pending-video";
 import { formatStoryboardVideoModelLabel } from "@/lib/openrouter-video-models";
 import {
@@ -935,9 +935,7 @@ function StoryboardFrameCard({
 }) {
   const [downloading, setDownloading] = useState(false);
   const camera = normalizeSceneFields(scene);
-  const transitionLabel =
-    SCENE_TRANSITIONS.find((t) => t.id === scene.transition)?.label ??
-    scene.transition;
+  const transitionLabel = getSceneTransitionMeta(scene.transition).label;
   const hasFrame = Boolean(scene.frameImageUrl);
 
   const handleDownload = async () => {

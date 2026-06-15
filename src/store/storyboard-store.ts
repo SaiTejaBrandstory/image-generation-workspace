@@ -27,6 +27,10 @@ import {
   getVideoModelsCatalog,
   pickStoryboardHumanFrameFallback,
 } from "@/lib/openrouter-video-models";
+import {
+  resolveSceneClipUrl,
+  sceneHasAnimatedClip,
+} from "@/lib/storyboard/resolve-scene-clip-url";
 import { runWithConcurrency } from "@/lib/reference-utils";
 import { normalizeFrameStyle } from "@/lib/storyboard/frame-styles";
 import { normalizeFrameCount } from "@/lib/storyboard/script-utils";
@@ -149,7 +153,11 @@ interface StoryboardState {
   updateInputReferenceIgnore: (id: string, ignoreInReference: string) => void;
   setSelectedSceneId: (id: string | null) => void;
   setViewMode: (mode: StoryboardViewMode) => void;
-  updateScene: (id: string, patch: Partial<StoryboardScene>) => void;
+  updateScene: (
+    id: string,
+    patch: Partial<StoryboardScene>,
+    options?: { skipHistory?: boolean }
+  ) => void;
   addScene: () => void;
   deleteScene: (id: string) => void;
   duplicateScene: (id: string) => void;
@@ -705,8 +713,10 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
     set({ history: next, historyIndex: next.length - 1 });
   },
 
-  updateScene: (id, patch) => {
-    get().pushHistory();
+  updateScene: (id, patch, options) => {
+    if (!options?.skipHistory) {
+      get().pushHistory();
+    }
     set((s) => ({
       scenes: s.scenes.map((scene) =>
         scene.id === id ? { ...scene, ...patch } : scene
@@ -1188,13 +1198,21 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
     );
     if (!ordered.length) return;
 
-    const missing = ordered.filter(
-      (scene) =>
-        !scene.sceneVideoUrl || scene.sceneVideoStatus !== "complete"
-    );
+    const missing = ordered.filter((scene) => !sceneHasAnimatedClip(scene));
     if (missing.length) {
       set({
         error: `Animate all scenes before stitching (${missing.length} still missing).`,
+      });
+      return;
+    }
+
+    const resolvedClips = await Promise.all(
+      ordered.map((scene) => resolveSceneClipUrl(scene))
+    );
+    const unresolved = ordered.filter((_, i) => !resolvedClips[i]);
+    if (unresolved.length) {
+      set({
+        error: `Could not load ${unresolved.length} clip URL(s) for stitching. Try again.`,
       });
       return;
     }
@@ -1209,7 +1227,7 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
     });
 
     const hasBookends = ordered.some((s) => isBookendScene(s));
-    const clipUrls = ordered.map((scene) => scene.sceneVideoUrl as string);
+    const clipUrls = resolvedClips as string[];
     const clipStoragePaths = ordered.map((scene) => scene.sceneVideoStoragePath);
     const totalDurationSec = ordered.reduce(
       (sum, scene) => sum + (scene.sceneVideoDurationSec ?? scene.durationSec),
@@ -1232,6 +1250,10 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
           outputKind: "scene-stitch",
           enableCinematicFade: get().settings.enableCinematicFade !== false,
           hasBookendClips: hasBookends,
+          sceneTransitions: ordered
+            .slice(0, -1)
+            .map((scene) => scene.transition ?? "cut"),
+          useMotionTransitions: true,
         }),
       });
       const stitchData = await readJsonResponse<{
@@ -1869,12 +1891,11 @@ export const useStoryboardStore = create<StoryboardState>((set, get) => {
   refreshStoryboardVideos: async () => {
     const {
       conversationId,
-      wizardLocked,
       isGeneratingVideo,
       isGeneratingStitchedVideo,
     } = get();
     const pendingForThis = isPendingVideoForConversation(conversationId);
-    if (!conversationId || !wizardLocked) return;
+    if (!conversationId) return;
     if (
       (isGeneratingVideo || isGeneratingStitchedVideo) &&
       !pendingForThis

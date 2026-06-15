@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
   CheckCircle2,
   ChevronLeft,
@@ -13,6 +13,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { StoryboardVideoModelDialog } from "@/components/storyboard/storyboard-video-model-dialog";
+import { SceneTransitionJoin } from "@/components/storyboard/scene-transition-join";
 import { StoryboardVideoPlayer } from "@/components/storyboard/storyboard-video-player";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,10 +26,16 @@ import {
 import { downloadVideo } from "@/lib/download-utils";
 import { formatStoryboardVideoModelLabel } from "@/lib/openrouter-video-models";
 import { formatStoryboardSceneLabel } from "@/lib/storyboard/bookend-scenes";
+import {
+  peekSceneClipUrl,
+  resolveSceneClipUrl,
+  sceneHasAnimatedClip,
+  writeSceneClipUrlToStore,
+} from "@/lib/storyboard/resolve-scene-clip-url";
 import { storyboardVideoAspectRatioCss } from "@/lib/storyboard/storyboard-video";
 import { useStoryboardStore } from "@/store/storyboard-store";
 import { cn } from "@/lib/utils";
-import type { StoryboardScene } from "@/types/storyboard";
+import type { SceneTransition, StoryboardScene } from "@/types/storyboard";
 
 function sceneClipDownloadName(scene: StoryboardScene, allScenes: StoryboardScene[]) {
   const label = formatStoryboardSceneLabel(scene, allScenes)
@@ -50,6 +57,49 @@ function SceneVideoPreview({
   onWatch: () => void;
   disabled: boolean;
 }) {
+  const [clipUrl, setClipUrl] = useState<string | undefined>(() =>
+    peekSceneClipUrl(scene)
+  );
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const animated = sceneHasAnimatedClip(scene);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!animated) {
+      setClipUrl(undefined);
+      return;
+    }
+    const peek = peekSceneClipUrl(scene);
+    if (peek) {
+      setClipUrl(peek);
+      return;
+    }
+
+    void resolveSceneClipUrl(scene).then((url) => {
+      if (cancelled || !url) return;
+      setClipUrl(url);
+      writeSceneClipUrlToStore(scene.id, url);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [animated, scene.id, scene.sceneVideoStoragePath, scene.sceneVideoStatus]);
+
+  const playPreview = () => {
+    const el = videoRef.current;
+    if (!el) return;
+    try {
+      el.currentTime = 0;
+    } catch {
+      /* ignore */
+    }
+    void el.play().catch(() => undefined);
+  };
+
+  const pausePreview = () => {
+    videoRef.current?.pause();
+  };
+
   const sceneLabel = formatStoryboardSceneLabel(scene, allScenes);
   const aspectCss = storyboardVideoAspectRatioCss(aspectRatio);
   const durationLabel =
@@ -61,7 +111,11 @@ function SceneVideoPreview({
     <button
       type="button"
       onClick={onWatch}
-      disabled={disabled || !scene.sceneVideoUrl}
+      onMouseEnter={playPreview}
+      onMouseLeave={pausePreview}
+      onFocus={playPreview}
+      onBlur={pausePreview}
+      disabled={disabled || !clipUrl}
       className={cn(
         "group relative shrink-0 overflow-hidden rounded-none border border-border bg-background text-left shadow-sm transition-all",
         "hover:border-accent-violet/50 hover:ring-2 hover:ring-accent-violet/20",
@@ -71,14 +125,19 @@ function SceneVideoPreview({
       style={{ aspectRatio: aspectCss, width: "7.5rem" }}
       aria-label={`Watch ${sceneLabel} animation`}
     >
-      {scene.sceneVideoUrl ? (
+      {clipUrl ? (
         <video
-          src={scene.sceneVideoUrl}
+          ref={videoRef}
+          src={clipUrl}
           muted
           playsInline
           preload="metadata"
           className="h-full w-full object-cover"
         />
+      ) : animated ? (
+        <div className="flex h-full w-full items-center justify-center bg-black/80 text-[10px] text-foreground-muted">
+          Loading…
+        </div>
       ) : scene.frameImageUrl ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img
@@ -108,6 +167,86 @@ function SceneVideoPreview({
   );
 }
 
+function WatchSceneClipPlayer({
+  scene,
+  aspectRatio,
+  videoRef,
+}: {
+  scene: StoryboardScene;
+  aspectRatio: string;
+  videoRef: RefObject<HTMLVideoElement | null>;
+}) {
+  const [clipUrl, setClipUrl] = useState<string | undefined>(() =>
+    peekSceneClipUrl(scene)
+  );
+  const [loading, setLoading] = useState(!peekSceneClipUrl(scene));
+
+  useEffect(() => {
+    let cancelled = false;
+    const peek = peekSceneClipUrl(scene);
+    if (peek) {
+      setClipUrl(peek);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
+
+    void resolveSceneClipUrl(scene).then((url) => {
+      if (cancelled) return;
+      if (url) {
+        setClipUrl(url);
+        writeSceneClipUrlToStore(scene.id, url);
+      }
+      setLoading(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [scene.id, scene.sceneVideoStoragePath, scene.sceneVideoStatus]);
+
+  const aspectCss = storyboardVideoAspectRatioCss(aspectRatio);
+
+  if (loading && !clipUrl) {
+    return (
+      <div
+        className="flex w-full items-center justify-center rounded-none bg-black text-sm text-foreground-muted"
+        style={{ aspectRatio: aspectCss, maxHeight: "min(70vh, 560px)" }}
+      >
+        <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+        Loading clip…
+      </div>
+    );
+  }
+
+  if (!clipUrl) {
+    return (
+      <div
+        className="flex w-full items-center justify-center rounded-none bg-black px-4 text-center text-sm text-accent-orange"
+        style={{ aspectRatio: aspectCss, maxHeight: "min(70vh, 560px)" }}
+      >
+        Could not load this clip. Try again in a moment.
+      </div>
+    );
+  }
+
+  return (
+    <video
+      ref={videoRef}
+      key={clipUrl}
+      src={clipUrl}
+      className="w-full rounded-none bg-black object-contain"
+      style={{
+        aspectRatio: aspectCss,
+        maxHeight: "min(70vh, 560px)",
+      }}
+      controls
+      autoPlay
+      playsInline
+    />
+  );
+}
+
 function SceneAnimateRow({
   scene,
   allScenes,
@@ -131,18 +270,16 @@ function SceneAnimateRow({
 }) {
   const [downloading, setDownloading] = useState(false);
   const isGenerating = scene.sceneVideoStatus === "generating";
-  const hasVideo =
-    Boolean(scene.sceneVideoUrl) && scene.sceneVideoStatus === "complete";
+  const hasVideo = sceneHasAnimatedClip(scene);
   const sceneLabel = formatStoryboardSceneLabel(scene, allScenes);
 
   const handleDownload = async () => {
-    if (!scene.sceneVideoUrl || downloading) return;
+    const url =
+      scene.sceneVideoUrl?.trim() || peekSceneClipUrl(scene);
+    if (!url || downloading) return;
     setDownloading(true);
     try {
-      await downloadVideo(
-        scene.sceneVideoUrl,
-        sceneClipDownloadName(scene, allScenes)
-      );
+      await downloadVideo(url, sceneClipDownloadName(scene, allScenes));
     } catch {
       window.alert("Could not download this clip. Try again in a moment.");
     } finally {
@@ -290,6 +427,7 @@ export function StoryboardSceneVideos() {
     imageAspectRatio,
     generateSceneVideos,
     stitchSceneAnimations,
+    updateScene,
     isAnyVideoGenerating,
     isGeneratingVideo,
     isGeneratingFrames,
@@ -318,10 +456,7 @@ export function StoryboardSceneVideos() {
     videoAspectRatio || settings.imageAspectRatio || imageAspectRatio || "16:9";
 
   const watchableScenes = useMemo(
-    () =>
-      ordered.filter(
-        (s) => s.sceneVideoUrl && s.sceneVideoStatus === "complete"
-      ),
+    () => ordered.filter((s) => sceneHasAnimatedClip(s)),
     [ordered]
   );
 
@@ -349,7 +484,7 @@ export function StoryboardSceneVideos() {
     watchIndex >= 0 && watchIndex < watchableScenes.length - 1;
 
   useEffect(() => {
-    if (!watchScene?.sceneVideoUrl) return;
+    if (!watchScene || !sceneHasAnimatedClip(watchScene)) return;
 
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "ArrowLeft" && canGoPrev) {
@@ -363,7 +498,7 @@ export function StoryboardSceneVideos() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [watchScene?.sceneVideoUrl, canGoPrev, canGoNext, goToWatchScene]);
+  }, [watchScene, canGoPrev, canGoNext, goToWatchScene]);
 
   const anyBusy =
     isGeneratingVideo ||
@@ -374,10 +509,7 @@ export function StoryboardSceneVideos() {
 
   const allAnimated =
     ordered.length > 0 &&
-    ordered.every(
-      (scene) =>
-        scene.sceneVideoUrl && scene.sceneVideoStatus === "complete"
-    );
+    ordered.every((scene) => sceneHasAnimatedClip(scene));
 
   const stitchTotalDurationSec = ordered.reduce(
     (sum, scene) => sum + (scene.sceneVideoDurationSec ?? scene.durationSec),
@@ -423,15 +555,13 @@ export function StoryboardSceneVideos() {
     const ids = selectedIds.size
       ? [...selectedIds]
       : ordered
-          .filter((s) => !s.sceneVideoUrl && s.frameImageUrl)
+          .filter((s) => !sceneHasAnimatedClip(s) && s.frameImageUrl)
           .map((s) => s.id);
     if (!ids.length) return;
     openDialog(ids, "generate");
   };
 
-  const animatedCount = ordered.filter(
-    (s) => s.sceneVideoStatus === "complete" && s.sceneVideoUrl
-  ).length;
+  const animatedCount = ordered.filter((s) => sceneHasAnimatedClip(s)).length;
 
   return (
     <section className="mt-8 space-y-4 border-t border-border pt-8">
@@ -464,19 +594,32 @@ export function StoryboardSceneVideos() {
       </div>
 
       <div className="space-y-2">
-        {ordered.map((scene) => (
-          <SceneAnimateRow
-            key={scene.id}
-            scene={scene}
-            allScenes={ordered}
-            aspectRatio={aspectRatio}
-            selected={selectedIds.has(scene.id)}
-            onToggleSelect={() => toggleSelect(scene.id)}
-            onWatch={() => setWatchSceneId(scene.id)}
-            onAnimate={() => openDialog([scene.id], "generate")}
-            onRegenerate={() => openDialog([scene.id], "regenerate")}
-            disabled={anyBusy}
-          />
+        {ordered.map((scene, index) => (
+          <Fragment key={scene.id}>
+            <SceneAnimateRow
+              scene={scene}
+              allScenes={ordered}
+              aspectRatio={aspectRatio}
+              selected={selectedIds.has(scene.id)}
+              onToggleSelect={() => toggleSelect(scene.id)}
+              onWatch={() => setWatchSceneId(scene.id)}
+              onAnimate={() => openDialog([scene.id], "generate")}
+              onRegenerate={() => openDialog([scene.id], "regenerate")}
+              disabled={anyBusy}
+            />
+            {index < ordered.length - 1 ? (
+              <SceneTransitionJoin
+                fromScene={scene}
+                toScene={ordered[index + 1]!}
+                allScenes={ordered}
+                aspectRatio={aspectRatio}
+                disabled={anyBusy}
+                onTransitionChange={(transition: SceneTransition) =>
+                  updateScene(scene.id, { transition }, { skipHistory: true })
+                }
+              />
+            ) : null}
+          </Fragment>
         ))}
       </div>
 
@@ -488,14 +631,14 @@ export function StoryboardSceneVideos() {
               isGeneratingStitchedVideo
                 ? (stitchedVideoStatus ?? "Joining clips in scene order…")
                 : allAnimated
-                  ? `${ordered.length} clips · crossfade join · keeps each clip's audio`
+                  ? `${ordered.length} clips · transitions only at scene joins you set · keeps each clip's audio`
                   : `${animatedCount} of ${ordered.length} animated — finish all scenes to stitch`
             }
             progressLabel={
               stitchedVideoStatus ?? "Stitching scene clips — usually under a minute"
             }
             placeholderText="No stitched video yet"
-            emptyStateHint="Join your scene animation clips into one video with crossfades."
+            emptyStateHint="Join scene clips with motion transitions between each scene."
             downloadFilename="storyboard-scene-stitch.mp4"
             videoUrl={sceneStitchedVideoUrl}
             durationSec={sceneStitchedVideoDurationSec ?? undefined}
@@ -528,7 +671,7 @@ export function StoryboardSceneVideos() {
       )}
 
       <Dialog
-        open={Boolean(watchScene?.sceneVideoUrl)}
+        open={Boolean(watchScene && sceneHasAnimatedClip(watchScene))}
         onOpenChange={(open) => {
           if (!open) {
             watchVideoRef.current?.pause();
@@ -563,7 +706,7 @@ export function StoryboardSceneVideos() {
               </p>
             ) : null}
           </DialogHeader>
-          {watchScene?.sceneVideoUrl ? (
+          {watchScene && sceneHasAnimatedClip(watchScene) ? (
             <div className="relative bg-background px-5 pb-5 pt-4">
               {canGoPrev ? (
                 <button
@@ -585,18 +728,10 @@ export function StoryboardSceneVideos() {
                   <ChevronRight className="h-5 w-5" />
                 </button>
               ) : null}
-              <video
-                ref={watchVideoRef}
-                key={watchScene.sceneVideoUrl}
-                src={watchScene.sceneVideoUrl}
-                className="w-full rounded-none bg-black object-contain"
-                style={{
-                  aspectRatio: storyboardVideoAspectRatioCss(aspectRatio),
-                  maxHeight: "min(70vh, 560px)",
-                }}
-                controls
-                autoPlay
-                playsInline
+              <WatchSceneClipPlayer
+                scene={watchScene}
+                aspectRatio={aspectRatio}
+                videoRef={watchVideoRef}
               />
             </div>
           ) : null}

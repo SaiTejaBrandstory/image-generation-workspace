@@ -17,13 +17,13 @@ export type StoryboardGenre =
 
 export type StoryboardViewMode = "grid" | "filmstrip" | "presentation" | "timeline";
 
-export type SceneTransition =
-  | "cut"
-  | "fade"
-  | "dissolve"
-  | "wipe"
-  | "match-cut"
-  | "jump-cut";
+import type {
+  LegacySceneTransition,
+  SceneTransition,
+  XfadeTransitionId,
+} from "@/lib/storyboard/xfade-transitions";
+
+export type { LegacySceneTransition, SceneTransition, XfadeTransitionId };
 
 export type SceneEmotion =
   | "neutral"

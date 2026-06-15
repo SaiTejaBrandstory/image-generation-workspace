@@ -3,12 +3,13 @@ import {
   applyCinematicBookendFadesToMp4,
   concatMp4Buffers,
   concatMp4BuffersFastWithAudio,
+  concatMp4BuffersWithMotionEffects,
   formatStitchVideoErrorForUser,
   padVideoWithBlackLeader,
   probeMp4DurationSec,
 } from "@/lib/storyboard/stitch-videos";
 import { runWithConcurrency } from "@/lib/reference-utils";
-import type { StoryboardGenre } from "@/types/storyboard";
+import type { SceneTransition, StoryboardGenre } from "@/types/storyboard";
 import { updateStoryboardOutputs } from "@/lib/supabase/storyboard-db";
 import { createClient } from "@/lib/supabase/server";
 import {
@@ -37,6 +38,10 @@ interface StitchVideoBody {
   enableCinematicFade?: boolean;
   /** When true, bookend clips get per-clip fades at generation — skip stitch fade to avoid doubling. */
   hasBookendClips?: boolean;
+  /** Per-clip transition into the next scene (length = clipUrls.length - 1). */
+  sceneTransitions?: SceneTransition[];
+  /** Use FFmpeg motion transitions between clips (scene-stitch default true). */
+  useMotionTransitions?: boolean;
 }
 
 export async function POST(request: NextRequest) {
@@ -84,7 +89,31 @@ export async function POST(request: NextRequest) {
     if (buffers.length === 1) {
       stitched = buffers[0]!;
     } else if (preserveAudio) {
-      stitched = await concatMp4BuffersFastWithAudio(buffers);
+      const useMotion =
+        body.useMotionTransitions !== false &&
+        body.outputKind === "scene-stitch";
+      if (useMotion) {
+        try {
+          const joinTransitions =
+            body.sceneTransitions?.length === buffers.length - 1
+              ? body.sceneTransitions
+              : undefined;
+          stitched = await concatMp4BuffersWithMotionEffects(buffers, {
+            joinTransitions,
+          });
+          console.info(
+            "[storyboard/stitch-video] Applied motion transitions between scene clips"
+          );
+        } catch (motionErr) {
+          console.warn(
+            "[storyboard/stitch-video] Motion stitch failed — falling back to fast concat",
+            motionErr instanceof Error ? motionErr.message : motionErr
+          );
+          stitched = await concatMp4BuffersFastWithAudio(buffers);
+        }
+      } else {
+        stitched = await concatMp4BuffersFastWithAudio(buffers);
+      }
     } else {
       stitched = await concatMp4Buffers(buffers);
     }

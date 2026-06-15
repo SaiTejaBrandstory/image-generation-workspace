@@ -39,7 +39,8 @@ export async function updateSession(request: NextRequest) {
 
   const { pathname } = request.nextUrl;
 
-  if (!user && !isPublicPath(pathname)) {
+  // API routes return JSON errors themselves — do not redirect to the login HTML page.
+  if (!user && !isPublicPath(pathname) && !pathname.startsWith("/api/")) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.searchParams.set("next", pathname);

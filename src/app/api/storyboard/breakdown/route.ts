@@ -85,7 +85,7 @@ async function breakdownWithLlm(
 - props: locked descriptions of hero products, vehicles, or key objects.
 - sketchStyle: one consistent ${frameStyleConfig.label.toLowerCase()} visual style for the full sequence (${frameStyleConfig.continuityHint}).
 
-"scenes" array — each scene must have: voiceover, visualDescription, cameraDirection (shot type e.g. Wide Shot, Close Up), cameraAngle (e.g. Eye Level, Low Angle), cameraMovement (e.g. Static, Pan, Dolly In, Tracking), characterActions, environment, emotion (neutral|joy|tension|sadness|excitement|calm|urgency|hope), transition (cut|fade|dissolve|wipe|match-cut|jump-cut), imagePrompt, durationSec (integer).
+"scenes" array — each scene must have: voiceover, visualDescription, cameraDirection (shot type e.g. Wide Shot, Close Up), cameraAngle (e.g. Eye Level, Low Angle), cameraMovement (e.g. Static, Pan, Dolly In, Tracking), characterActions, environment, emotion (neutral|joy|tension|sadness|excitement|calm|urgency|hope), transition (FFmpeg xfade name e.g. fade, dissolve, wiperight, smoothleft, circleopen, pixelize — default fade), imagePrompt, durationSec (integer).
 Return EXACTLY ${targetScenes} scenes in the array — no more, no fewer.
 Total duration must be EXACTLY ${settings.durationSec} seconds across all ${targetScenes} scenes.
 Use these per-scene voiceover time budgets (do not exceed word limits — narration is recorded at natural speed):

@@ -5,6 +5,17 @@ import os from "os";
 import path from "path";
 import { promisify } from "util";
 import { runWithConcurrency } from "@/lib/reference-utils";
+import {
+  getJoinPreviewIncomingSec,
+  isBlendXfade,
+  isFadeCategoryXfade,
+  isFullOverlapXfade,
+  isSlideXfade,
+  isWipeXfade,
+  mapStoryboardTransitionToStitchJoin,
+  resolveSceneTransitionMeta,
+} from "@/lib/storyboard/xfade-transitions";
+import type { SceneTransition } from "@/types/storyboard";
 
 const execFileAsync = promisify(execFile);
 
@@ -77,8 +88,10 @@ export function formatStitchVideoErrorForUser(raw: string): string {
   return message || "Could not stitch clips. Please try again.";
 }
 
-/** Crossfade between stitched segments so cuts feel like one continuous edit. */
-export const STORYBOARD_STITCH_CROSSFADE_SEC = 0.35;
+/** Default crossfade when no per-scene transition is set (~1s dissolve in most NLEs). */
+export const STORYBOARD_STITCH_CROSSFADE_SEC = 0.75;
+/** Default motion blend when a scene uses a hard cut — short dip so AI clips don't pop. */
+export const STORYBOARD_STITCH_CUT_BLEND_SEC = 0.12;
 /** Cap scene-stitch resolution so serverless FFmpeg finishes within platform limits. */
 export const SCENE_STITCH_MAX_WIDTH = 1280;
 /** Lower cap for full storyboard segment joins on serverless (Hobby 60s). */
@@ -368,6 +381,124 @@ async function normalizeClipForCrossfade(
     "+faststart",
     outputPath,
   ]);
+}
+
+/** Trim the last N seconds of a clip (for join previews). */
+export async function trimMp4TailSeconds(
+  videoBuffer: Buffer,
+  tailSec: number
+): Promise<Buffer> {
+  if (tailSec <= 0) return videoBuffer;
+
+  const dir = await mkdtemp(path.join(os.tmpdir(), "storyboard-trim-tail-"));
+  const inFile = path.join(dir, "in.mp4");
+  const outFile = path.join(dir, "out.mp4");
+  try {
+    await writeFile(inFile, videoBuffer);
+    const probed = await probeMp4FileDurationFloat(inFile);
+    if (!probed || probed <= tailSec + 0.05) return videoBuffer;
+
+    await execFileAsync(ffmpegPath(), [
+      "-y",
+      "-sseof",
+      `-${tailSec}`,
+      "-i",
+      inFile,
+      "-t",
+      String(tailSec),
+      "-c:v",
+      "libx264",
+      "-preset",
+      "ultrafast",
+      "-crf",
+      "26",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "128k",
+      "-movflags",
+      "+faststart",
+      outFile,
+    ]);
+    return await readFile(outFile);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/** Trim the first N seconds of a clip (for join previews). */
+export async function trimMp4HeadSeconds(
+  videoBuffer: Buffer,
+  headSec: number
+): Promise<Buffer> {
+  if (headSec <= 0) return videoBuffer;
+
+  const dir = await mkdtemp(path.join(os.tmpdir(), "storyboard-trim-head-"));
+  const inFile = path.join(dir, "in.mp4");
+  const outFile = path.join(dir, "out.mp4");
+  try {
+    await writeFile(inFile, videoBuffer);
+    const probed = await probeMp4FileDurationFloat(inFile);
+    if (!probed || probed <= headSec + 0.05) return videoBuffer;
+
+    await execFileAsync(ffmpegPath(), [
+      "-y",
+      "-i",
+      inFile,
+      "-t",
+      String(headSec),
+      "-c:v",
+      "libx264",
+      "-preset",
+      "ultrafast",
+      "-crf",
+      "26",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "128k",
+      "-movflags",
+      "+faststart",
+      outFile,
+    ]);
+    return await readFile(outFile);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+export interface JoinTransitionPreviewOptions {
+  tailSec?: number;
+  headSec?: number;
+  maxWidth?: number;
+  transitionDurationSec?: number;
+}
+
+/**
+ * Render a join preview: full outgoing scene plays to its end, then the
+ * transition runs into the start of the incoming scene (same as final stitch).
+ */
+export async function renderJoinTransitionPreview(
+  outgoingClip: Buffer,
+  incomingClip: Buffer,
+  transition: SceneTransition | string,
+  options: JoinTransitionPreviewOptions = {}
+): Promise<Buffer> {
+  const resolved = resolveSceneTransitionMeta(transition);
+  const transitionDurationSec =
+    options.transitionDurationSec ?? resolved.durationSec;
+  const headSec =
+    options.headSec ?? getJoinPreviewIncomingSec(transition);
+  const maxWidth = options.maxWidth ?? 720;
+
+  const head = await trimMp4HeadSeconds(incomingClip, headSec);
+
+  return concatMp4BuffersWithMotionEffects([outgoingClip, head], {
+    joinTransitions: [transition as SceneTransition],
+    joinTransitionDurationSec: transitionDurationSec,
+    enforceExactJoinDuration: true,
+    maxWidth,
+  });
 }
 
 /** Trim a clip to an exact duration (no fade) — removes trailing black or overrun. */
@@ -734,6 +865,73 @@ export async function mixNarrationOntoVideo(
 export interface ConcatMp4CrossfadeOptions {
   /** Normalize clip audio (stereo AAC) and always crossfade sound — for scene animation stitches. */
   preserveClipAudio?: boolean;
+  /** Cap output width (scene stitches on serverless). */
+  maxWidth?: number;
+  /** How to join clip[i] → clip[i+1]; length should be clips.length - 1. */
+  joinTransitions?: SceneTransition[];
+  /** Fallback crossfade length when joinTransitions omitted. */
+  crossfadeSec?: number;
+  /** Override transition blend length for every join (e.g. slower modal previews). */
+  joinTransitionDurationSec?: number;
+  /** Honor requested duration in short join previews (skip the 35% clip cap). */
+  enforceExactJoinDuration?: boolean;
+}
+
+export interface StitchJoinTransition {
+  xfade: string;
+  durationSec: number;
+}
+
+function computeJoinFadeSec(
+  requestedSec: number,
+  prevDuration: number,
+  nextDuration: number,
+  exact = false,
+  xfade?: string
+): number {
+  const shorter = Math.min(prevDuration, nextDuration);
+  const maxFade = Math.max(0.08, shorter - 0.04);
+
+  // Crossfades and linear joins need the full requested overlap when clips allow.
+  if (
+    isSlideXfade(xfade ?? "") ||
+    isWipeXfade(xfade ?? "") ||
+    isBlendXfade(xfade ?? "") ||
+    isFadeCategoryXfade(xfade ?? "")
+  ) {
+    return Math.min(requestedSec, maxFade);
+  }
+
+  const fullOverlap = isFullOverlapXfade(xfade ?? "");
+
+  if (
+    fullOverlap &&
+    prevDuration >= requestedSec + 0.08 &&
+    nextDuration >= requestedSec + 0.08
+  ) {
+    return Math.min(requestedSec, maxFade);
+  }
+
+  if (exact) {
+    return Math.min(requestedSec, maxFade);
+  }
+
+  const cap = Math.max(0.08, shorter * 0.55);
+  return Math.min(requestedSec, cap);
+}
+
+function shouldEnforceExactJoinDuration(
+  options: ConcatMp4CrossfadeOptions,
+  joinTransitions?: SceneTransition[]
+): boolean {
+  if (options.enforceExactJoinDuration) return true;
+  return (
+    joinTransitions?.some((transition) =>
+      isFullOverlapXfade(
+        mapStoryboardTransitionToStitchJoin(transition).xfade
+      )
+    ) ?? false
+  );
 }
 
 export interface ConcatMp4FastOptions {
@@ -852,10 +1050,9 @@ export async function concatMp4BuffersForFullStoryboard(
   }
 }
 
-/** Concatenate MP4 buffers with short crossfades between segments. */
+/** Concatenate MP4 buffers with motion transitions (xfade) between segments. */
 export async function concatMp4BuffersWithCrossfade(
   clips: Buffer[],
-  crossfadeSec = STORYBOARD_STITCH_CROSSFADE_SEC,
   options: ConcatMp4CrossfadeOptions = {}
 ): Promise<Buffer> {
   if (!clips.length) {
@@ -864,6 +1061,10 @@ export async function concatMp4BuffersWithCrossfade(
   if (clips.length === 1) {
     return clips[0]!;
   }
+
+  const defaultCrossfade =
+    options.crossfadeSec ?? STORYBOARD_STITCH_CROSSFADE_SEC;
+  const maxWidth = options.maxWidth ?? SCENE_STITCH_MAX_WIDTH;
 
   const dir = await mkdtemp(path.join(os.tmpdir(), "storyboard-xfade-"));
   try {
@@ -882,7 +1083,10 @@ export async function concatMp4BuffersWithCrossfade(
       if (size) dimensions.push(size);
     }
 
-    const targetSize = pickCrossfadeTargetSize(dimensions);
+    const targetSize = capStitchTargetSize(
+      pickCrossfadeTargetSize(dimensions),
+      maxWidth
+    );
     const inputPaths: string[] = [];
     for (let i = 0; i < rawPaths.length; i++) {
       const preparedPath = path.join(dir, `clip-${i}.mp4`);
@@ -892,17 +1096,15 @@ export async function concatMp4BuffersWithCrossfade(
         durations[i]!,
         targetSize.width,
         targetSize.height,
-        { ensureAudio: options.preserveClipAudio }
+        {
+          ensureAudio: options.preserveClipAudio,
+          preset: process.env.VERCEL === "1" ? "ultrafast" : "fast",
+        }
       );
       inputPaths.push(preparedPath);
       durations[i] =
         (await probeMp4FileDurationFloat(preparedPath)) ?? durations[i]!;
     }
-
-    const fade = Math.min(
-      crossfadeSec,
-      Math.max(0.15, Math.min(...durations) * 0.12)
-    );
 
     const inputArgs = inputPaths.flatMap((clipPath) => ["-i", clipPath]);
     const clipHasAudio = await Promise.all(
@@ -911,14 +1113,31 @@ export async function concatMp4BuffersWithCrossfade(
     const stitchAudio =
       options.preserveClipAudio || clipHasAudio.every(Boolean);
 
+    const enforceExact = shouldEnforceExactJoinDuration(
+      options,
+      options.joinTransitions
+    );
+
     let videoFilter = "";
     let prevVideo = "0:v";
     let accumulated = durations[0]!;
 
     for (let i = 1; i < inputPaths.length; i++) {
+      const joinSpec = options.joinTransitions?.length
+        ? mapStoryboardTransitionToStitchJoin(options.joinTransitions[i - 1])
+        : { xfade: "fade", durationSec: defaultCrossfade };
+      const requestedDuration =
+        options.joinTransitionDurationSec ?? joinSpec.durationSec;
+      const fade = computeJoinFadeSec(
+        requestedDuration,
+        durations[i - 1]!,
+        durations[i]!,
+        enforceExact,
+        joinSpec.xfade
+      );
       const offset = Math.max(0, accumulated - fade);
       const outLabel = i === inputPaths.length - 1 ? "vout" : `v${i}`;
-      videoFilter += `[${prevVideo}][${i}:v]xfade=transition=fade:duration=${fade.toFixed(3)}:offset=${offset.toFixed(3)}[${outLabel}]`;
+      videoFilter += `[${prevVideo}][${i}:v]xfade=transition=${joinSpec.xfade}:duration=${fade.toFixed(3)}:offset=${offset.toFixed(3)}[${outLabel}]`;
       if (i < inputPaths.length - 1) videoFilter += ";";
       prevVideo = outLabel;
       accumulated += durations[i]! - fade;
@@ -928,7 +1147,20 @@ export async function concatMp4BuffersWithCrossfade(
     if (stitchAudio) {
       let audioFilter = "";
       let prevAudio = "0:a";
+
       for (let i = 1; i < inputPaths.length; i++) {
+        const joinSpec = options.joinTransitions?.length
+          ? mapStoryboardTransitionToStitchJoin(options.joinTransitions[i - 1])
+          : { xfade: "fade", durationSec: defaultCrossfade };
+        const requestedDuration =
+          options.joinTransitionDurationSec ?? joinSpec.durationSec;
+        const fade = computeJoinFadeSec(
+          requestedDuration,
+          durations[i - 1]!,
+          durations[i]!,
+          enforceExact,
+          joinSpec.xfade
+        );
         const outLabel = i === inputPaths.length - 1 ? "aout" : `a${i}`;
         audioFilter += `[${prevAudio}][${i}:a]acrossfade=d=${fade.toFixed(3)}:c1=tri:c2=tri[${outLabel}]`;
         if (i < inputPaths.length - 1) audioFilter += ";";
@@ -950,7 +1182,7 @@ export async function concatMp4BuffersWithCrossfade(
       "-c:v",
       "libx264",
       "-preset",
-      "fast",
+      process.env.VERCEL === "1" ? "ultrafast" : "fast",
       "-crf",
       "23",
       "-movflags",
@@ -963,6 +1195,18 @@ export async function concatMp4BuffersWithCrossfade(
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+/** Scene animation stitch — motion transitions + preserved clip audio. */
+export async function concatMp4BuffersWithMotionEffects(
+  clips: Buffer[],
+  options: Omit<ConcatMp4CrossfadeOptions, "preserveClipAudio"> = {}
+): Promise<Buffer> {
+  return concatMp4BuffersWithCrossfade(clips, {
+    ...options,
+    preserveClipAudio: true,
+    maxWidth: options.maxWidth ?? SCENE_STITCH_MAX_WIDTH,
+  });
 }
 
 /** Concatenate MP4 buffers in order into one file (hard cuts). */

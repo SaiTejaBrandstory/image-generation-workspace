@@ -1,3 +1,4 @@
+import { XFADE_TRANSITIONS } from "@/lib/storyboard/xfade-transitions";
 import type {
   SceneEmotion,
   SceneTransition,
@@ -97,14 +98,11 @@ export const SCENE_EMOTIONS: { id: SceneEmotion; label: string }[] = [
   { id: "hope", label: "Hope" },
 ];
 
-export const SCENE_TRANSITIONS: { id: SceneTransition; label: string }[] = [
-  { id: "cut", label: "Cut" },
-  { id: "fade", label: "Fade" },
-  { id: "dissolve", label: "Dissolve" },
-  { id: "wipe", label: "Wipe" },
-  { id: "match-cut", label: "Match Cut" },
-  { id: "jump-cut", label: "Jump Cut" },
-];
+export const SCENE_TRANSITIONS: { id: SceneTransition; label: string }[] =
+  XFADE_TRANSITIONS.map((item) => ({
+    id: item.id as SceneTransition,
+    label: item.label,
+  }));
 
 export const GENRE_STYLE_HINTS: Record<StoryboardGenre, string> = {
   commercial: "high-contrast commercial lighting, premium product staging",
