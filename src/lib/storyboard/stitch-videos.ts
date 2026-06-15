@@ -889,6 +889,17 @@ export interface StitchJoinTransition {
   durationSec: number;
 }
 
+/** Re-align FPS/timebase after concat/xfade so mixed join chains stay compatible. */
+const STITCH_VIDEO_FPS = 24;
+const STITCH_VIDEO_TIMEBASE = "1/12288";
+
+function stabilizeJoinedVideoStream(
+  rawLabel: string,
+  outLabel: string
+): string {
+  return `[${rawLabel}]fps=${STITCH_VIDEO_FPS},settb=${STITCH_VIDEO_TIMEBASE}[${outLabel}]`;
+}
+
 function computeJoinFadeSec(
   requestedSec: number,
   prevDuration: number,
@@ -1151,10 +1162,12 @@ export async function concatMp4BuffersWithCrossfade(
 
     for (let i = 1; i < inputPaths.length; i++) {
       const joinSpec = joinSpecs[i - 1] ?? defaultJoinSpec;
-      const outLabel = i === inputPaths.length - 1 ? "vout" : `v${i}`;
+      const isLast = i === inputPaths.length - 1;
+      const stagedLabel = isLast ? "voutraw" : `v${i}raw`;
+      const outLabel = isLast ? "vout" : `v${i}`;
 
       if (joinSpec.hardCut) {
-        videoFilter += `[${prevVideo}][${i}:v]concat=n=2:v=1:a=0[${outLabel}]`;
+        videoFilter += `[${prevVideo}][${i}:v]concat=n=2:v=1:a=0[${stagedLabel}];`;
         accumulated += durations[i]!;
       } else {
         const requestedDuration =
@@ -1167,11 +1180,12 @@ export async function concatMp4BuffersWithCrossfade(
           joinSpec.xfade ?? undefined
         );
         const offset = Math.max(0, accumulated - fade);
-        videoFilter += `[${prevVideo}][${i}:v]xfade=transition=${joinSpec.xfade}:duration=${fade.toFixed(3)}:offset=${offset.toFixed(3)}[${outLabel}]`;
+        videoFilter += `[${prevVideo}][${i}:v]xfade=transition=${joinSpec.xfade}:duration=${fade.toFixed(3)}:offset=${offset.toFixed(3)}[${stagedLabel}];`;
         accumulated += durations[i]! - fade;
       }
 
-      if (i < inputPaths.length - 1) videoFilter += ";";
+      videoFilter += stabilizeJoinedVideoStream(stagedLabel, outLabel);
+      if (!isLast) videoFilter += ";";
       prevVideo = outLabel;
     }
 
