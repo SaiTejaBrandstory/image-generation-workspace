@@ -118,12 +118,20 @@ function mapMessageRow(row: DbMessageRow): ChatMessage {
   };
 }
 
+function parseConversationAspectRatio(
+  value: string | null | undefined
+): AspectRatio | undefined {
+  if (!value?.trim()) return undefined;
+  return value.trim() as AspectRatio;
+}
+
 export function mapConversationListRow(row: DbConversationRow): Conversation {
   return {
     id: row.id,
     title: row.title,
     prompt: row.prompt ?? undefined,
     mediaType: row.media_type ?? "image",
+    aspectRatio: parseConversationAspectRatio(row.aspect_ratio),
     messages: [],
     variants: [],
     createdAt: new Date(row.created_at).getTime(),
@@ -205,6 +213,7 @@ export async function fetchConversationDetail(
     title: row.title,
     prompt: row.prompt ?? undefined,
     mediaType: inferredMediaType,
+    aspectRatio: parseConversationAspectRatio(row.aspect_ratio),
     messages: ((messages ?? []) as DbMessageRow[]).map(mapMessageRow),
     variants: mappedVariants,
     createdAt: new Date(row.created_at).getTime(),

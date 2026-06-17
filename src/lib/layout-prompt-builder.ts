@@ -177,9 +177,21 @@ export function buildLayoutImagePrompt(options: {
     references?.filter((r) => r.usageMode === "preserve") ?? [];
 
   const refNotes: string[] = [];
-  if (inspireRefs.length > 0) {
+  const variationParentInspire = inspireRefs.filter(
+    (r) => r.referenceContext === "variation-parent"
+  );
+  const otherInspire = inspireRefs.filter(
+    (r) => r.referenceContext !== "variation-parent"
+  );
+
+  if (variationParentInspire.length > 0) {
     refNotes.push(
-      `INSPIRE (${inspireRefs.length} image(s)): Use attached reference(s) for visual direction only — mood, palette, composition, and styling. You may reinterpret content to fit the "${layout?.name}" layout.`
+      `PRODUCT SOURCE (${variationParentInspire.length} image(s)): The attached parent ad is for product/logo identity ONLY — reuse the exact same product packaging, bottle, and brand logo. IGNORE the parent's layout, background, typography positions, lighting, effects, and composition entirely. Build a fresh "${layout?.name}" design that would not be mistaken for the parent at a glance.`
+    );
+  }
+  if (otherInspire.length > 0) {
+    refNotes.push(
+      `INSPIRE (${otherInspire.length} image(s)): Use attached reference(s) for mood and brand tone only — do NOT copy composition, layout, or colors. Reinterpret freely to fit the "${layout?.name}" layout.`
     );
   }
   if (preserveRefs.length > 0) {

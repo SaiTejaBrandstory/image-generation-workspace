@@ -113,10 +113,16 @@ function buildMessageContent(
         type: "text",
         text: "PRESERVE — include this exact asset in the output without altering the subject:",
       });
+    } else if (ref.referenceContext === "variation-parent") {
+      parts.push({
+        type: "text",
+        text:
+          "PRODUCT SOURCE — reuse the exact product packaging and brand logo from this image. Do NOT copy its layout, background, text placement, lighting, or composition:",
+      });
     } else {
       parts.push({
         type: "text",
-        text: "INSPIRE — use for visual direction only:",
+        text: "INSPIRE — mood and brand tone only; do not copy this composition or layout:",
       });
     }
     parts.push({
@@ -158,9 +164,9 @@ export async function generateImageWithOpenRouter(options: {
     references: options.references,
   });
 
-  // Models without image_config still honor aspect via prompt hint.
-  if (!config.supportsAspectConfig && aspectRatio !== "auto") {
-    textPrompt = `${textPrompt}\n\nCompose the image in ${mapAspectRatio(aspectRatio)} aspect ratio.`;
+  // Always reinforce aspect in the prompt when locked (image_config alone is not always respected).
+  if (aspectRatio !== "auto") {
+    textPrompt = `${textPrompt}\n\nCRITICAL: The output image MUST use exactly ${mapAspectRatio(aspectRatio)} aspect ratio. No other canvas proportions are acceptable.`;
   }
 
   const body: Record<string, unknown> = {

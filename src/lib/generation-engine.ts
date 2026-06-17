@@ -12,7 +12,10 @@ import {
 } from "@/lib/parse-api-response";
 import { maxReferencesForMedia } from "@/lib/reference-limits";
 import { runWithConcurrency, serializeReferences } from "@/lib/reference-utils";
-import { sourceImageToVariationReference } from "@/lib/variation-utils";
+import {
+  getVariationGenerationParams,
+  sourceImageToVariationReference,
+} from "@/lib/variation-utils";
 import type {
   AspectRatio,
   DesignElement,
@@ -445,6 +448,7 @@ export async function generateVariantVariations(options: {
     throw new Error("Parent image is required to create variations.");
   }
 
+  const variationParams = getVariationGenerationParams(options.params);
   const sourceRef = await sourceImageToVariationReference(
     options.parent.imageUrl
   );
@@ -469,7 +473,7 @@ export async function generateVariantVariations(options: {
           designElement: options.designElement ?? "none",
           promptColors: options.promptColors,
           aspectRatio: options.aspectRatio,
-          params: options.params,
+          params: variationParams,
           imageModel: options.imageModel,
           designTokens: options.designTokens,
           references: [],

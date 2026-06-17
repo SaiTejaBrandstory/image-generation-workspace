@@ -28,9 +28,11 @@ import {
   clampVariationBatch,
   DEFAULT_VARIATION_BATCH,
   getChildVariations,
+  getVariationGenerationParams,
   getNextVariationStartIndex,
   MAX_VARIATIONS,
   remainingVariationSlots,
+  resolveVariationAspectRatio,
   sourceImageToVariationReference,
 } from "@/lib/variation-utils";
 import {
@@ -795,12 +797,14 @@ async function runFreeStyleGeneration(
           messages: optimisticMessages,
           variants: allVariantsForUi,
           prompt,
+          aspectRatio,
         }, { pinToTop: true })
       : [
           {
             id: conversationId,
             title: prompt.length > 40 ? `${prompt.slice(0, 40)}…` : prompt,
             prompt,
+            aspectRatio,
             messages: optimisticMessages,
             variants: allVariantsForUi,
             createdAt: Date.now(),
@@ -966,6 +970,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         createdAt: existing?.createdAt ?? Date.now(),
         prompt: patch.prompt ?? existing?.prompt,
         mediaType: patch.mediaType ?? existing?.mediaType ?? "image",
+        aspectRatio: patch.aspectRatio ?? existing?.aspectRatio,
         starred: patch.starred ?? existing?.starred,
         projectId:
           patch.projectId !== undefined
@@ -1271,10 +1276,18 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         conversation.mediaType === "image" || conversation.mediaType === "video"
           ? conversation.mediaType
           : get().mediaType;
+      const restoredAspectRatio =
+        resolvedMediaType === "image" && conversation.aspectRatio
+          ? clampImageAspectRatioToModel(
+              get().imageModel,
+              conversation.aspectRatio
+            )
+          : get().aspectRatio;
 
       set((s) => ({
         variants,
         mediaType: resolvedMediaType,
+        aspectRatio: restoredAspectRatio,
         conversations: mergeConversationInList(s.conversations, id, hydrated),
         generationProgress: viewingInFlight ? s.generationProgress : 0,
         mobilePanel: resolvedMediaType === "video" ? "layouts" : "chat",
@@ -1462,6 +1475,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
               messages: optimisticMessages,
               variants: allVariantsForUi,
               prompt,
+              aspectRatio,
             },
             { pinToTop: true }
           )
@@ -1471,6 +1485,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
               title:
                 prompt.length > 40 ? `${prompt.slice(0, 40)}…` : prompt,
               prompt,
+              aspectRatio,
               messages: optimisticMessages,
               variants: allVariantsForUi,
               createdAt: Date.now(),
@@ -1646,6 +1661,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
     try {
       let referenceOverrides: ReferenceImagePayload[] | undefined;
+      let variationAspectRatio = state.aspectRatio;
       if (variant.parentVariantId) {
         const parent = state.variants.find(
           (v) => v.id === variant.parentVariantId
@@ -1654,6 +1670,15 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
           referenceOverrides = [
             await sourceImageToVariationReference(parent.imageUrl),
           ];
+          const activeConversation = state.activeConversationId
+            ? state.conversations.find((c) => c.id === state.activeConversationId)
+            : undefined;
+          variationAspectRatio = await resolveVariationAspectRatio({
+            parentImageUrl: parent.imageUrl,
+            imageModel: state.imageModel,
+            conversationAspectRatio: activeConversation?.aspectRatio,
+            workspaceAspectRatio: state.aspectRatio,
+          });
         }
       }
 
@@ -1666,9 +1691,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         promptColors: state.colorPreferenceEnabled
           ? state.promptColors
           : undefined,
-        aspectRatio: state.aspectRatio,
-        params: state.params,
-        references: state.references,
+        aspectRatio: variationAspectRatio,
+        params: variant.parentVariantId
+          ? getVariationGenerationParams(state.params)
+          : state.params,
+        references: variant.parentVariantId ? [] : state.references,
         referenceOverrides,
         imageModel: state.imageModel,
         designTokens: state.designTokens ?? undefined,
@@ -1884,9 +1911,27 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       return;
     }
 
+    const activeConversation = state.conversations.find(
+      (c) => c.id === conversationId
+    );
+    const lockedImageAspectRatio = isVideoParent
+      ? undefined
+      : await resolveVariationAspectRatio({
+          parentImageUrl: parent.imageUrl!,
+          imageModel: state.imageModel,
+          conversationAspectRatio: activeConversation?.aspectRatio,
+          workspaceAspectRatio: state.aspectRatio,
+        });
+
     const pendingVariations = isVideoParent
       ? buildPendingVideoVariations(parent, batchCount, startIndex)
-      : buildPendingVariations(parent, state.style, batchCount, startIndex);
+      : buildPendingVariations(
+          parent,
+          state.style,
+          batchCount,
+          startIndex,
+          lockedImageAspectRatio
+        );
     set({
       generationError: null,
       generatingVariationsParentId: parentVariantId,
@@ -1951,7 +1996,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
             promptColors: state.colorPreferenceEnabled
               ? state.promptColors
               : undefined,
-            aspectRatio: state.aspectRatio,
+            aspectRatio: lockedImageAspectRatio ?? state.aspectRatio,
             params: state.params,
             imageModel: state.imageModel,
             designTokens: state.designTokens ?? undefined,

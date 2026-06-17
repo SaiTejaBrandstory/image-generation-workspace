@@ -134,6 +134,8 @@ export interface ReferenceImagePayload {
   influence: number;
   dataUrl: string;
   usageMode: ReferenceUsageMode;
+  /** Parent design anchor when generating layout variations */
+  referenceContext?: "variation-parent";
 }
 
 /** Brand palette slots sent as prompt hints when color preference is enabled. */
@@ -210,6 +212,8 @@ export interface Conversation {
   /** Original user prompt (for history search) */
   prompt?: string;
   mediaType?: ConversationMediaType;
+  /** Aspect ratio used when this conversation was generated (image). */
+  aspectRatio?: AspectRatio;
   messages: ChatMessage[];
   variants: LayoutVariant[];
   createdAt: number;
