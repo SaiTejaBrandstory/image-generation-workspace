@@ -56,6 +56,7 @@ export function Sidebar({ user }: SidebarProps) {
     setMobileSidebarOpen,
     setMobilePanel,
     setMediaType,
+    mediaType,
     isGenerating,
   } = useWorkspaceStore();
 
@@ -94,6 +95,15 @@ export function Sidebar({ user }: SidebarProps) {
       setMobileSidebarOpen,
     ]
   );
+
+  const startNewGeneration = useCallback(() => {
+    if (isGenerating) return;
+    if (isStoryboardPage) {
+      startNewChatWithTool("storyboard");
+      return;
+    }
+    startNewChatWithTool(mediaType);
+  }, [isGenerating, isStoryboardPage, mediaType, startNewChatWithTool]);
 
   const [historySearch, setHistorySearch] = useState("");
   const [historyMediaFilter, setHistoryMediaFilter] =
@@ -332,12 +342,11 @@ export function Sidebar({ user }: SidebarProps) {
 
           <Tooltip content="New generation">
             <button
-              onClick={() => {
-                newConversation();
-                if (!isDesktop) setMobileSidebarOpen(false);
-              }}
+              type="button"
+              disabled={isGenerating}
+              onClick={startNewGeneration}
               className={cn(
-                "flex h-10 w-full items-center gap-3 rounded-xl text-foreground-muted hover:bg-surface-elevated hover:text-foreground transition-colors",
+                "flex h-10 w-full items-center gap-3 rounded-xl text-foreground-muted hover:bg-surface-elevated hover:text-foreground transition-colors disabled:opacity-50",
                 showExpanded ? "px-3" : "justify-center"
               )}
             >
