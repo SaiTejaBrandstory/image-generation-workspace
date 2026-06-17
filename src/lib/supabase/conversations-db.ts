@@ -133,16 +133,17 @@ export function mapConversationListRow(row: DbConversationRow): Conversation {
   };
 }
 
+const CONVERSATIONS_PAGE_SIZE = 200;
+
 export async function searchConversations(
   supabase: SupabaseClient,
   userId: string,
-  query: string,
-  limit = 50
+  query: string
 ): Promise<Conversation[]> {
   const q = query.trim().toLowerCase();
-  if (!q) return listConversations(supabase, userId, limit);
+  if (!q) return listConversations(supabase, userId);
 
-  const all = await listConversations(supabase, userId, 100);
+  const all = await listConversations(supabase, userId);
 
   const { data: messageMatches, error: msgError } = await supabase
     .from("chat_messages")
@@ -156,14 +157,12 @@ export async function searchConversations(
     (messageMatches ?? []).map((m) => m.conversation_id as string)
   );
 
-  const filtered = all.filter((c) => {
+  return all.filter((c) => {
     if (c.title.toLowerCase().includes(q)) return true;
     if (c.prompt?.toLowerCase().includes(q)) return true;
     if (messageConvIds.has(c.id)) return true;
     return false;
   });
-
-  return filtered.slice(0, limit);
 }
 
 export async function fetchConversationDetail(
@@ -267,18 +266,31 @@ export async function deleteConversation(
 
 export async function listConversations(
   supabase: SupabaseClient,
-  userId: string,
-  limit = 50
+  userId: string
 ): Promise<Conversation[]> {
-  const { data, error } = await supabase
-    .from("conversations")
-    .select("*")
-    .eq("user_id", userId)
-    .order("updated_at", { ascending: false })
-    .limit(limit);
+  const all: Conversation[] = [];
+  let from = 0;
 
-  if (error) throw new Error(error.message);
-  return ((data ?? []) as DbConversationRow[]).map(mapConversationListRow);
+  while (true) {
+    const { data, error } = await supabase
+      .from("conversations")
+      .select("*")
+      .eq("user_id", userId)
+      .order("updated_at", { ascending: false })
+      .range(from, from + CONVERSATIONS_PAGE_SIZE - 1);
+
+    if (error) throw new Error(error.message);
+
+    const batch = ((data ?? []) as DbConversationRow[]).map(
+      mapConversationListRow
+    );
+    all.push(...batch);
+
+    if (batch.length < CONVERSATIONS_PAGE_SIZE) break;
+    from += CONVERSATIONS_PAGE_SIZE;
+  }
+
+  return all;
 }
 
 type VariantDbPatch = Partial<{
