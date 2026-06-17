@@ -16,17 +16,17 @@ export const DEFAULT_VARIATION_BATCH = 3;
 /** @deprecated Use MAX_VARIATIONS */
 export const VARIATION_COUNT = DEFAULT_VARIATION_BATCH;
 
-const VARIATION_ANGLES = [
-  "Shift color palette and lighting mood while keeping the same message and layout structure.",
-  "Adjust composition emphasis and negative space; explore a fresh focal hierarchy.",
-  "Try alternate typography weight, texture, and graphic accents while staying on-brand.",
-  "Introduce a bolder contrast ratio and sharper graphic hierarchy.",
-  "Soften the palette with more whitespace and a calmer editorial feel.",
-  "Push a more cinematic crop and dramatic lighting direction.",
-  "Explore a minimalist, icon-led composition with fewer elements.",
-  "Add subtle pattern, grain, or tactile background texture.",
-  "Rebalance headline scale versus supporting copy for a new rhythm.",
-  "Try a lifestyle-forward scene with warmer ambient light and depth.",
+const VARIATION_DESIGN_DIRECTIONS = [
+  "Recompose with a split layout: hero on one side, copy and CTA on the other — same message, new structure.",
+  "Use a stacked vertical rhythm: headline, hero, supporting copy, and CTA in a fresh top-to-bottom flow.",
+  "Explore an asymmetric grid: offset focal point, dynamic diagonal flow, and varied element sizes.",
+  "Try a card-based modular layout: distinct content zones with new spacing and separation.",
+  "Lead with oversized typography: headline as the primary visual, imagery secondary.",
+  "Lead with dominant photography or illustration: type integrated as overlay bands or side captions.",
+  "Use a magazine editorial layout: columns, pull-quote zones, and varied type scale.",
+  "Explore an icon- and badge-led composition: graphic symbols carry structure with minimal photo.",
+  "Use bold horizontal bands: contrasting background strips for each content block.",
+  "Try a centered hero with radial supporting elements: symmetrical but with a new graphic arrangement.",
 ];
 
 const VIDEO_VARIATION_ANGLES = [
@@ -110,10 +110,18 @@ export function buildVariationUserPrompt(
   variationIndex: number
 ): string {
   const layoutName = LAYOUT_MAP[layoutId]?.name ?? "layout";
-  const angle =
-    VARIATION_ANGLES[variationIndex % VARIATION_ANGLES.length] ??
-    VARIATION_ANGLES[0];
-  return `${basePrompt.trim()}\n\nVariation ${variationIndex + 1}: ${angle} Keep the same campaign intent and "${layoutName}" structure. The attached source image is the reference — produce a distinct alternate take, not a copy.`;
+  const direction =
+    VARIATION_DESIGN_DIRECTIONS[
+      variationIndex % VARIATION_DESIGN_DIRECTIONS.length
+    ] ?? VARIATION_DESIGN_DIRECTIONS[0];
+
+  return `${basePrompt.trim()}
+
+VARIATION ${variationIndex + 1} — alternate design (not a recolor):
+- Keep the same campaign message, audience, and "${layoutName}" layout system.
+- The attached reference is for intent and brand mood only — do NOT copy its exact composition, colors, or pixel layout.
+- Create a genuinely different design execution: ${direction}
+- Change composition, hierarchy, spacing, and graphic structure. A color-shift or filter tweak alone is not acceptable.`;
 }
 
 export function buildPendingVariations(
@@ -144,7 +152,7 @@ export function buildPendingVariations(
       variationIndex,
       userPrompt,
       prompt: augmented,
-      rationale: `Variation ${variationIndex + 1} — alternate take on ${layout?.name ?? parent.layoutId}.`,
+      rationale: `Variation ${variationIndex + 1} — alternate design for ${layout?.name ?? parent.layoutId}.`,
       visualPsychology: parent.visualPsychology,
       bestUse: parent.bestUse,
       suggestedPlatform: parent.suggestedPlatform,
@@ -196,14 +204,21 @@ export function buildPendingVideoVariations(
   });
 }
 
-export async function sourceImageToPreserveReference(
+export async function sourceImageToVariationReference(
   imageUrl: string
 ): Promise<ReferenceImagePayload> {
   const dataUrl = await blobUrlToDataUrl(imageUrl);
   return {
-    role: "product",
-    influence: 100,
+    role: "composition",
+    influence: 72,
     dataUrl,
-    usageMode: "preserve",
+    usageMode: "inspire",
   };
+}
+
+/** @deprecated Use sourceImageToVariationReference for layout variations. */
+export async function sourceImageToPreserveReference(
+  imageUrl: string
+): Promise<ReferenceImagePayload> {
+  return sourceImageToVariationReference(imageUrl);
 }

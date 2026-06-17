@@ -12,7 +12,7 @@ import {
 } from "@/lib/parse-api-response";
 import { maxReferencesForMedia } from "@/lib/reference-limits";
 import { runWithConcurrency, serializeReferences } from "@/lib/reference-utils";
-import { sourceImageToPreserveReference } from "@/lib/variation-utils";
+import { sourceImageToVariationReference } from "@/lib/variation-utils";
 import type {
   AspectRatio,
   DesignElement,
@@ -445,7 +445,7 @@ export async function generateVariantVariations(options: {
     throw new Error("Parent image is required to create variations.");
   }
 
-  const sourceRef = await sourceImageToPreserveReference(
+  const sourceRef = await sourceImageToVariationReference(
     options.parent.imageUrl
   );
   const variations: LayoutVariant[] = options.pendingVariations.map((v) => ({

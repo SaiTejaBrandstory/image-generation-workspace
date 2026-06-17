@@ -31,7 +31,7 @@ import {
   getNextVariationStartIndex,
   MAX_VARIATIONS,
   remainingVariationSlots,
-  sourceImageToPreserveReference,
+  sourceImageToVariationReference,
 } from "@/lib/variation-utils";
 import {
   clampImageAspectRatioToModel,
@@ -1652,7 +1652,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         );
         if (parent?.imageUrl) {
           referenceOverrides = [
-            await sourceImageToPreserveReference(parent.imageUrl),
+            await sourceImageToVariationReference(parent.imageUrl),
           ];
         }
       }
