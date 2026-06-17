@@ -113,6 +113,11 @@ export function mapAspectRatio(ratio: AspectRatio): string {
   return ASPECT_MAP[ratio] ?? "1:1";
 }
 
+const LOGO_SAFE_ZONE_RULE =
+  "Logo safe zones: keep all text/typography, badges, CTAs, and dense visual elements away from all four corners. Reserve clean negative space in each corner for potential logo placement.";
+const FULL_BLEED_RULE =
+  "Full-bleed output only: artwork must fill the entire canvas edge-to-edge. No white border, frame, mat, margin, padding, inset card, or picture-in-picture composition.";
+
 function designElementPromptLine(designElement: DesignElement): string {
   const hint = DESIGN_ELEMENT_HINTS[designElement];
   if (!hint) return "";
@@ -165,7 +170,18 @@ export function buildLayoutImagePrompt(options: {
     const refNotes: string[] = [];
     if (inspireRefs.length > 0) refNotes.push(`INSPIRE (${inspireRefs.length} image(s)): Use for visual direction only — mood, palette, and styling.`);
     if (preserveRefs.length > 0) refNotes.push(`PRESERVE (${preserveRefs.length} image(s)): The attached asset(s) must appear in the output with their exact subject, colors, and fine details.`);
-    return [userPrompt, styleLine, designLine, colorLine, ...refNotes, "Output a single polished, production-ready image. No text watermarks."].filter(Boolean).join(" ");
+    return [
+      userPrompt,
+      styleLine,
+      designLine,
+      colorLine,
+      LOGO_SAFE_ZONE_RULE,
+      FULL_BLEED_RULE,
+      ...refNotes,
+      "Output a single polished, production-ready image. No text watermarks.",
+    ]
+      .filter(Boolean)
+      .join(" ");
   }
 
   const layout = LAYOUT_MAP[options.layoutId];
@@ -228,6 +244,8 @@ export function buildLayoutImagePrompt(options: {
     colorLine,
     `Platform: ${PLATFORM_HINTS[platform]}.`,
     `Visual parameters — creativity ${params.creativity}%, typography strength ${params.typographyStrength}%, density ${params.visualDensity}%, motion energy ${params.motionEnergy}%, depth ${params.depthIntensity}%, contrast ${params.contrast}%, UI presence ${params.uiPresence}%.`,
+    LOGO_SAFE_ZONE_RULE,
+    FULL_BLEED_RULE,
     brandNote,
     refNote,
     "Output a single polished, production-ready marketing image. No text watermarks. No collage of multiple separate images.",

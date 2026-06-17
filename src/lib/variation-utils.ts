@@ -45,6 +45,32 @@ const VARIATION_DESIGN_DIRECTIONS = [
   "Centered hero with supporting elements arranged in a radial or orbital pattern.",
 ];
 
+const VARIATION_SCENE_DIRECTIONS = [
+  "Studio gradient backdrop with clean spotlight and minimal props.",
+  "Cinematic real-world lifestyle setting tied to the product use moment.",
+  "Abstract 3D environment with geometric forms and depth layers.",
+  "Editorial set design with textured background and art-directed surfaces.",
+  "Motion-led energy scene using streaks, particles, or directional light trails.",
+  "Minimal premium scene with strong negative space and subtle shadow play.",
+  "UI/infographic hybrid backdrop with modular information panels.",
+  "Organic nature-inspired environment (water, mist, stone, botanical, or air cues).",
+  "High-contrast graphic poster world with bold blocks and shape cutouts.",
+  "Night-mode neon or glow treatment with controlled highlights.",
+];
+
+const VARIATION_TYPE_DIRECTIONS = [
+  "Headline in a single dominant zone; body copy compact and secondary.",
+  "Vertical type rhythm with clear top-mid-bottom hierarchy.",
+  "Two-column typography structure with deliberate asymmetry.",
+  "Large quote/claim lockup plus a compact proof-point block.",
+  "Short headline + icon-supported benefit bullets + focused CTA.",
+  "Top banner headline with a separated lower conversion panel.",
+  "Side-rail typography with generous spacing and sparse copy.",
+  "Bold condensed headline with minimal supporting microcopy.",
+  "Editorial serif/sans contrast with clear reading flow.",
+  "CTA isolated in its own dedicated block, separate from body copy.",
+];
+
 /** Pick a different layout system than the parent so variations are structurally distinct. */
 export function getVariationLayoutId(
   parentLayoutId: LayoutId,
@@ -62,12 +88,12 @@ export function getVariationGenerationParams(
 ): GenerationParams {
   return {
     ...params,
-    creativity: Math.max(params.creativity ?? 50, 82),
-    visualDensity: Math.min(100, (params.visualDensity ?? 50) + 8),
-    contrast: Math.min(100, (params.contrast ?? 50) + 6),
+    creativity: Math.max(params.creativity ?? 50, 90),
+    visualDensity: Math.min(100, (params.visualDensity ?? 50) + 10),
+    contrast: Math.min(100, (params.contrast ?? 50) + 8),
     typographyStrength: Math.min(
       100,
-      (params.typographyStrength ?? 50) + 10
+      (params.typographyStrength ?? 50) + 14
     ),
   };
 }
@@ -241,6 +267,14 @@ export function buildVariationUserPrompt(
     VARIATION_DESIGN_DIRECTIONS[
       variationIndex % VARIATION_DESIGN_DIRECTIONS.length
     ] ?? VARIATION_DESIGN_DIRECTIONS[0];
+  const sceneDirection =
+    VARIATION_SCENE_DIRECTIONS[
+      variationIndex % VARIATION_SCENE_DIRECTIONS.length
+    ] ?? VARIATION_SCENE_DIRECTIONS[0];
+  const typeDirection =
+    VARIATION_TYPE_DIRECTIONS[
+      variationIndex % VARIATION_TYPE_DIRECTIONS.length
+    ] ?? VARIATION_TYPE_DIRECTIONS[0];
   const aspectLine =
     lockedAspectRatio && lockedAspectRatio !== "auto"
       ? `\n- REQUIRED canvas: ${lockedAspectRatio} aspect ratio — identical dimensions to the parent. Do not output any other aspect ratio.`
@@ -258,6 +292,10 @@ ${layoutLine}
 - Attached reference = product/logo identity ONLY. Reuse the exact same product packaging, bottle, and brand logo. Do NOT copy the parent's layout, background, text positions, lighting, smoke, gradients, or decorative effects.
 - FORBIDDEN: cloning the parent's composition, grid, or visual structure. The result must look like a different designer's take on the same brief.
 - Mandatory new layout: ${direction}
+- Mandatory new scene/background direction: ${sceneDirection}
+- Mandatory typography treatment: ${typeDirection}
+- Logo safe zones: keep all text/typography, badges, CTAs, and dense visual elements away from all four corners. Leave clean corner space for logo placement.
+- Full-bleed output only: fill the entire canvas edge-to-edge. No white border, frame, margin, padding, inset card, or picture-in-picture layout.
 - Change hero placement, type hierarchy, graphic shapes, spacing, and background treatment.${aspectLine}`;
 }
 
@@ -352,7 +390,7 @@ export async function sourceImageToVariationReference(
   const dataUrl = await blobUrlToDataUrl(imageUrl);
   return {
     role: "product",
-    influence: 42,
+    influence: 32,
     dataUrl,
     usageMode: "inspire",
     referenceContext: "variation-parent",
