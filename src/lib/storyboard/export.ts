@@ -1,13 +1,36 @@
 import { jsPDF } from "jspdf";
+import { formatStoryboardSceneLabel } from "@/lib/storyboard/bookend-scenes";
+import { getDataUrlDimensions } from "@/lib/reference-image-dimensions";
 import { getFrameStyleLabel } from "@/lib/storyboard/frame-styles";
+import { nearestStoryboardAspectRatio } from "@/lib/storyboard/storyboard-image";
+import type { AspectRatio } from "@/types";
 import type { StoryboardProjectSettings, StoryboardScene } from "@/types/storyboard";
 
-const MARGIN = 14;
-const ACCENT: [number, number, number] = [234, 88, 12];
-const INK: [number, number, number] = [24, 24, 27];
-const MUTED: [number, number, number] = [113, 113, 122];
-const LINE: [number, number, number] = [228, 228, 231];
-const PANEL: [number, number, number] = [250, 250, 250];
+/** Warm paper + cinematic stage — distinct from prior header/sidebar layouts. */
+const PAPER: [number, number, number] = [252, 250, 247];
+const STAGE: [number, number, number] = [14, 14, 16];
+const INK: [number, number, number] = [28, 25, 23];
+const SUBTLE: [number, number, number] = [120, 113, 108];
+const RULE: [number, number, number] = [232, 228, 223];
+const STRIP: [number, number, number] = [245, 243, 240];
+const BRAND: [number, number, number] = [234, 88, 12];
+const WHITE: [number, number, number] = [255, 255, 255];
+
+const SIDE = 14;
+const FOOTER = 7;
+
+interface FrameExportAsset {
+  dataUrl: string | null;
+  aspectRatio: number;
+  aspectLabel: AspectRatio;
+}
+
+interface PageBox {
+  w: number;
+  h: number;
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
 async function fetchImageBlob(url: string): Promise<Blob | null> {
   try {
@@ -32,8 +55,19 @@ function imageFormat(dataUrl: string): "JPEG" | "PNG" {
   return dataUrl.startsWith("data:image/png") ? "PNG" : "JPEG";
 }
 
+function pdfSafe(text: string): string {
+  return text
+    .normalize("NFKD")
+    .replace(/[\u2018\u2019\u2032]/g, "'")
+    .replace(/[\u201C\u201D\u2033]/g, '"')
+    .replace(/[\u2013\u2014]/g, "-")
+    .replace(/\u2026/g, "...")
+    .replace(/\u00B7/g, "-")
+    .replace(/[^\t\n\r\x20-\x7E]/g, "");
+}
+
 function titleCase(value: string): string {
-  return value
+  return pdfSafe(value)
     .split(/[-_\s]+/)
     .filter(Boolean)
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
@@ -41,247 +75,290 @@ function titleCase(value: string): string {
 }
 
 function truncate(text: string, max: number): string {
-  const t = text.trim();
+  const t = pdfSafe(text).trim();
   if (t.length <= max) return t;
-  return `${t.slice(0, max - 1)}…`;
+  return `${t.slice(0, max - 3)}...`;
+}
+
+function aspectToNumber(ratio?: AspectRatio | null): number {
+  if (!ratio || ratio === "auto") return 16 / 9;
+  const [w, h] = ratio.split(":").map(Number);
+  return w && h ? w / h : 16 / 9;
+}
+
+function settingsAspect(settings: StoryboardProjectSettings): AspectRatio {
+  if (settings.imageAspectRatio && settings.imageAspectRatio !== "auto") {
+    return settings.imageAspectRatio;
+  }
+  return "16:9";
+}
+
+function fitInBox(maxW: number, maxH: number, aspect: number) {
+  let w = maxW;
+  let h = w / aspect;
+  if (h > maxH) {
+    h = maxH;
+    w = h * aspect;
+  }
+  return { w, h };
+}
+
+function pageBox(doc: jsPDF): PageBox {
+  return {
+    w: doc.internal.pageSize.getWidth(),
+    h: doc.internal.pageSize.getHeight(),
+  };
+}
+
+function fillPage(doc: jsPDF, color: [number, number, number]) {
+  const { w, h } = pageBox(doc);
+  doc.setFillColor(...color);
+  doc.rect(0, 0, w, h, "F");
+}
+
+async function loadFrame(
+  url: string,
+  fallbackAspect: number,
+  fallbackLabel: AspectRatio
+): Promise<FrameExportAsset> {
+  const empty: FrameExportAsset = {
+    dataUrl: null,
+    aspectRatio: fallbackAspect,
+    aspectLabel: fallbackLabel,
+  };
+  const blob = await fetchImageBlob(url);
+  if (!blob) return empty;
+
+  const dataUrl = await blobToDataUrl(blob);
+  try {
+    const { width, height } = await getDataUrlDimensions(dataUrl);
+    if (width > 0 && height > 0) {
+      return {
+        dataUrl,
+        aspectRatio: width / height,
+        aspectLabel: nearestStoryboardAspectRatio(width, height),
+      };
+    }
+  } catch {
+    /* fall through */
+  }
+  return { ...empty, dataUrl };
 }
 
 function sharedEnvironment(scenes: StoryboardScene[]): string | null {
-  const values = scenes
-    .map((s) => s.environment.trim())
-    .filter(Boolean);
+  const values = scenes.map((s) => s.environment.trim()).filter(Boolean);
   if (!values.length) return null;
   const first = values[0];
   return values.every((v) => v === first) ? first : null;
 }
 
-function drawLabelValue(
+// ── Drawing primitives ──────────────────────────────────────────────────────
+
+function drawRule(doc: jsPDF, y: number, inset = SIDE) {
+  const { w } = pageBox(doc);
+  doc.setDrawColor(...RULE);
+  doc.setLineWidth(0.25);
+  doc.line(inset, y, w - inset, y);
+}
+
+function drawFooter(doc: jsPDF, page: number, total: number, label: string) {
+  const { w, h } = pageBox(doc);
+  const y = h - 4;
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(6.5);
+  doc.setTextColor(...SUBTLE);
+  doc.text(pdfSafe(label), SIDE, y);
+  doc.text(`${page} / ${total}`, w - SIDE, y, { align: "right" });
+}
+
+function drawStatCard(
+  doc: jsPDF,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  value: string,
+  caption: string
+) {
+  doc.setFillColor(...WHITE);
+  doc.setDrawColor(...RULE);
+  doc.setLineWidth(0.2);
+  doc.roundedRect(x, y, w, h, 2, 2, "FD");
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(14);
+  doc.setTextColor(...INK);
+  doc.text(pdfSafe(value), x + w / 2, y + h * 0.42, { align: "center" });
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(7);
+  doc.setTextColor(...SUBTLE);
+  doc.text(pdfSafe(caption).toUpperCase(), x + w / 2, y + h * 0.72, {
+    align: "center",
+  });
+}
+
+function drawStripCell(
   doc: jsPDF,
   label: string,
   value: string,
   x: number,
   y: number,
-  maxWidth: number,
-  lineHeight = 3.8
-): number {
-  if (!value.trim()) return y;
+  w: number,
+  maxLines: number
+): void {
+  const safe = pdfSafe(value).trim();
+  if (!safe) return;
 
   doc.setFont("helvetica", "bold");
+  doc.setFontSize(6);
+  doc.setTextColor(...BRAND);
+  doc.text(pdfSafe(label).toUpperCase(), x, y);
+
+  doc.setFont("helvetica", "normal");
   doc.setFontSize(7.5);
-  doc.setTextColor(...MUTED);
-  doc.text(label.toUpperCase(), x, y);
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(8.5);
   doc.setTextColor(...INK);
-  const lines = doc.splitTextToSize(value.trim(), maxWidth) as string[];
+  const lines = (doc.splitTextToSize(safe, w - 2) as string[]).slice(
+    0,
+    maxLines
+  );
   doc.text(lines, x, y + 3.5);
-
-  return y + 3.5 + lines.length * lineHeight + 2.5;
 }
 
-function drawPageFooter(doc: jsPDF, pageNum: number, totalPages: number) {
-  const w = doc.internal.pageSize.getWidth();
-  const h = doc.internal.pageSize.getHeight();
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(7);
-  doc.setTextColor(...MUTED);
-  doc.text(`Storyboard · ${pageNum} / ${totalPages}`, w / 2, h - 6, {
-    align: "center",
-  });
-}
+// ── Cover — centered production summary ─────────────────────────────────────
 
-function drawCoverPage(
+function drawCover(
   doc: jsPDF,
   script: string,
   settings: StoryboardProjectSettings,
   scenes: StoryboardScene[],
   totalDuration: number,
-  sharedEnv: string | null
+  sharedEnv: string | null,
+  aspectLabel: AspectRatio
 ) {
-  const pageW = doc.internal.pageSize.getWidth();
-  const pageH = doc.internal.pageSize.getHeight();
-  const contentW = pageW - MARGIN * 2;
-  let y = MARGIN + 4;
+  const { w, h } = pageBox(doc);
+  const contentW = w - SIDE * 2;
+  fillPage(doc, PAPER);
 
-  doc.setFillColor(...ACCENT);
-  doc.rect(MARGIN, y, 28, 1.2, "F");
+  let y = 28;
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9);
+  doc.setTextColor(...BRAND);
+  doc.text("PRODUCTION DECK", w / 2, y, { align: "center" });
+
+  y += 12;
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(32);
+  doc.setTextColor(...INK);
+  doc.text("Storyboard", w / 2, y, { align: "center" });
+
+  y += 5;
+  doc.setFillColor(...BRAND);
+  doc.rect(w / 2 - 18, y, 36, 0.7, "F");
+
+  y += 14;
+  const cardW = (contentW - 18) / 4;
+  const cardH = 22;
+  const cards = [
+    { value: String(scenes.length), caption: "Scenes" },
+    { value: `${totalDuration}s`, caption: "Runtime" },
+    { value: titleCase(settings.genre), caption: "Genre" },
+    { value: aspectLabel, caption: "Frame ratio" },
+  ];
+  cards.forEach((card, i) => {
+    drawStatCard(doc, SIDE + i * (cardW + 6), y, cardW, cardH, card.value, card.caption);
+  });
+
+  y += cardH + 14;
+  drawRule(doc, y);
   y += 10;
 
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(22);
-  doc.setTextColor(...INK);
-  doc.text("Storyboard", MARGIN, y);
-  y += 9;
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(10);
-  doc.setTextColor(...MUTED);
-  doc.text(
-    `${scenes.length} scenes  ·  ${totalDuration}s total  ·  ${titleCase(settings.genre)}`,
-    MARGIN,
-    y
-  );
-  y += 8;
-
-  const meta = [
-    getFrameStyleLabel(settings.frameStyle),
-    `${settings.durationSec}s`,
-    `${settings.frameCount} frames`,
-  ];
-  let metaX = MARGIN;
-  for (const item of meta) {
-    const pillW = doc.getTextWidth(item) + 8;
-    doc.setFillColor(...PANEL);
-    doc.setDrawColor(...LINE);
-    doc.roundedRect(metaX, y - 4, pillW, 7, 1.5, 1.5, "FD");
-    doc.setFontSize(8);
-    doc.setTextColor(...INK);
-    doc.text(item, metaX + 4, y);
-    metaX += pillW + 3;
-  }
-  y += 12;
-
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(10);
-  doc.setTextColor(...INK);
-  doc.text("Creative brief", MARGIN, y);
+  doc.setFontSize(8);
+  doc.setTextColor(...SUBTLE);
+  doc.text("CREATIVE BRIEF", SIDE, y);
   y += 5;
 
-  const scriptText = script.trim() || "(No script provided)";
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9.5);
-  const scriptLines = doc.splitTextToSize(scriptText, contentW - 8) as string[];
-  const scriptH = scriptLines.length * 4.2 + 10;
-
-  doc.setFillColor(...PANEL);
-  doc.setDrawColor(...LINE);
-  doc.roundedRect(MARGIN, y, contentW, scriptH, 2, 2, "FD");
   doc.setTextColor(...INK);
-  doc.text(scriptLines, MARGIN + 4, y + 7);
-  y += scriptH + 10;
+  const brief = pdfSafe(script.trim() || "No script provided.");
+  const briefLines = doc.splitTextToSize(brief, contentW) as string[];
+  doc.text(briefLines.slice(0, 6), SIDE, y);
+  y += Math.min(briefLines.length, 6) * 4.2 + 10;
 
   if (sharedEnv) {
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(10);
-    doc.text("Scene environment", MARGIN, y);
+    doc.setFontSize(8);
+    doc.setTextColor(...SUBTLE);
+    doc.text("ENVIRONMENT", SIDE, y);
     y += 5;
     doc.setFont("helvetica", "normal");
     doc.setFontSize(9);
-    doc.setTextColor(...MUTED);
-    const envLines = doc.splitTextToSize(sharedEnv, contentW) as string[];
-    doc.text(envLines, MARGIN, y);
-    y += envLines.length * 4 + 8;
+    doc.setTextColor(...INK);
+    const envLines = doc.splitTextToSize(pdfSafe(sharedEnv), contentW) as string[];
+    doc.text(envLines.slice(0, 2), SIDE, y);
+    y += envLines.length * 4 + 10;
   }
 
+  drawRule(doc, y);
+  y += 9;
+
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(10);
-  doc.setTextColor(...INK);
-  doc.text("Scene index", MARGIN, y);
+  doc.setFontSize(8);
+  doc.setTextColor(...SUBTLE);
+  doc.text("SCENE LIST", SIDE, y);
   y += 6;
 
+  const colW = (contentW - 10) / 2;
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(8.5);
-  for (const scene of scenes) {
-    const line = `${scene.sceneNumber}.  ${truncate(scene.visualDescription || scene.voiceover, 72)}  (${scene.durationSec}s · ${titleCase(scene.cameraDirection)})`;
-    doc.setTextColor(...MUTED);
-    doc.text(line, MARGIN + 2, y);
-    y += 5;
-    if (y > pageH - 20) break;
-  }
+  doc.setFontSize(8);
+  scenes.forEach((scene, i) => {
+    const col = i % 2;
+    const row = Math.floor(i / 2);
+    const cx = SIDE + col * (colW + 10);
+    const cy = y + row * 5;
+    if (cy > h - FOOTER - 10) return;
 
-  const stamp = new Date().toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
+    const label = formatStoryboardSceneLabel(scene, scenes);
+    doc.setTextColor(...INK);
+    doc.text(
+      pdfSafe(
+        `${label}  ·  ${scene.durationSec}s  ·  ${truncate(scene.visualDescription || scene.voiceover, 42)}`
+      ),
+      cx,
+      cy
+    );
   });
-  doc.setFontSize(7.5);
-  doc.setTextColor(...MUTED);
-  doc.text(`Exported ${stamp}`, MARGIN, pageH - 8);
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(7);
+  doc.setTextColor(...SUBTLE);
+  doc.text(
+    pdfSafe(
+      `${getFrameStyleLabel(settings.frameStyle)}  ·  Exported ${new Date().toLocaleDateString()}`
+    ),
+    w / 2,
+    h - FOOTER - 2,
+    { align: "center" }
+  );
 }
 
-function drawSceneCard(
+// ── Scene page — cinematic stage + production strip ─────────────────────────
+
+function drawScenePage(
   doc: jsPDF,
   scene: StoryboardScene,
-  frameImage: string | null,
-  box: { x: number; y: number; w: number; h: number },
+  allScenes: StoryboardScene[],
+  frame: FrameExportAsset,
   showEnvironment: boolean
 ) {
-  const { x, y, w, h } = box;
-  const pad = 4;
-  const headerH = 10;
+  const { w, h } = pageBox(doc);
+  fillPage(doc, PAPER);
 
-  doc.setFillColor(255, 255, 255);
-  doc.setDrawColor(...LINE);
-  doc.roundedRect(x, y, w, h, 2, 2, "FD");
-
-  doc.setFillColor(...INK);
-  doc.roundedRect(x, y, w, headerH, 2, 2, "F");
-  doc.rect(x, y + headerH - 2, w, 2, "F");
-
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(11);
-  doc.setTextColor(255, 255, 255);
-  doc.text(`Scene ${scene.sceneNumber}`, x + pad, y + 6.5);
-
-  const badges = [
-    `${scene.durationSec}s`,
-    titleCase(scene.emotion),
-    titleCase(scene.transition),
-  ];
-  let badgeX = x + w - pad;
-  doc.setFontSize(7.5);
-  for (let i = badges.length - 1; i >= 0; i--) {
-    const badge = badges[i]!;
-    const bw = doc.getTextWidth(badge) + 6;
-    badgeX -= bw;
-    doc.setFillColor(60, 60, 60);
-    doc.roundedRect(badgeX, y + 2.5, bw, 5.5, 1, 1, "F");
-    doc.setTextColor(240, 240, 240);
-    doc.text(badge, badgeX + 3, y + 6.2);
-    badgeX -= 2;
-  }
-
-  const innerY = y + headerH + pad;
-  const innerH = h - headerH - pad * 2;
-  const imgW = Math.min(98, w * 0.38);
-  const imgH = Math.min(innerH, imgW * (9 / 16));
-  const imgX = x + pad;
-  const imgY = innerY + (innerH - imgH) / 2;
-
-  doc.setFillColor(...PANEL);
-  doc.setDrawColor(...LINE);
-  doc.roundedRect(imgX, imgY, imgW, imgH, 1.5, 1.5, "FD");
-
-  if (frameImage) {
-    const aspect = 16 / 9;
-    let drawW = imgW - 2;
-    let drawH = drawW / aspect;
-    if (drawH > imgH - 2) {
-      drawH = imgH - 2;
-      drawW = drawH * aspect;
-    }
-    const drawX = imgX + (imgW - drawW) / 2;
-    const drawY = imgY + (imgH - drawH) / 2;
-    doc.addImage(
-      frameImage,
-      imageFormat(frameImage),
-      drawX,
-      drawY,
-      drawW,
-      drawH
-    );
-  } else {
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(8);
-    doc.setTextColor(...MUTED);
-    doc.text("No frame", imgX + imgW / 2, imgY + imgH / 2, { align: "center" });
-  }
-
-  const textX = imgX + imgW + 6;
-  const textW = x + w - pad - textX;
-  let textY = innerY + 1;
-
+  const label = formatStoryboardSceneLabel(scene, allScenes);
   const cameraLine = [
     scene.cameraDirection,
     scene.cameraMovement,
@@ -289,71 +366,118 @@ function drawSceneCard(
   ]
     .map((s) => s?.trim())
     .filter(Boolean)
-    .join("  ·  ");
+    .join(" · ");
 
-  textY = drawLabelValue(doc, "Voiceover", scene.voiceover, textX, textY, textW);
-  textY = drawLabelValue(
+  const stripH = showEnvironment && scene.environment.trim() ? 52 : 44;
+  const topBarH = 11;
+  const stageTop = topBarH + 4;
+  const stageH = h - stageTop - stripH - FOOTER - 2;
+
+  // Top bar
+  doc.setFillColor(...WHITE);
+  doc.rect(0, 0, w, topBarH, "F");
+  drawRule(doc, topBarH);
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(11);
+  doc.setTextColor(...INK);
+  doc.text(pdfSafe(label), SIDE, 7.5);
+
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(7.5);
+  doc.setTextColor(...SUBTLE);
+  const meta = pdfSafe(
+    [
+      `${scene.durationSec}s`,
+      titleCase(scene.emotion),
+      titleCase(scene.transition),
+      frame.aspectLabel,
+    ].join("  ·  ")
+  );
+  doc.text(meta, w - SIDE, 7.5, { align: "right" });
+
+  // Cinematic stage (letterbox background — image has no border/shadow)
+  doc.setFillColor(...STAGE);
+  doc.rect(0, stageTop, w, stageH, "F");
+
+  const stagePad = 6;
+  const fitted = fitInBox(
+    w - stagePad * 2,
+    stageH - stagePad * 2,
+    frame.aspectRatio
+  );
+  const imgX = (w - fitted.w) / 2;
+  const imgY = stageTop + (stageH - fitted.h) / 2;
+
+  if (frame.dataUrl) {
+    doc.addImage(
+      frame.dataUrl,
+      imageFormat(frame.dataUrl),
+      imgX,
+      imgY,
+      fitted.w,
+      fitted.h,
+      undefined,
+      "SLOW"
+    );
+  } else {
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
+    doc.setTextColor(100, 100, 105);
+    doc.text("Frame not generated", w / 2, stageTop + stageH / 2, {
+      align: "center",
+    });
+  }
+
+  // Production info strip
+  const stripY = stageTop + stageH;
+  doc.setFillColor(...STRIP);
+  doc.rect(0, stripY, w, stripH + FOOTER, "F");
+  drawRule(doc, stripY);
+
+  const pad = SIDE;
+  const gap = 8;
+  const col4 = (w - pad * 2 - gap * 3) / 4;
+  const row1Y = stripY + 7;
+  const row2Y = stripY + 28;
+
+  drawStripCell(doc, "Voiceover", scene.voiceover, pad, row1Y, col4, 3);
+  drawStripCell(
     doc,
     "Visual",
     scene.visualDescription,
-    textX,
-    textY,
-    textW
+    pad + col4 + gap,
+    row1Y,
+    col4,
+    3
   );
-  textY = drawLabelValue(doc, "Camera", cameraLine, textX, textY, textW);
-  textY = drawLabelValue(
+  drawStripCell(doc, "Camera", cameraLine, pad + (col4 + gap) * 2, row1Y, col4, 3);
+  drawStripCell(
     doc,
     "Action",
     scene.characterActions,
-    textX,
-    textY,
-    textW
+    pad + (col4 + gap) * 3,
+    row1Y,
+    col4,
+    3
   );
 
   if (showEnvironment && scene.environment.trim()) {
-    drawLabelValue(
+    drawStripCell(
       doc,
       "Environment",
-      truncate(scene.environment, 280),
-      textX,
-      textY,
-      textW
+      truncate(scene.environment, 180),
+      pad,
+      row2Y,
+      w - pad * 2,
+      2
     );
   }
 }
 
-function drawScenesPage(
-  doc: jsPDF,
-  scenes: StoryboardScene[],
-  frameImages: (string | null)[],
-  startIndex: number,
-  sharedEnv: string | null
-) {
-  const pageW = doc.internal.pageSize.getWidth();
-  const pageH = doc.internal.pageSize.getHeight();
-  const contentW = pageW - MARGIN * 2;
-  const gap = 6;
-  const cardsPerPage = 2;
-  const cardH = (pageH - MARGIN * 2 - gap * (cardsPerPage - 1)) / cardsPerPage;
+// ── Export ──────────────────────────────────────────────────────────────────
 
-  for (let slot = 0; slot < cardsPerPage; slot++) {
-    const sceneIndex = startIndex + slot;
-    if (sceneIndex >= scenes.length) break;
-
-    const scene = scenes[sceneIndex]!;
-    const cardY = MARGIN + slot * (cardH + gap);
-
-    drawSceneCard(
-      doc,
-      scene,
-      frameImages[sceneIndex] ?? null,
-      { x: MARGIN, y: cardY, w: contentW, h: cardH },
-      !sharedEnv
-    );
-  }
-}
-
-/** PDF storyboard — cover page + large frame cards (2 scenes per page). */
+/** Storyboard PDF — cover summary + one scene per page (cinematic stage layout). */
 export async function exportStoryboardPdf(
   script: string,
   settings: StoryboardProjectSettings,
@@ -362,31 +486,56 @@ export async function exportStoryboardPdf(
   const ordered = [...scenes].sort((a, b) => a.sceneNumber - b.sceneNumber);
   const totalDuration = ordered.reduce((sum, s) => sum + s.durationSec, 0);
   const sharedEnv = sharedEnvironment(ordered);
+  const fallbackAspect = aspectToNumber(settings.imageAspectRatio);
+  const fallbackLabel = settingsAspect(settings);
 
-  const frameImages: (string | null)[] = [];
+  const frames: FrameExportAsset[] = [];
   for (const scene of ordered) {
-    let dataUrl: string | null = null;
     if (scene.frameImageUrl?.trim()) {
-      const blob = await fetchImageBlob(scene.frameImageUrl);
-      if (blob) dataUrl = await blobToDataUrl(blob);
+      frames.push(await loadFrame(scene.frameImageUrl, fallbackAspect, fallbackLabel));
+    } else {
+      frames.push({
+        dataUrl: null,
+        aspectRatio: fallbackAspect,
+        aspectLabel: fallbackLabel,
+      });
     }
-    frameImages.push(dataUrl);
   }
 
   const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
-  const cardsPerPage = 2;
-  const scenePages = Math.max(1, Math.ceil(ordered.length / cardsPerPage));
-  const totalPages = 1 + scenePages;
+  const totalPages = 1 + ordered.length;
 
-  drawCoverPage(doc, script, settings, ordered, totalDuration, sharedEnv);
-  drawPageFooter(doc, 1, totalPages);
+  drawCover(
+    doc,
+    script,
+    settings,
+    ordered,
+    totalDuration,
+    sharedEnv,
+    fallbackLabel
+  );
+  drawFooter(doc, 1, totalPages, "Cover");
 
-  for (let page = 0; page < scenePages; page++) {
+  for (let i = 0; i < ordered.length; i++) {
     doc.addPage();
-    drawScenesPage(doc, ordered, frameImages, page * cardsPerPage, sharedEnv);
-    drawPageFooter(doc, page + 2, totalPages);
+    drawScenePage(
+      doc,
+      ordered[i]!,
+      ordered,
+      frames[i] ?? {
+        dataUrl: null,
+        aspectRatio: fallbackAspect,
+        aspectLabel: fallbackLabel,
+      },
+      !sharedEnv
+    );
+    drawFooter(
+      doc,
+      i + 2,
+      totalPages,
+      formatStoryboardSceneLabel(ordered[i]!, ordered)
+    );
   }
 
-  const stamp = new Date().toISOString().slice(0, 10);
-  doc.save(`storyboard-${stamp}.pdf`);
+  doc.save(`storyboard-${new Date().toISOString().slice(0, 10)}.pdf`);
 }

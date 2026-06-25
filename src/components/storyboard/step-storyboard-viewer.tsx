@@ -40,6 +40,7 @@ import {
   needsStoryboardVideoBatching,
 } from "@/lib/storyboard/storyboard-video";
 import { formatStoryboardSceneLabel } from "@/lib/storyboard/bookend-scenes";
+import { storyboardAspectRatioCss } from "@/lib/storyboard/storyboard-image";
 import { useStoryboardStore } from "@/store/storyboard-store";
 import { cn } from "@/lib/utils";
 import { normalizeSceneFields } from "@/lib/storyboard/scene-fields";
@@ -214,6 +215,8 @@ export function StepStoryboardViewer() {
     void regenerateFrames(pendingRegenerateIds);
   };
 
+  const frameAspectCss = storyboardAspectRatioCss(imageAspectRatio);
+
   const imageDialogFrameCount = useMemo(() => {
     if (imageDialogMode === "missing") {
       return scenes.filter(
@@ -374,6 +377,7 @@ export function StepStoryboardViewer() {
                 key={scene.id}
                 scene={scene}
                 allScenes={scenes}
+                frameAspectCss={frameAspectCss}
                 selected={selectedIds.has(scene.id)}
                 onSelect={() => toggleSelect(scene.id)}
                 detailsOpen={expandedDetailsId === scene.id}
@@ -399,6 +403,7 @@ export function StepStoryboardViewer() {
                 <StoryboardFrameCard
                   scene={scene}
                   allScenes={scenes}
+                  frameAspectCss={frameAspectCss}
                   selected={selectedIds.has(scene.id)}
                   onSelect={() => toggleSelect(scene.id)}
                   detailsOpen={expandedDetailsId === scene.id}
@@ -423,6 +428,7 @@ export function StepStoryboardViewer() {
             <StoryboardFrameCard
               scene={presentationScene}
               allScenes={scenes}
+              frameAspectCss={frameAspectCss}
               selected={false}
               onSelect={() => {}}
               detailsOpen={expandedDetailsId === presentationScene.id}
@@ -486,6 +492,7 @@ export function StepStoryboardViewer() {
                   key={scene.id}
                   scene={scene}
                   allScenes={scenes}
+                  frameAspectCss={frameAspectCss}
                   selected={selectedIds.has(scene.id)}
                   onSelect={() => toggleSelect(scene.id)}
                   detailsOpen={expandedDetailsId === scene.id}
@@ -640,7 +647,7 @@ export function StepStoryboardViewer() {
             size="sm"
             onClick={() => void handleExportPdf()}
             disabled={isExportingPdf || !scenes.length}
-            title="PDF with script and scene cards including frame images"
+            title="Production deck PDF — cover summary and one cinematic scene page each"
           >
             {isExportingPdf ? (
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -911,6 +918,7 @@ function StoryboardFramePreviewDialog({
 function StoryboardFrameCard({
   scene,
   allScenes,
+  frameAspectCss,
   selected,
   onSelect,
   detailsOpen,
@@ -923,6 +931,7 @@ function StoryboardFrameCard({
 }: {
   scene: StoryboardScene;
   allScenes: StoryboardScene[];
+  frameAspectCss: string;
   selected: boolean;
   onSelect: () => void;
   detailsOpen: boolean;
@@ -962,7 +971,10 @@ function StoryboardFrameCard({
           : "border-border"
       )}
     >
-      <div className="relative aspect-video w-full overflow-hidden bg-background">
+      <div
+        className="relative w-full overflow-hidden bg-background"
+        style={{ aspectRatio: frameAspectCss }}
+      >
         {scene.frameImageUrl ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
